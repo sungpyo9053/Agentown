@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend: Kotlin/Spring",
+      "type": "java",
+      "request": "attach",
+      "hostName": "localhost",
+      "port": 5005,
+      "preLaunchTask": "backend: debug server"
+    },
+    {
+      "name": "Frontend: Next.js/Chrome",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:3000",
+      "webRoot": "${workspaceFolder}/frontend",
+      "sourceMaps": true,
+      "preLaunchTask": "frontend: dev server"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full Stack: Debug",
+      "configurations": [
+        "Backend: Kotlin/Spring",
+        "Frontend: Next.js/Chrome"
+      ],
+      "stopAll": true
+    }
+  ]
+}

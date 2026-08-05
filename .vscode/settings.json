@@ -1,0 +1,23 @@
+{
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.import.gradle.enabled": true,
+  "java.debug.settings.onBuildFailureProceed": false,
+  "eslint.workingDirectories": [
+    {
+      "directory": "frontend",
+      "changeProcessCWD": true
+    }
+  ],
+  "typescript.tsdk": "frontend/node_modules/typescript/lib",
+  "files.exclude": {
+    "**/.gradle": true,
+    "**/build": true,
+    "frontend/.next": true
+  },
+  "search.exclude": {
+    "**/.gradle": true,
+    "**/build": true,
+    "frontend/.next": true,
+    "frontend/node_modules": true
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "debug: prepare PostgreSQL",
+      "type": "shell",
+      "command": "docker compose stop backend frontend && docker compose up -d postgres",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "LLM_MASTER_KEY": "VGhpcy1pcy1hLXRlc3Qta2V5LWZvci1hZXMtMjU2ISE="
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "backend: debug server",
+      "type": "shell",
+      "command": "./gradlew :backend:bootRun --debug-jvm --no-daemon",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "DB_URL": "jdbc:postgresql://localhost:5433/agent_village",
+          "DB_USERNAME": "agent_village",
+          "DB_PASSWORD": "agent_village_local",
+          "LLM_KEY_VERSION": "v1",
+          "LLM_MASTER_KEY": "VGhpcy1pcy1hLXRlc3Qta2V5LWZvci1hZXMtMjU2ISE=",
+          "COOKIE_SECURE": "false"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "agentown-backend",
+        "pattern": [
+          {
+            "regexp": "^$"
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "Listening for transport dt_socket at address: 5005"
+        }
+      },
+      "dependsOn": "debug: prepare PostgreSQL"
+    },
+    {
+      "label": "frontend: dev server",
+      "type": "shell",
+      "command": "npm --prefix frontend run dev",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "API_INTERNAL_URL": "http://localhost:8080"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "agentown-frontend",
+        "pattern": [
+          {
+            "regexp": "^$"
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*Next.js.*",
+          "endsPattern": ".*Ready in.*"
+        }
+      },
+      "dependsOn": "debug: prepare PostgreSQL"
+    },
+    {
+      "label": "backend: test",
+      "type": "shell",
+      "command": "./gradlew :backend:test --no-daemon",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": ["$gradle"]
+    },
+    {
+      "label": "frontend: lint and typecheck",
+      "type": "shell",
+      "command": "npm --prefix frontend run lint && npm --prefix frontend run typecheck",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": ["$eslint-stylish", "$tsc"]
+    },
+    {
+      "label": "Docker: show logs",
+      "type": "shell",
+      "command": "docker compose logs -f backend frontend postgres",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "LLM_MASTER_KEY": "VGhpcy1pcy1hLXRlc3Qta2V5LWZvci1hZXMtMjU2ISE="
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

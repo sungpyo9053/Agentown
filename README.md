@@ -84,6 +84,11 @@ docker compose ps
 docker compose logs -f backend frontend postgres
 ```
 
+VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하고 `F5`를
+누르면 PostgreSQL 준비, Kotlin/Spring 디버거, Next.js 개발 서버와 Chrome
+디버거가 함께 시작됩니다. 자세한 내용은
+[`docs/VS_CODE_DEBUGGING.md`](docs/VS_CODE_DEBUGGING.md)를 참고하세요.
+
 ## MVP 기능
 
 - 세션/CSRF 기반 회원가입·로그인과 미니홈·일촌·차단
