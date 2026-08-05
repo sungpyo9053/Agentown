@@ -1,0 +1,7 @@
+spring:
+  jpa:
+    show-sql: false
+llm:
+  encryption:
+    current-version: test-v1
+    master-keys: test-v1:VGhpcy1pcy1hLXRlc3Qta2V5LWZvci1hZXMtMjU2ISE=

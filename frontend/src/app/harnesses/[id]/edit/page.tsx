@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default async function Page({params}:{params:Promise<{id:string}>}){const {id}=await params;return <AppShell kicker="HARNESS DESIGNER" title="실행 흐름 편집"><EmptyPanel>{id} · 연결 순서, 재시도, 승인 지점을 편집하고 검증·테스트합니다.</EmptyPanel></AppShell>}

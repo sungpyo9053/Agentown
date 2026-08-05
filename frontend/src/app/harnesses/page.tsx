@@ -1,0 +1,1 @@
+import Link from "next/link";import {AppShell,EmptyPanel} from "@/components/AppShell";export default function Page(){return <AppShell kicker="MY AI TEAMS" title="하네스"><EmptyPanel><p>에이전트를 순서대로 연결해 실행 가능한 AI 팀을 만드세요.</p><Link href="/harnesses/new" className="mt-5 inline-block rounded-full bg-coral px-5 py-3 font-bold text-white">새 하네스</Link></EmptyPanel></AppShell>}

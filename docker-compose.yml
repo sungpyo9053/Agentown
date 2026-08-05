@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_village}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_village}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_village_local}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
+      DB_USERNAME: ${POSTGRES_USER:-agent_village}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-agent_village_local}
+      LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
+      LLM_MASTER_KEY: ${LLM_MASTER_KEY:?Set a base64-encoded 32-byte LLM_MASTER_KEY}
+      COOKIE_SECURE: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        API_INTERNAL_URL: http://backend:8080
+    environment:
+      API_INTERNAL_URL: http://backend:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+

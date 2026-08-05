@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default function Page(){return <AppShell kicker="HARNESS DESIGNER" title="새 하네스 연결"><EmptyPanel>최대 5명의 에이전트를 선택하면 순차 실행과 전달 관계를 제안합니다. 실행 전 검증 결과를 반드시 통과해야 합니다.</EmptyPanel></AppShell>}

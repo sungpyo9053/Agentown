@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default async function Page({params}:{params:Promise<{id:string}>}){const {id}=await params;return <AppShell kicker="HARNESS DETAIL" title="무료 하네스"><EmptyPanel>상품 {id}의 제작자, 버전, 단계, 추천 모델을 확인하고 자격증명 없이 안전하게 복제하거나 ZIP으로 내려받을 수 있습니다.</EmptyPanel></AppShell>}

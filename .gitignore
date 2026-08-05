@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.gradle/
+.gradle-local/
+build/
+**/build/
+node_modules/
+.next/
+.env
+.env.local
+*.iml
+*.tsbuildinfo

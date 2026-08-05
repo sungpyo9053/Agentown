@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default async function Page({params}:{params:Promise<{handle:string}>}){const {handle}=await params;return <AppShell kicker="MINI HOME" title={`@${handle}의 AI 마을`}><EmptyPanel>공개된 에이전트와 하네스를 구경하고 복제할 수 있습니다. 실행 결과물은 표시되지 않습니다.</EmptyPanel></AppShell>}

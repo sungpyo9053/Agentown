@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default function Page(){return <AppShell kicker="BYOK SECURITY" title="API 자격증명"><EmptyPanel>키 등록은 내 미니홈의 <b>API 키</b> 버튼에서 할 수 있습니다. 원문은 AES-256-GCM으로 암호화되며 등록 후 다시 표시되지 않습니다.</EmptyPanel></AppShell>}

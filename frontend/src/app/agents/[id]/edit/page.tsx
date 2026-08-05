@@ -1,0 +1,1 @@
+import { AppShell, EmptyPanel } from "@/components/AppShell"; export default async function Page({params}:{params:Promise<{id:string}>}){const {id}=await params;return <AppShell kicker="AGENT EDITOR" title="AI 구성원 편집"><EmptyPanel>에이전트 {id}의 역할, 작업, 가이드, Provider와 Model을 수정합니다. 정의 생성 API로 MD와 Schema를 다시 만들 수 있습니다.</EmptyPanel></AppShell>}

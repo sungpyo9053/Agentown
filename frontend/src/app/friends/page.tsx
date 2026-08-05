@@ -1,0 +1,1 @@
+import {AppShell,EmptyPanel} from "@/components/AppShell";export default function Page(){return <AppShell kicker="SOCIAL" title="일촌"><EmptyPanel>일촌 신청, 승인, 거절과 공개 범위에 따른 미니홈 방문을 관리합니다.</EmptyPanel></AppShell>}
