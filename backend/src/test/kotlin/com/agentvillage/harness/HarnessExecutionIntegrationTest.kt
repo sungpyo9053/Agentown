@@ -76,5 +76,29 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
         assertThat(mapper.readTree(body)["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
         val events = executionService.history(UUID.fromString(executionId), user.id).map { it.eventType }
         assertThat(events).containsSubsequence("EXECUTION_QUEUED", "EXECUTION_STARTED", "STEP_STARTED", "MODEL_REQUEST_SENT", "STEP_COMPLETED", "EXECUTION_COMPLETED")
+
+        postJson("/api/harnesses/$harnessId/connect", """{"agentIds":["$agentId"],"approvalAfterLast":true}""")
+            .andExpect(status().isOk)
+        val approvalExecution = postJson("/api/harnesses/$harnessId/executions", """{"input":{"topic":"승인"},"stubMode":true}""",
+            "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk).andReturn().response.contentAsString
+        val approvalId = mapper.readTree(approvalExecution)["id"].asText()
+        Thread.sleep(200)
+        queueWorker.poll()
+        var approvalBody = ""
+        repeat(30) {
+            Thread.sleep(100)
+            approvalBody = mvc.perform(get("/api/executions/$approvalId").with(user(principal))).andReturn().response.contentAsString
+            if (mapper.readTree(approvalBody)["execution"]["status"].asText() == "WAITING_APPROVAL") return@repeat
+        }
+        assertThat(mapper.readTree(approvalBody)["execution"]["status"].asText()).isEqualTo("WAITING_APPROVAL")
+        postJson("/api/executions/$approvalId/approve", "{}").andExpect(status().isOk)
+        Thread.sleep(200)
+        queueWorker.poll()
+        repeat(30) {
+            Thread.sleep(100)
+            approvalBody = mvc.perform(get("/api/executions/$approvalId").with(user(principal))).andReturn().response.contentAsString
+            if (mapper.readTree(approvalBody)["execution"]["status"].asText() == "SUCCEEDED") return@repeat
+        }
+        assertThat(mapper.readTree(approvalBody)["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
     }
 }

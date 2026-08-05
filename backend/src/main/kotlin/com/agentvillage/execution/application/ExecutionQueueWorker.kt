@@ -23,6 +23,8 @@ import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+private class ExecutionExpiredException(message: String) : RuntimeException(message)
+
 @Service
 class ExecutionProcessor(
     private val executions: ExecutionRepository, private val executionSteps: ExecutionStepRepository,
@@ -41,22 +43,34 @@ class ExecutionProcessor(
         executions.save(execution)
         service.record(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))
         val harness = harnesses.requireOwnedView(execution.harnessId, execution.ownerId)
-        var current: Map<String, Any> = execution.inputJson.filterKeys { it != "_stubMode" }
+        val priorSteps = executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id)
+        val completedKeys = priorSteps.filter { it.status == StepStatus.SUCCEEDED }.map { it.stepKey }.toSet()
+        var current: Map<String, Any> = priorSteps.lastOrNull { it.status == StepStatus.SUCCEEDED }?.outputJson
+            ?: execution.inputJson.filterKeys { it != "_stubMode" }
         val stubMode = execution.inputJson["_stubMode"] == true
         try {
             for (step in harness.steps) {
+                if (step.stepKey in completedKeys) continue
                 if (execution.status == ExecutionStatus.CANCELLED) return
+                if (execution.timeoutAt?.isBefore(Instant.now()) == true) throw ExecutionExpiredException("전체 실행 시간이 초과되었습니다.")
                 execution.currentStepKey = step.stepKey; execution.heartbeatAt = Instant.now(); executions.save(execution)
                 val agent = step.agentId?.let { agents.describeOwned(it, execution.ownerId) }
                 val executionStep = executionSteps.save(ExecutionStep(executionId = id, harnessStepId = step.id,
                     stepKey = step.stepKey, stepType = step.stepType.name, inputJson = current, startedAt = Instant.now(), status = StepStatus.RUNNING,
                     provider = agent?.provider?.name, model = agent?.model))
                 service.record(id, "STEP_STARTED", agent?.id, mapOf("stepKey" to step.stepKey, "type" to step.stepType.name))
-                val output = when (step.stepType) {
-                    HarnessStepType.LLM -> llmSemaphore.withPermit { executeLlm(execution, agent!!, current, stubMode, executionStep) }
-                    HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit { mapOf("result" to "external-api-stub", "input" to current) }
-                    HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit { mapOf("result" to current) }
-                    HarnessStepType.APPROVAL -> { execution.status = ExecutionStatus.WAITING_APPROVAL; executionStep.status = StepStatus.WAITING_APPROVAL; executions.save(execution); executionSteps.save(executionStep); service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return }
+                if (step.stepType == HarnessStepType.APPROVAL) {
+                    execution.status = ExecutionStatus.WAITING_APPROVAL; executionStep.status = StepStatus.WAITING_APPROVAL
+                    executions.save(execution); executionSteps.save(executionStep)
+                    service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return
+                }
+                val output = executeWithRetry(step.maxRetries, executionStep, agent?.id) {
+                    withTimeout(step.timeoutSeconds * 1000L) { when (step.stepType) {
+                        HarnessStepType.LLM -> llmSemaphore.withPermit { executeLlm(execution, agent!!, current, stubMode, executionStep) }
+                        HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.id, mapOf("stepKey" to step.stepKey, "tool" to "EXTERNAL_API")); mapOf("result" to "external-api-stub", "input" to current) }
+                        HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.id, mapOf("stepKey" to step.stepKey, "tool" to "DOWNLOAD")); mapOf("result" to current) }
+                        HarnessStepType.APPROVAL -> error("Approval step must be handled before execution")
+                    }}
                 }
                 executionStep.outputJson = output; executionStep.status = StepStatus.SUCCEEDED; executionStep.finishedAt = Instant.now()
                 executionSteps.save(executionStep)
@@ -69,11 +83,27 @@ class ExecutionProcessor(
             executions.save(execution)
             service.record(id, "EXECUTION_COMPLETED", null, mapOf("status" to "SUCCEEDED"))
         } catch (e: Exception) {
-            execution.status = ExecutionStatus.FAILED; execution.errorCode = "STEP_EXECUTION_FAILED"
+            execution.status = if (e is TimeoutCancellationException || e is ExecutionExpiredException) ExecutionStatus.TIMEOUT else ExecutionStatus.FAILED
+            execution.errorCode = if (execution.status == ExecutionStatus.TIMEOUT) "EXECUTION_TIMEOUT" else "STEP_EXECUTION_FAILED"
             execution.errorMessage = e.message?.take(1000); execution.finishedAt = Instant.now()
             executions.save(execution)
-            service.record(id, "EXECUTION_FAILED", null, mapOf("errorCode" to "STEP_EXECUTION_FAILED"))
+            service.record(id, "EXECUTION_FAILED", null, mapOf("errorCode" to execution.errorCode!!))
         }
+    }
+
+    private suspend fun executeWithRetry(maxRetries: Int, step: ExecutionStep, agentId: UUID?, block: suspend () -> Map<String, Any>): Map<String, Any> {
+        var last: Throwable? = null
+        repeat(maxRetries + 1) { index ->
+            step.attempt = index + 1
+            try { return block() } catch (error: Throwable) {
+                last = error
+                step.errorCode = if (error is TimeoutCancellationException) "STEP_TIMEOUT" else "STEP_EXECUTION_FAILED"
+                step.errorMessage = error.message?.take(1000)
+                executionSteps.save(step)
+                service.record(step.executionId, "STEP_FAILED", agentId, mapOf("stepKey" to step.stepKey, "attempt" to step.attempt, "willRetry" to (index < maxRetries)))
+            }
+        }
+        throw requireNotNull(last)
     }
 
     private fun executeLlm(execution: Execution, agent: com.agentvillage.agent.application.AgentDescriptor,

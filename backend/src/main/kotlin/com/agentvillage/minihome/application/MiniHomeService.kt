@@ -47,7 +47,7 @@ class MiniHomeService(
     }
 
     @Transactional(readOnly = true)
-    fun getMine(userId: UUID): MiniHomeView = view(requireHome(userId), userDirectory.require(userId).handle)
+    fun getMine(userId: UUID): MiniHomeView = view(requireHome(userId), userDirectory.require(userId).handle, Visibility.entries.toSet())
 
     @Transactional
     fun getPublic(handle: String, viewerId: UUID?): MiniHomeView {
@@ -61,7 +61,12 @@ class MiniHomeService(
             throw ForbiddenException("MINI_HOME_PRIVATE", "공개되지 않은 미니홈입니다.")
         }
         if (!isOwner) home.visitCount += 1
-        return view(home, owner.handle)
+        val allowed = when {
+            isOwner -> Visibility.entries.toSet()
+            viewerId != null && friendshipQuery.areFriends(owner.id, viewerId) -> setOf(Visibility.FRIENDS, Visibility.PUBLIC, Visibility.MARKET)
+            else -> setOf(Visibility.PUBLIC, Visibility.MARKET)
+        }
+        return view(home, owner.handle, allowed)
     }
 
     @Transactional
@@ -71,7 +76,7 @@ class MiniHomeService(
         home.introduction = introduction?.trim()?.takeIf { it.isNotEmpty() }
         home.backgroundKey = backgroundKey
         home.visibility = visibility
-        return view(home, userDirectory.require(userId).handle)
+        return view(home, userDirectory.require(userId).handle, Visibility.entries.toSet())
     }
 
     @Transactional
@@ -98,13 +103,16 @@ class MiniHomeService(
                 )
             },
         )
-        return view(home, userDirectory.require(userId).handle)
+        return view(home, userDirectory.require(userId).handle, Visibility.entries.toSet())
     }
 
     private fun requireHome(userId: UUID) = homes.findByUserId(userId)
         ?: throw NotFoundException("MINI_HOME_NOT_FOUND", "미니홈을 찾을 수 없습니다.")
 
-    private fun view(home: MiniHome, handle: String): MiniHomeView = MiniHomeView(
+    private fun view(home: MiniHome, handle: String, allowedVisibilities: Set<Visibility>): MiniHomeView {
+        val items = roomItems.findAllByMiniHomeIdOrderByZIndex(home.id)
+        val ownerId = home.userId
+        return MiniHomeView(
         id = home.id,
         handle = handle,
         title = home.title,
@@ -112,8 +120,9 @@ class MiniHomeService(
         backgroundKey = home.backgroundKey,
         visibility = home.visibility,
         visitCount = home.visitCount,
-        items = roomItems.findAllByMiniHomeIdOrderByZIndex(home.id),
-    )
+        items = items,
+        agents = agentDirectory.listVisible(items.mapNotNull { it.agentId }, ownerId, allowedVisibilities),
+    )}
 }
 
 data class MiniHomeView(
@@ -125,4 +134,5 @@ data class MiniHomeView(
     val visibility: Visibility,
     val visitCount: Long,
     val items: List<RoomItem>,
+    val agents: List<com.agentvillage.agent.application.MiniHomeAgentDescriptor>,
 )

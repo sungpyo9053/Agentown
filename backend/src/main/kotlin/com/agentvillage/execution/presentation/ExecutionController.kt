@@ -19,6 +19,7 @@ class ExecutionController(private val service: ExecutionService) {
     @PostMapping("/api/executions/{id}/cancel") fun cancel(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.cancel(id, p.userId)
     @PostMapping("/api/executions/{id}/approve") fun approve(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.approve(id, p.userId)
     @PostMapping("/api/executions/{id}/reject") fun reject(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.reject(id, p.userId)
+    @GetMapping("/api/executions/{id}/history") fun history(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.history(id, p.userId)
     @GetMapping("/api/executions/{id}/events", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
     fun events(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.subscribe(id, p.userId)
 }

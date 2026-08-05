@@ -118,6 +118,11 @@ class AgentService(
         visibility = Visibility.PRIVATE,
     )).id
 
+    @Transactional(readOnly = true)
+    override fun listVisible(agentIds: Collection<UUID>, ownerId: UUID, allowedVisibilities: Set<Visibility>) =
+        agents.findAllById(agentIds).filter { it.ownerId == ownerId && it.visibility in allowedVisibilities }
+            .map { MiniHomeAgentDescriptor(it.id, it.name, it.role, it.characterKey) }
+
     private fun findOwned(id: UUID, ownerId: UUID): Agent =
         agents.findByIdAndOwnerId(id, ownerId)
             ?: throw NotFoundException("AGENT_NOT_FOUND", "에이전트를 찾을 수 없습니다.")

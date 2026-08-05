@@ -47,9 +47,11 @@ class ExecutionService(
     @Transactional fun approve(id: UUID, ownerId: UUID): Execution {
         val e = requireOwned(id, ownerId)
         if (e.status != ExecutionStatus.WAITING_APPROVAL) throw ConflictException("EXECUTION_NOT_WAITING_APPROVAL", "승인 대기 중인 실행이 아닙니다.")
-        e.status = ExecutionStatus.SUCCEEDED; e.finishedAt = Instant.now()
-        e.outputJson = executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id).lastOrNull()?.outputJson
-        record(id, "EXECUTION_COMPLETED", null, mapOf("status" to "SUCCEEDED", "approved" to true)); return e
+        executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id).lastOrNull { it.status == StepStatus.WAITING_APPROVAL }?.let {
+            it.status = StepStatus.SUCCEEDED; it.finishedAt = Instant.now(); executionSteps.save(it)
+        }
+        e.status = ExecutionStatus.QUEUED; e.finishedAt = null
+        record(id, "EXECUTION_QUEUED", null, mapOf("status" to "QUEUED", "approved" to true)); return e
     }
     @Transactional fun reject(id: UUID, ownerId: UUID): Execution {
         val e = requireOwned(id, ownerId)

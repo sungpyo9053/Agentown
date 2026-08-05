@@ -15,8 +15,10 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.request
 
 @AutoConfigureMockMvc
 class AgentIntegrationTest : IntegrationTestSupport() {
@@ -43,6 +45,13 @@ class AgentIntegrationTest : IntegrationTestSupport() {
         mvc.perform(get("/api/agents").with(user(principal)))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$[0].id", equalTo(id)))
+
+        val async = mvc.perform(post("/api/agents/{id}/test", id).with(user(principal)).with(csrf())
+            .contentType(MediaType.APPLICATION_JSON).content("""{"input":"검증 입력","stubMode":true}"""))
+            .andExpect(request().asyncStarted()).andReturn()
+        mvc.perform(asyncDispatch(async)).andExpect(status().isOk)
+            .andExpect(jsonPath("$.content", equalTo("stub:검증 입력")))
+            .andExpect(jsonPath("$.stub", equalTo(true)))
 
         mvc.perform(delete("/api/agents/{id}", id).with(user(principal)).with(csrf()))
             .andExpect(status().isNoContent)

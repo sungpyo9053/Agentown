@@ -12,8 +12,11 @@ data class AgentDescriptor(
     val systemPrompt: String? = null,
 )
 
+data class MiniHomeAgentDescriptor(val id: UUID, val name: String, val role: String, val characterKey: String)
+
 interface AgentDirectory {
     fun requireOwned(agentId: UUID, ownerId: UUID)
     fun describeOwned(agentId: UUID, ownerId: UUID): AgentDescriptor
     fun cloneFrom(source: AgentDescriptor, ownerId: UUID): UUID
+    fun listVisible(agentIds: Collection<UUID>, ownerId: UUID, allowedVisibilities: Set<Visibility>): List<MiniHomeAgentDescriptor>
 }

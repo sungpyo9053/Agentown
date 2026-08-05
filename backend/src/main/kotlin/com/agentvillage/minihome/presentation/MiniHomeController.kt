@@ -80,11 +80,12 @@ data class MiniHomeResponse(
     val visibility: Visibility,
     val visitCount: Long,
     val items: List<RoomItemResponse>,
+    val agents: List<com.agentvillage.agent.application.MiniHomeAgentDescriptor>,
 ) {
     companion object {
         fun from(view: MiniHomeView) = MiniHomeResponse(
             view.id, view.handle, view.title, view.introduction, view.backgroundKey,
-            view.visibility, view.visitCount, view.items.map(RoomItemResponse::from),
+            view.visibility, view.visitCount, view.items.map(RoomItemResponse::from), view.agents,
         )
     }
 }
@@ -116,4 +117,3 @@ class MiniHomeController(private val miniHomes: MiniHomeService) {
         @AuthenticationPrincipal principal: AuthenticatedUser?,
     ) = MiniHomeResponse.from(miniHomes.getPublic(handle, principal?.userId))
 }
-

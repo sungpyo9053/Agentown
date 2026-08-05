@@ -2,6 +2,7 @@
 .idea/
 .gradle/
 .gradle-local/
+.kotlin/
 build/
 **/build/
 node_modules/
