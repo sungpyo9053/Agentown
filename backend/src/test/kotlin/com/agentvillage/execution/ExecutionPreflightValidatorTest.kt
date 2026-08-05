@@ -24,6 +24,16 @@ class ExecutionPreflightValidatorTest {
             if (ownerId != owner || activeIds[provider] != credentialId) error("credential unavailable")
             return CredentialMetadata(credentialId, ownerId, provider, CredentialStatus.ACTIVE)
         }
+        override fun <T> withDecrypted(
+            credentialId: UUID,
+            ownerId: UUID,
+            provider: LlmProvider,
+            block: (CharArray, Map<String, Any>) -> T,
+        ): T {
+            requireActive(credentialId, ownerId, provider)
+            val secret = "test-secret".toCharArray()
+            return try { block(secret, emptyMap()) } finally { secret.fill('\u0000') }
+        }
     }
     private val validator = ExecutionPreflightValidator(
         directory, AiModelGatewayRegistry(LlmProvider.entries.map(::StubAiModelGateway)), SupportedModelCatalog(),
