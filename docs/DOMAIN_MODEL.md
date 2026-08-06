@@ -1,6 +1,6 @@
 # 도메인 모델
 
-- User/Profile — 인증 주체와 공개 프로필
+- User/Profile — `USER`/`ADMIN` 역할을 가진 인증 주체와 공개 프로필. 공개 회원가입은 항상 `USER`다.
 - Friendship/MiniHome/RoomItem — 소셜 관계와 정규화 좌표의 개인 공간
 - Agent/AgentDefinition — 역할·모델 설정과 자동 생성된 MD/Schema
 - Harness/Version/Step/Edge — 공유 가능한 선언형 업무 설계도와 불변 버전

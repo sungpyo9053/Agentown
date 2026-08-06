@@ -2,6 +2,7 @@ package com.agentvillage.identity.domain
 
 import com.agentvillage.common.domain.AuditedEntity
 import com.agentvillage.common.domain.Visibility
+import com.agentvillage.common.domain.UserRole
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.EnumType
@@ -31,6 +32,10 @@ class UserAccount(
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     var status: UserStatus = UserStatus.ACTIVE,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var role: UserRole = UserRole.USER,
 ) : AuditedEntity()
 
 @Entity
@@ -53,4 +58,3 @@ class Profile(
     @Column(nullable = false, length = 20)
     var visibility: Visibility = Visibility.PUBLIC,
 ) : AuditedEntity()
-

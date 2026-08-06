@@ -42,17 +42,39 @@ class HarnessService(
     @Transactional fun delete(id: UUID, ownerId: UUID) = harnesses.delete(requireOwnedView(id, ownerId).harness)
 
     @Transactional
-    fun connect(id: UUID, ownerId: UUID, agentIds: List<UUID>, approvalAfterLast: Boolean): HarnessView {
+    fun connect(
+        id: UUID,
+        ownerId: UUID,
+        agentIds: List<UUID>,
+        approvalAfterLast: Boolean,
+        approvalBeforeLast: Boolean = false,
+    ): HarnessView {
         if (agentIds.isEmpty() || agentIds.size > 5) throw BadRequestException("HARNESS_AGENT_LIMIT", "에이전트는 1개 이상 5개 이하만 연결할 수 있습니다.")
         if (agentIds.distinct().size != agentIds.size) throw BadRequestException("HARNESS_DUPLICATE_AGENT", "같은 에이전트를 중복 연결할 수 없습니다.")
+        if (approvalBeforeLast && agentIds.size < 2) throw BadRequestException("HARNESS_APPROVAL_POSITION", "중간 승인은 에이전트가 2명 이상일 때 사용할 수 있습니다.")
+        if (approvalAfterLast && approvalBeforeLast) throw BadRequestException("HARNESS_APPROVAL_POSITION", "승인 위치는 하나만 선택할 수 있습니다.")
         requireOwnedView(id, ownerId)
         agentIds.forEach { agents.requireOwned(it, ownerId) }
         edges.deleteAllByHarnessId(id); steps.deleteAllByHarnessId(id); steps.flush()
-        val saved = steps.saveAll(agentIds.mapIndexed { i, agentId -> HarnessStep(
-            harnessId = id, agentId = agentId, stepKey = "step-${i + 1}", stepType = HarnessStepType.LLM,
-            sequenceNo = i + 1, maxRetries = 2, requiresApproval = approvalAfterLast && i == agentIds.lastIndex,
-            inputMapping = if (i == 0) mapOf("input" to "$.input") else mapOf("input" to "$.previous.output"),
-        ) })
+        val commands = buildList {
+            agentIds.forEachIndexed { i, agentId ->
+                if (approvalBeforeLast && i == agentIds.lastIndex) add(null)
+                add(agentId)
+            }
+        }
+        val saved = steps.saveAll(commands.mapIndexed { sequence, agentId ->
+            val isApproval = agentId == null
+            HarnessStep(
+                harnessId = id,
+                agentId = agentId,
+                stepKey = if (isApproval) "approval-${sequence + 1}" else "step-${sequence + 1}",
+                stepType = if (isApproval) HarnessStepType.APPROVAL else HarnessStepType.LLM,
+                sequenceNo = sequence + 1,
+                maxRetries = if (isApproval) 0 else 2,
+                requiresApproval = approvalAfterLast && sequence == commands.lastIndex,
+                inputMapping = if (sequence == 0) mapOf("input" to "$.input") else mapOf("input" to "$.previous.output"),
+            )
+        })
         edges.saveAll(saved.zipWithNext().map { (a, b) -> HarnessEdge(harnessId = id, sourceStepId = a.id, targetStepId = b.id) })
         return requireOwnedView(id, ownerId)
     }
@@ -61,7 +83,7 @@ class HarnessService(
     fun validate(id: UUID, ownerId: UUID): ValidationResult {
         val view = requireOwnedView(id, ownerId); val errors = mutableListOf<String>()
         if (view.steps.isEmpty()) errors += "시작 단계가 없습니다."
-        if (view.steps.size > 5) errors += "최대 에이전트 수를 초과했습니다."
+        if (view.steps.count { it.stepType == HarnessStepType.LLM } > 5) errors += "최대 에이전트 수를 초과했습니다."
         if (view.steps.map { it.sequenceNo } != (1..view.steps.size).toList()) errors += "단계 순서가 연속적이지 않습니다."
         if (view.steps.any { it.maxRetries !in 0..3 }) errors += "재시도 횟수가 제한을 벗어났습니다."
         val ids = view.steps.map { it.id }.toSet()
@@ -98,7 +120,10 @@ class HarnessService(
         val cloned = harnesses.save(Harness(ownerId = ownerId, name = "${version.snapshotJson["name"]} 복제본", description = "스냅샷에서 복제됨"))
         @Suppress("UNCHECKED_CAST") val agentMaps = version.snapshotJson["agents"] as? List<Map<String, Any>> ?: emptyList()
         val clonedAgentIds = agentMaps.map { agents.cloneFrom(descriptor(it), ownerId) }
-        connect(cloned.id, ownerId, clonedAgentIds, false)
+        @Suppress("UNCHECKED_CAST") val stepMaps = version.snapshotJson["steps"] as? List<Map<String, Any>> ?: emptyList()
+        val approvalBeforeLast = stepMaps.any { it["type"]?.toString() == HarnessStepType.APPROVAL.name }
+        val approvalAfterLast = stepMaps.any { it["requiresApproval"] == true }
+        connect(cloned.id, ownerId, clonedAgentIds, approvalAfterLast, approvalBeforeLast)
         return cloned
     }
 
@@ -110,7 +135,13 @@ class HarnessService(
             "maxOutputTokens" to it.maxOutputTokens, "timeoutSeconds" to it.timeoutSeconds,
             "providerOptions" to it.providerOptions,
         ) },
-        "steps" to view.steps.map { mapOf("id" to it.stepKey, "type" to it.stepType.name, "sequence" to it.sequenceNo, "maxRetries" to it.maxRetries) },
+        "steps" to view.steps.map { mapOf(
+            "id" to it.stepKey,
+            "type" to it.stepType.name,
+            "sequence" to it.sequenceNo,
+            "maxRetries" to it.maxRetries,
+            "requiresApproval" to it.requiresApproval,
+        ) },
         "edges" to view.edges.map { mapOf("from" to it.sourceStepId.toString(), "to" to (it.targetStepId?.toString() ?: "finish")) },
     )
 

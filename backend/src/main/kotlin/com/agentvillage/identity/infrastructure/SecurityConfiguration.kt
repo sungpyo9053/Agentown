@@ -1,6 +1,7 @@
 package com.agentvillage.identity.infrastructure
 
 import com.agentvillage.identity.domain.UserStatus
+import com.agentvillage.common.domain.UserRole
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpMethod
@@ -32,8 +33,9 @@ data class AuthenticatedUser(
     private val userEmail: String,
     private val encodedPassword: String,
     private val active: Boolean,
+    val role: UserRole = UserRole.USER,
 ) : UserDetails, Serializable {
-    override fun getAuthorities() = listOf(SimpleGrantedAuthority("ROLE_USER"))
+    override fun getAuthorities() = listOf(SimpleGrantedAuthority("ROLE_${role.name}"))
     override fun getPassword() = encodedPassword
     override fun getUsername() = userEmail
     override fun isEnabled() = active
@@ -48,7 +50,7 @@ class SecurityConfiguration {
     fun userDetailsService(users: UserAccountRepository): UserDetailsService = UserDetailsService { email ->
         val user = users.findByEmailIgnoreCase(email)
             ?: throw UsernameNotFoundException("User not found")
-        AuthenticatedUser(user.id, user.email, user.passwordHash, user.status == UserStatus.ACTIVE)
+        AuthenticatedUser(user.id, user.email, user.passwordHash, user.status == UserStatus.ACTIVE, user.role)
     }
 
     @Bean

@@ -26,12 +26,17 @@ class AuthIntegrationTest : IntegrationTestSupport() {
             ),
         ).andExpect(status().isCreated)
             .andExpect(jsonPath("$.handle", equalTo("village")))
+            .andExpect(jsonPath("$.role", equalTo("USER")))
 
         val login = mvc.perform(
             post("/api/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(
                 """{"email":"village@example.com","password":"password123"}""",
             ),
         ).andExpect(status().isOk).andReturn()
+
+        mvc.perform(get("/api/auth/me").session(login.request.session as MockHttpSession))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.role", equalTo("USER")))
 
         mvc.perform(get("/api/mini-homes/me").session(login.request.session as MockHttpSession))
             .andExpect(status().isOk)

@@ -101,4 +101,72 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
         }
         assertThat(mapper.readTree(approvalBody)["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
     }
+
+    @Test
+    fun `review approval pauses before publisher and clone preserves approval step`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val user = identities.register(RegisterUserCommand("approval-$suffix@example.com", "password123", "approval_$suffix", "승인 검증"))
+        val principal = AuthenticatedUser(user.id, user.email, "unused", true)
+        fun postJson(path: String, json: String, vararg headers: Pair<String, String>) = mvc.perform(
+            post(path).with(user(principal)).with(csrf()).contentType(MediaType.APPLICATION_JSON).apply {
+                headers.forEach { header(it.first, it.second) }
+            }.content(json),
+        )
+        fun agent(name: String, role: String): String {
+            val response = postJson("/api/agents", """{
+              "name":"$name","role":"$role","characterKey":"writer","script":"입력을 처리한다",
+              "guide":"승인 계약을 지킨다","modelProvider":"OPENAI","modelName":"gpt-4o-mini","visibility":"PRIVATE"
+            }""").andExpect(status().isCreated).andReturn().response.contentAsString
+            return mapper.readTree(response)["id"].asText()
+        }
+        val reviewerId = agent("Reviewer", "검수자")
+        val publisherId = agent("Publisher", "발행자")
+        val harnessId = mapper.readTree(postJson("/api/harnesses", """{"name":"승인형 글쓰기 팀"}""")
+            .andExpect(status().isCreated).andReturn().response.contentAsString)["id"].asText()
+
+        postJson("/api/harnesses/$harnessId/connect", """{
+          "agentIds":["$reviewerId","$publisherId"],"approvalBeforeLast":true
+        }""").andExpect(status().isOk)
+            .andExpect(jsonPath("$.steps.length()").value(3))
+            .andExpect(jsonPath("$.steps[1].stepType").value("APPROVAL"))
+        postJson("/api/harnesses/$harnessId/validate", "{}").andExpect(status().isOk)
+            .andExpect(jsonPath("$.valid").value(true))
+        postJson("/api/harnesses/$harnessId/publish", "{}").andExpect(status().isOk)
+            .andExpect(jsonPath("$.snapshotJson.steps[1].type").value("APPROVAL"))
+        val cloneId = mapper.readTree(postJson("/api/harnesses/$harnessId/clone", "{}").andExpect(status().isOk)
+            .andReturn().response.contentAsString)["id"].asText()
+        mvc.perform(get("/api/harnesses/$cloneId").with(user(principal)))
+            .andExpect(status().isOk).andExpect(jsonPath("$.steps[1].stepType").value("APPROVAL"))
+
+        val executionId = mapper.readTree(postJson("/api/harnesses/$harnessId/executions", """{
+          "input":{"topic":"승인 경계"},"stubMode":true
+        }""", "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk)
+            .andReturn().response.contentAsString)["id"].asText()
+        queueWorker.poll()
+        var body = ""
+        repeat(40) {
+            Thread.sleep(100)
+            body = mvc.perform(get("/api/executions/$executionId").with(user(principal))).andReturn().response.contentAsString
+            if (mapper.readTree(body)["execution"]["status"].asText() == "WAITING_APPROVAL") return@repeat
+        }
+        val waiting = mapper.readTree(body)
+        assertThat(waiting["execution"]["status"].asText()).isEqualTo("WAITING_APPROVAL")
+        assertThat(waiting["steps"].count()).isEqualTo(2)
+        assertThat(waiting["steps"].last()["stepType"].asText()).isEqualTo("APPROVAL")
+        assertThat(waiting["steps"].none { it["stepKey"].asText() == "step-3" }).isTrue()
+
+        postJson("/api/executions/$executionId/approve", "{}").andExpect(status().isOk)
+        Thread.sleep(150)
+        queueWorker.poll()
+        repeat(40) {
+            Thread.sleep(100)
+            body = mvc.perform(get("/api/executions/$executionId").with(user(principal))).andReturn().response.contentAsString
+            if (mapper.readTree(body)["execution"]["status"].asText() == "SUCCEEDED") return@repeat
+        }
+        val completed = mapper.readTree(body)
+        assertThat(completed["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
+        assertThat(completed["steps"].count()).isEqualTo(3)
+        assertThat(executionService.history(UUID.fromString(executionId), user.id).map { it.eventType })
+            .containsSubsequence("WAITING_APPROVAL", "EXECUTION_QUEUED", "STEP_STARTED", "EXECUTION_COMPLETED")
+    }
 }

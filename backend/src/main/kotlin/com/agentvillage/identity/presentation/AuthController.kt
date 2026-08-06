@@ -4,6 +4,8 @@ import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
 import com.agentvillage.identity.application.UserIdentity
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
+import com.agentvillage.common.domain.UserRole
+import com.agentvillage.common.exception.UnauthorizedException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
@@ -13,6 +15,7 @@ import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
 import org.springframework.http.HttpStatus
 import org.springframework.security.authentication.AuthenticationManager
+import org.springframework.security.core.AuthenticationException
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.security.core.context.SecurityContextHolder
@@ -42,10 +45,11 @@ data class AuthResponse(
     val email: String,
     val handle: String,
     val displayName: String,
+    val role: UserRole,
 ) {
     companion object {
         fun from(identity: UserIdentity) = AuthResponse(
-            identity.id.toString(), identity.email, identity.handle, identity.displayName,
+            identity.id.toString(), identity.email, identity.handle, identity.displayName, identity.role,
         )
     }
 }
@@ -73,9 +77,13 @@ class AuthController(
         request: HttpServletRequest,
         response: HttpServletResponse,
     ): AuthResponse {
-        val authentication = authenticationManager.authenticate(
-            UsernamePasswordAuthenticationToken.unauthenticated(body.email, body.password),
-        )
+        val authentication = try {
+            authenticationManager.authenticate(
+                UsernamePasswordAuthenticationToken.unauthenticated(body.email, body.password),
+            )
+        } catch (_: AuthenticationException) {
+            throw UnauthorizedException("INVALID_CREDENTIALS", "이메일 또는 비밀번호가 올바르지 않습니다.")
+        }
         request.changeSessionIdIfPresent()
         val context = SecurityContextHolder.createEmptyContext().also { it.authentication = authentication }
         SecurityContextHolder.setContext(context)
@@ -95,4 +103,3 @@ class AuthController(
 private fun HttpServletRequest.changeSessionIdIfPresent() {
     if (getSession(false) != null) changeSessionId() else getSession(true)
 }
-

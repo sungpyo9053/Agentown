@@ -18,7 +18,11 @@ import java.util.zip.ZipOutputStream
 data class SaveHarnessRequest(@field:NotBlank @field:Size(max = 100) val name: String,
                               @field:Size(max = 1000) val description: String? = null,
                               val visibility: Visibility = Visibility.PRIVATE)
-data class ConnectHarnessRequest(val agentIds: List<UUID>, val approvalAfterLast: Boolean = false)
+data class ConnectHarnessRequest(
+    val agentIds: List<UUID>,
+    val approvalAfterLast: Boolean = false,
+    val approvalBeforeLast: Boolean = false,
+)
 
 @RestController @RequestMapping("/api/harnesses")
 class HarnessController(private val service: HarnessService, private val mapper: ObjectMapper) {
@@ -29,7 +33,8 @@ class HarnessController(private val service: HarnessService, private val mapper:
     @PatchMapping("/{id}") fun update(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @Valid @RequestBody r: SaveHarnessRequest) = service.update(id, p.userId, r.name, r.description, r.visibility)
     @DeleteMapping("/{id}") @ResponseStatus(HttpStatus.NO_CONTENT)
     fun delete(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.delete(id, p.userId)
-    @PostMapping("/{id}/connect") fun connect(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @RequestBody r: ConnectHarnessRequest) = service.connect(id, p.userId, r.agentIds, r.approvalAfterLast)
+    @PostMapping("/{id}/connect") fun connect(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @RequestBody r: ConnectHarnessRequest) =
+        service.connect(id, p.userId, r.agentIds, r.approvalAfterLast, r.approvalBeforeLast)
     @PostMapping("/{id}/validate") fun validate(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.validate(id, p.userId)
     @PostMapping("/{id}/publish") fun publish(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.publish(id, p.userId)
     @PostMapping("/{id}/clone") fun clone(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.clone(id, p.userId)

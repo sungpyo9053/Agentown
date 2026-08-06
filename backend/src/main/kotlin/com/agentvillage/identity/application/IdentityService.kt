@@ -69,6 +69,5 @@ class IdentityService(
     }
 
     private fun UserAccount.toIdentity(profile: Profile) =
-        UserIdentity(id = id, email = email, handle = handle, displayName = profile.displayName)
+        UserIdentity(id = id, email = email, handle = handle, displayName = profile.displayName, role = role)
 }
-

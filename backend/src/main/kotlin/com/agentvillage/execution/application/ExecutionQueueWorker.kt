@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
@@ -60,7 +61,9 @@ class ExecutionProcessor(
                     provider = agent?.provider?.name, model = agent?.model))
                 service.record(id, "STEP_STARTED", agent?.id, mapOf("stepKey" to step.stepKey, "type" to step.stepType.name))
                 if (step.stepType == HarnessStepType.APPROVAL) {
-                    execution.status = ExecutionStatus.WAITING_APPROVAL; executionStep.status = StepStatus.WAITING_APPROVAL
+                    execution.status = ExecutionStatus.WAITING_APPROVAL
+                    executionStep.status = StepStatus.WAITING_APPROVAL
+                    executionStep.outputJson = current
                     executions.save(execution); executionSteps.save(executionStep)
                     service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return
                 }
@@ -72,9 +75,9 @@ class ExecutionProcessor(
                         HarnessStepType.APPROVAL -> error("Approval step must be handled before execution")
                     }}
                 }
-                executionStep.outputJson = output; executionStep.status = StepStatus.SUCCEEDED; executionStep.finishedAt = Instant.now()
+                current = current + mapOf(step.stepKey to output) + output
+                executionStep.outputJson = current; executionStep.status = StepStatus.SUCCEEDED; executionStep.finishedAt = Instant.now()
                 executionSteps.save(executionStep)
-                current = output
                 service.record(id, "STEP_OUTPUT_CREATED", agent?.id, mapOf("stepKey" to step.stepKey))
                 service.record(id, "STEP_COMPLETED", agent?.id, mapOf("stepKey" to step.stepKey))
                 if (step.requiresApproval) { execution.status = ExecutionStatus.WAITING_APPROVAL; executions.save(execution); service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return }
@@ -109,7 +112,7 @@ class ExecutionProcessor(
     private fun executeLlm(execution: Execution, agent: com.agentvillage.agent.application.AgentDescriptor,
                            input: Map<String, Any>, stubMode: Boolean, step: ExecutionStep): Map<String, Any> {
         service.record(execution.id, "MODEL_REQUEST_SENT", agent.id, mapOf("provider" to agent.provider.name, "model" to agent.model))
-        val response = if (stubMode) AiModelResponse("stub:${input.values.joinToString(" ")}", TokenUsage(1, 1), "stub-request") else {
+        val response = if (stubMode) AiModelResponse(stubContent(agent, input), TokenUsage(1, 1), "stub-request") else {
             val credentialId = requireNotNull(agent.credentialId)
             credentials.withDecrypted(credentialId, execution.ownerId, agent.provider) { secret, options ->
                 DecryptedCredential(agent.provider, secret, options).use { credential -> gateways.get(agent.provider).execute(credential,
@@ -119,7 +122,73 @@ class ExecutionProcessor(
         step.inputTokens = response.tokenUsage.inputTokens; step.outputTokens = response.tokenUsage.outputTokens
         step.estimatedCost = BigDecimal.ZERO; step.providerRequestId = response.providerRequestId
         executionSteps.save(step)
-        return mapOf("result" to response.content)
+        return mapOf("result" to response.content, "stub" to stubMode, "agent" to agent.name)
+    }
+
+    private fun stubContent(agent: com.agentvillage.agent.application.AgentDescriptor, input: Map<String, Any>): String {
+        val topic = input["topic"]?.toString() ?: "Agentown 글쓰기 하네스 검증"
+        val identity = "${agent.name} ${agent.role}".lowercase()
+        return when {
+            "planner" in identity || "기획" in identity || "편집장" in identity -> """
+                # Topic Selection (STUB)
+                - selected_topic: $topic
+                - category: Harness Engineering
+                - content_type: build_log_operations
+                - verification_mode: controlled_stub
+                - external_write: false
+            """.trimIndent()
+            "research" in identity || "리서치" in identity || "조사" in identity -> """
+                # Research (STUB)
+                - topic: $topic
+                - verification_mode: not_directly_tested
+                - evidence: Agentown 내부 Stub 실행 이벤트와 테스트 결과만 사용
+                - limitations: 웹 검색과 외부 출처 확인은 수행하지 않았으므로 실제 발행용 근거로 사용할 수 없음
+                - external_write: false
+            """.trimIndent()
+            "writer" in identity || "작가" in identity || "작성" in identity -> """
+                ---
+                title: "$topic"
+                category: "Harness Engineering"
+                status: "stub-draft"
+                ---
+
+                # $topic
+
+                ## 20초 요약
+
+                이 문서는 Agentown의 선언형 글쓰기 하네스가 단계별 결과를 전달하는지 확인하기 위한 Stub 초안이다. 외부 조사나 실제 발행은 수행하지 않았다.
+
+                ## 검증 범위
+
+                Queue 실행, 에이전트 순서, Reviewer 승인 대기, 승인 뒤 Publisher 재개만 검증한다.
+
+                ## 한계
+
+                실제 LLM과 웹 리서치를 사용하지 않았으므로 콘텐츠 품질과 사실 정확성은 검증 대상이 아니다.
+            """.trimIndent()
+            "review" in identity || "검수" in identity -> {
+                val digest = MessageDigest.getInstance("SHA-256")
+                    .digest(input.toString().toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+                """
+                    # Review Record (STUB)
+                    - status: APPROVED_STUB
+                    - content_sha256: $digest
+                    - approval_scope: orchestration_test_only
+                    - publish_allowed: false
+                    - reason: 외부 근거가 없는 Stub 초안이므로 실제 WordPress 발행은 금지
+                """.trimIndent()
+            }
+            "publish" in identity || "발행" in identity -> """
+                # Publish Result (STUB)
+                - status: DRAFT_READY
+                - validation: reviewer_approval_received
+                - wordpress_request_sent: false
+                - external_write: false
+                - result: Agentown 내부 실행 경로 검증 완료. 실제 발행에는 BYOK와 새 Reviewer 승인이 필요함.
+            """.trimIndent()
+            else -> "[STUB] ${agent.name} 단계 완료: 외부 호출 및 외부 쓰기 없음"
+        }
     }
 }
 
