@@ -20,8 +20,8 @@ class UserAccount(
     @Id
     val id: UUID = UUID.randomUUID(),
 
-    @Column(nullable = false, unique = true, length = 320)
-    var email: String,
+    @Column(unique = true, length = 320)
+    var email: String? = null,
 
     @Column(name = "password_hash", nullable = false, length = 100)
     var passwordHash: String,
@@ -36,6 +36,15 @@ class UserAccount(
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     var role: UserRole = UserRole.USER,
+
+    @Column(name = "phone_hash", unique = true, length = 64)
+    var phoneHash: String? = null,
+
+    @Column(name = "phone_masked", length = 20)
+    var phoneMasked: String? = null,
+
+    @Column(name = "phone_verified_at")
+    var phoneVerifiedAt: java.time.Instant? = null,
 ) : AuditedEntity()
 
 @Entity

@@ -20,4 +20,7 @@ interface ProductLikeRepository : JpaRepository<ProductLike, ProductLikeId> { fu
  @Transactional fun clone(id: UUID,userId: UUID): Any { val p=get(id); val h=harnesses.clone(harnesses.latestPublishedId(p.harnessVersionId),userId); p.cloneCount++; return h }
  @Transactional fun like(id:UUID,userId:UUID): MarketProduct { val p=get(id); if(!likes.existsByProductIdAndUserId(id,userId)){likes.save(ProductLike(id,userId));p.likeCount++};return p }
  @Transactional fun unlike(id:UUID,userId:UUID){val p=get(id);if(likes.existsByProductIdAndUserId(id,userId)){likes.deleteByProductIdAndUserId(id,userId);p.likeCount=(p.likeCount-1).coerceAtLeast(0)}}
+ @Transactional(readOnly=true) fun adminList() = products.findAll(Sort.by(Sort.Direction.DESC, "createdAt"))
+ @Transactional fun setOfficial(id:UUID, official:Boolean): MarketProduct { val product=get(id); product.official=official; return product }
+ @Transactional fun adminDelete(id:UUID) { val product=get(id); products.delete(product) }
 }

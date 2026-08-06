@@ -14,11 +14,16 @@ import java.util.Locale
 import java.util.UUID
 
 data class RegisterUserCommand(
-    val email: String,
+    val email: String?,
     val password: String,
     val handle: String,
     val displayName: String,
+    val phoneHash: String? = null,
+    val phoneMasked: String? = null,
+    val phoneVerifiedAt: java.time.Instant? = null,
 )
+
+data class AccountAvailability(val handleAvailable: Boolean?)
 
 @Service
 class IdentityService(
@@ -27,15 +32,23 @@ class IdentityService(
     private val passwordEncoder: PasswordEncoder,
     private val events: ApplicationEventPublisher,
 ) : UserDirectory {
+    @Transactional(readOnly = true)
+    fun availability(handle: String?): AccountAvailability = AccountAvailability(
+        handleAvailable = handle?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }?.let { !users.existsByHandle(it) },
+    )
+
     @Transactional
     fun register(command: RegisterUserCommand): UserIdentity {
-        val email = command.email.trim().lowercase(Locale.ROOT)
+        val email = command.email?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }
         val handle = command.handle.trim().lowercase(Locale.ROOT)
-        if (users.existsByEmailIgnoreCase(email)) {
+        if (email != null && users.existsByEmailIgnoreCase(email)) {
             throw ConflictException("EMAIL_ALREADY_USED", "이미 사용 중인 이메일입니다.")
         }
         if (users.existsByHandle(handle)) {
-            throw ConflictException("HANDLE_ALREADY_USED", "이미 사용 중인 핸들입니다.")
+            throw ConflictException("HANDLE_ALREADY_USED", "이미 사용 중인 아이디입니다.")
+        }
+        if (command.phoneHash != null && users.findByPhoneHash(command.phoneHash) != null) {
+            throw ConflictException("PHONE_ALREADY_USED", "이미 가입된 휴대폰 번호입니다.")
         }
 
         val user = users.save(
@@ -43,6 +56,9 @@ class IdentityService(
                 email = email,
                 passwordHash = passwordEncoder.encode(command.password),
                 handle = handle,
+                phoneHash = command.phoneHash,
+                phoneMasked = command.phoneMasked,
+                phoneVerifiedAt = command.phoneVerifiedAt,
             ),
         )
         val profile = profiles.save(Profile(userId = user.id, displayName = command.displayName.trim()))
@@ -69,5 +85,5 @@ class IdentityService(
     }
 
     private fun UserAccount.toIdentity(profile: Profile) =
-        UserIdentity(id = id, email = email, handle = handle, displayName = profile.displayName, role = role)
+        UserIdentity(id = id, email = email.orEmpty(), handle = handle, displayName = profile.displayName, role = role)
 }

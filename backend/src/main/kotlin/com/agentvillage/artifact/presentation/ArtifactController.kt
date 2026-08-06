@@ -12,6 +12,10 @@ import java.util.UUID
 
 @RestController @RequestMapping("/api/artifacts")
 class ArtifactController(private val service: ArtifactService) {
+    @GetMapping fun list(
+        @AuthenticationPrincipal p: AuthenticatedUser,
+        @RequestParam executionId: UUID,
+    ) = service.listOwned(executionId, p.userId)
     @GetMapping("/{id}") fun get(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.requireOwned(id, p.userId)
     @GetMapping("/{id}/download") fun download(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID): ResponseEntity<Void> {
         val a = service.requireOwned(id, p.userId)

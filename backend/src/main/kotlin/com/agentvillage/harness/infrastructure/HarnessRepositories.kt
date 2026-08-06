@@ -7,6 +7,8 @@ import java.util.UUID
 interface HarnessRepository : JpaRepository<Harness, UUID> {
     fun findByIdAndOwnerId(id: UUID, ownerId: UUID): Harness?
     fun findAllByOwnerIdOrderByCreatedAtDesc(ownerId: UUID): List<Harness>
+    fun findTop100ByOrderByCreatedAtDesc(): List<Harness>
+    fun countByStatus(status: HarnessStatus): Long
 }
 interface HarnessStepRepository : JpaRepository<HarnessStep, UUID> {
     fun findAllByHarnessIdOrderBySequenceNo(harnessId: UUID): List<HarnessStep>

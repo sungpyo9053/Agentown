@@ -3,13 +3,13 @@ package com.agentvillage.identity.presentation
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
 import com.agentvillage.identity.application.UserIdentity
+import com.agentvillage.identity.application.PhoneAuthService
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import com.agentvillage.common.domain.UserRole
 import com.agentvillage.common.exception.UnauthorizedException
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
-import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
@@ -29,16 +29,21 @@ import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 data class SignupRequest(
-    @field:Email @field:NotBlank val email: String,
     @field:Size(min = 8, max = 72) val password: String,
     @field:Pattern(regexp = "^[a-z0-9_]{3,30}$") val handle: String,
     @field:Size(min = 1, max = 40) val displayName: String,
+    @field:NotBlank val phone: String,
+    val phoneVerificationId: java.util.UUID,
 )
 
 data class LoginRequest(
-    @field:Email @field:NotBlank val email: String,
+    @field:NotBlank val loginId: String,
     @field:NotBlank val password: String,
 )
+
+data class SendPhoneCodeRequest(@field:NotBlank val phone: String)
+data class VerifyPhoneCodeRequest(val verificationId: java.util.UUID, @field:Pattern(regexp = "^[0-9]{6}$") val code: String)
+data class TemporaryPasswordRequest(@field:NotBlank val loginId: String, @field:NotBlank val phone: String)
 
 data class AuthResponse(
     val id: String,
@@ -59,17 +64,28 @@ data class AuthResponse(
 class AuthController(
     private val identities: IdentityService,
     private val authenticationManager: AuthenticationManager,
+    private val phoneAuth: PhoneAuthService,
 ) {
     private val securityContextRepository = HttpSessionSecurityContextRepository()
 
     @PostMapping("/signup")
     @ResponseStatus(HttpStatus.CREATED)
-    fun signup(@Valid @RequestBody request: SignupRequest): AuthResponse =
-        AuthResponse.from(
-            identities.register(
-                RegisterUserCommand(request.email, request.password, request.handle, request.displayName),
+    fun signup(@Valid @RequestBody request: SignupRequest): AuthResponse {
+        val verified = phoneAuth.requireVerified(request.phoneVerificationId, request.phone)
+        val identity = identities.register(
+            RegisterUserCommand(
+                email = null,
+                password = request.password,
+                handle = request.handle,
+                displayName = request.displayName,
+                phoneHash = verified.hash,
+                phoneMasked = verified.masked,
+                phoneVerifiedAt = verified.verifiedAt,
             ),
         )
+        phoneAuth.consume(request.phoneVerificationId)
+        return AuthResponse.from(identity)
+    }
 
     @PostMapping("/login")
     fun login(
@@ -79,10 +95,10 @@ class AuthController(
     ): AuthResponse {
         val authentication = try {
             authenticationManager.authenticate(
-                UsernamePasswordAuthenticationToken.unauthenticated(body.email, body.password),
+                UsernamePasswordAuthenticationToken.unauthenticated(body.loginId, body.password),
             )
         } catch (_: AuthenticationException) {
-            throw UnauthorizedException("INVALID_CREDENTIALS", "이메일 또는 비밀번호가 올바르지 않습니다.")
+            throw UnauthorizedException("INVALID_CREDENTIALS", "아이디 또는 비밀번호가 올바르지 않습니다.")
         }
         request.changeSessionIdIfPresent()
         val context = SecurityContextHolder.createEmptyContext().also { it.authentication = authentication }
@@ -91,6 +107,23 @@ class AuthController(
         val principal = authentication.principal as AuthenticatedUser
         return AuthResponse.from(identities.require(principal.userId))
     }
+
+    @GetMapping("/availability")
+    fun availability(
+        @org.springframework.web.bind.annotation.RequestParam(required = false) handle: String?,
+    ) = identities.availability(handle)
+
+    @PostMapping("/phone/send-code")
+    fun sendPhoneCode(@Valid @RequestBody request: SendPhoneCodeRequest) = phoneAuth.sendCode(request.phone)
+
+    @PostMapping("/phone/verify-code")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun verifyPhoneCode(@Valid @RequestBody request: VerifyPhoneCodeRequest) =
+        phoneAuth.verify(request.verificationId, request.code)
+
+    @PostMapping("/password/temporary")
+    fun issueTemporaryPassword(@Valid @RequestBody request: TemporaryPasswordRequest) =
+        phoneAuth.issueTemporaryPassword(request.loginId, request.phone)
 
     @GetMapping("/me")
     fun me(@AuthenticationPrincipal principal: AuthenticatedUser): AuthResponse =

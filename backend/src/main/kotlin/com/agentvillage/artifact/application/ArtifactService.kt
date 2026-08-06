@@ -12,9 +12,16 @@ import java.net.URI
 import java.time.Instant
 import java.util.UUID
 
-interface ArtifactRepository : JpaRepository<Artifact, UUID> { fun findByIdAndOwnerUserId(id: UUID, ownerUserId: UUID): Artifact? }
+interface ArtifactRepository : JpaRepository<Artifact, UUID> {
+    fun findByIdAndOwnerUserId(id: UUID, ownerUserId: UUID): Artifact?
+    fun findAllByExecutionIdAndOwnerUserIdOrderByCreatedAtDesc(executionId: UUID, ownerUserId: UUID): List<Artifact>
+}
 @Service
 class ArtifactService(private val artifacts: ArtifactRepository) {
+    @Transactional(readOnly = true)
+    fun listOwned(executionId: UUID, userId: UUID): List<Artifact> =
+        artifacts.findAllByExecutionIdAndOwnerUserIdOrderByCreatedAtDesc(executionId, userId)
+
     @Transactional(readOnly = true) fun requireOwned(id: UUID, userId: UUID): Artifact {
         val a = artifacts.findByIdAndOwnerUserId(id, userId) ?: throw NotFoundException("ARTIFACT_NOT_FOUND", "결과물을 찾을 수 없습니다.")
         if (a.expiresAt?.isBefore(Instant.now()) == true) { a.status = ArtifactStatus.EXPIRED; throw BadRequestException("ARTIFACT_URL_EXPIRED", "다운로드 URL이 만료되었습니다.") }

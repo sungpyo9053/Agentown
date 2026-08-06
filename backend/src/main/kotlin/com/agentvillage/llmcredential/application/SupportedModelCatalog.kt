@@ -10,6 +10,9 @@ data class SupportedModel(val id: String, val displayName: String)
 class SupportedModelCatalog {
     private val models = mapOf(
         LlmProvider.OPENAI to listOf(
+            SupportedModel("gpt-5.6-sol", "Codex/OpenAI · GPT-5.6 Sol"),
+            SupportedModel("gpt-5.6-terra", "Codex/OpenAI · GPT-5.6 Terra"),
+            SupportedModel("gpt-5.6-luna", "Codex/OpenAI · GPT-5.6 Luna"),
             SupportedModel("gpt-5", "GPT-5"),
             SupportedModel("gpt-5-mini", "GPT-5 mini"),
             SupportedModel("gpt-4.1", "GPT-4.1"),

@@ -30,24 +30,35 @@ abstract class JsonAiModelGateway(
 class OpenAiModelGateway(builder: RestClient.Builder) :
     JsonAiModelGateway(LlmProvider.OPENAI, builder.baseUrl("https://api.openai.com").build()) {
     override fun execute(credential: DecryptedCredential, request: AiModelRequest): AiModelResponse {
-        val messages = buildList {
-            request.systemPrompt?.let { add(mapOf("role" to "system", "content" to it)) }
-            add(mapOf("role" to "user", "content" to request.input))
+        val body = linkedMapOf<String, Any>().apply {
+            putAll(request.providerOptions.filterKeys { it !in openAiReservedFields })
+            put("model", request.model)
+            put("input", request.input)
+            request.systemPrompt?.let { put("instructions", it) }
+            put("max_output_tokens", request.maxOutputTokens)
+            if (request.model.startsWith("gpt-4")) put("temperature", request.temperature)
         }
-        val body = linkedMapOf<String, Any>(
-            "model" to request.model, "messages" to messages, "temperature" to request.temperature,
-            "max_tokens" to request.maxOutputTokens,
-        ).apply { putAll(request.providerOptions) }
-        val response = client.post().uri("/v1/chat/completions")
+        val response = client.post().uri("/v1/responses")
             .header(HttpHeaders.AUTHORIZATION, "Bearer ${String(credential.secret)}")
             .body(body).retrieve().body(Map::class.java) ?: emptyMap<Any, Any>()
-        val choice = map(list(response["choices"]).firstOrNull())
         val usage = map(response["usage"])
+        val content = response["output_text"]?.toString()?.takeIf(String::isNotBlank)
+            ?: list(response["output"]).asSequence()
+                .map(::map)
+                .flatMap { list(it["content"]).asSequence() }
+                .map(::map)
+                .filter { it["type"]?.toString() == "output_text" }
+                .mapNotNull { it["text"]?.toString() }
+                .joinToString("")
         return AiModelResponse(
-            map(choice["message"])["content"]?.toString().orEmpty(),
-            TokenUsage(number(usage["prompt_tokens"]), number(usage["completion_tokens"])),
+            content,
+            TokenUsage(number(usage["input_tokens"]), number(usage["output_tokens"])),
             response["id"]?.toString(),
         )
+    }
+
+    companion object {
+        private val openAiReservedFields = setOf("model", "input", "instructions", "max_output_tokens", "temperature", "messages", "max_tokens")
     }
 }
 
@@ -109,4 +120,3 @@ class AiModelGatewayConfiguration {
     @Bean
     fun aiModelGatewayRegistry(gateways: List<AiModelGateway>) = AiModelGatewayRegistry(gateways)
 }
-

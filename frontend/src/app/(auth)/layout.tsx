@@ -1,4 +1,5 @@
-export default function AuthLayout({ children }: { children: React.ReactNode }) {
-  return <main className="mx-auto flex min-h-[calc(100vh-100px)] max-w-md items-center px-6 py-12">{children}</main>;
-}
+import Link from "next/link";
 
+export default function AuthLayout({ children }: { children: React.ReactNode }) {
+  return <><header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6"><Link href="/" className="text-xl font-black">Agent Village</Link><Link href="/" className="text-sm font-bold">서비스 소개</Link></header><main className="mx-auto flex min-h-[calc(100vh-100px)] max-w-md items-center px-6 py-12">{children}</main></>;
+}

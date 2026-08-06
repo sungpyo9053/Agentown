@@ -2,6 +2,7 @@ package com.agentvillage.execution.application
 
 import com.agentvillage.agent.application.AgentDirectory
 import com.agentvillage.common.exception.ConflictException
+import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.execution.domain.*
 import com.agentvillage.execution.infrastructure.*
@@ -61,6 +62,9 @@ class ExecutionService(
     }
     @Transactional(readOnly = true) fun history(id: UUID, ownerId: UUID): List<ExecutionEvent> { requireOwned(id, ownerId); return events.findAllByExecutionIdOrderBySequenceNo(id) }
     fun subscribe(id: UUID, ownerId: UUID) = stream.subscribe(id, history(id, ownerId))
+    @Transactional(readOnly = true)
+    fun result(id: UUID, ownerId: UUID): Map<String, Any> = requireOwned(id, ownerId).outputJson
+        ?: throw BadRequestException("EXECUTION_RESULT_NOT_READY", "아직 다운로드할 실행 결과가 없습니다.")
     fun requireOwned(id: UUID, ownerId: UUID) = executions.findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
     fun record(executionId: UUID, type: String, agentId: UUID?, payload: Map<String, Any>): ExecutionEvent {
         val event = events.save(ExecutionEvent(executionId = executionId, sequenceNo = events.countByExecutionId(executionId) + 1, eventType = type, agentId = agentId, payload = payload))

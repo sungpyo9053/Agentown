@@ -2,7 +2,17 @@
 
 ## 목표
 
-`SPEC.md`를 단일 기준으로 선언형 하네스 제작부터 로컬 실행, 공유까지 이어지는 MVP를 제공한다. 별도 Worker 서버 없이 Spring Boot 프로세스 안의 Coroutine Worker를 사용한다.
+`SPEC.md`를 단일 기준으로 질문형 AI 회사 설계부터 웹 실행, 공유와 로컬 CLI 호환 내보내기까지 이어지는 MVP를 제공한다. 실제 블로그 운영 하네스의 구조를 범용 설계 기준으로 사용하며 별도 Worker 서버 없이 Spring Boot 프로세스 안의 Coroutine Worker를 사용한다.
+
+## 최상위 제품 흐름
+
+1. 사용자가 회사 목적, 입력, 결과, 근거, 금지사항과 승인 조건에 답한다.
+2. 사용자가 연결한 OpenAI 또는 Anthropic BYOK 자격증명과 설계 모델을 선택한다.
+3. 설계 모델이 최대 5개 구성원, 가이드, 스키마와 순차 실행 초안을 생성한다.
+4. 서버 검증기가 구조·안전·단계·재시도 제한을 검사한다.
+5. 사용자가 미리보기를 승인하면 Agent와 Harness를 자신의 회사에 저장한다.
+6. 웹에서는 Provider API로 실행하고 SSE 이벤트를 캐릭터 상태와 연결한다.
+7. 내려받기에는 Codex용 `AGENTS.md`, Claude Code용 `CLAUDE.md`와 공통 선언형 파일을 포함한다.
 
 ## 저장소 구성
 
@@ -57,6 +67,17 @@
 - 하네스 스냅샷용 비밀정보 제거 정책 테스트
 
 완료 기준: DB에 평문 키가 없고 다른 사용자 자격증명 연결 및 provider 불일치가 차단되며, 자격증명 삭제/폐기 후 실행 전 검증이 실패한다.
+
+### 3B. AI 회사 설계기
+
+- 질문형 `CompanyDesignRequest`와 구조화 `CompanyDesignDraft`
+- Stub 설계기와 OpenAI/Anthropic Provider API 설계기
+- 사용자 소유 ACTIVE Credential 및 Provider·Model 일치 검증
+- 최대 5개 Agent, 순차 실행, 제한된 재시도, 금지 작업 검사
+- 초안 미리보기 후 승인 시 Agent·Definition·Harness 일괄 생성
+- 설계 단계와 저장 단계를 분리해 LLM 출력을 그대로 영속·실행하지 않음
+
+완료 기준: API 키 없이 Stub으로 전체 설계·승인을 통합 테스트할 수 있고, 실제 경로는 사용자의 ACTIVE 자격증명이 없으면 시작되지 않는다.
 
 ### 4. 회사형 미니홈 Web UI
 

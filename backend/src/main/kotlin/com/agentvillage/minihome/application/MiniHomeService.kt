@@ -42,7 +42,7 @@ class MiniHomeService(
     @Transactional
     fun provision(event: UserRegistered) {
         if (homes.findByUserId(event.userId) == null) {
-            homes.save(MiniHome(userId = event.userId, title = "${event.displayName}의 AI 마을"))
+            homes.save(MiniHome(userId = event.userId, title = "${event.displayName}의 AI 회사"))
         }
     }
 

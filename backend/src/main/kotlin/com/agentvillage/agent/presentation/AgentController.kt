@@ -122,6 +122,10 @@ data class GenerateDefinitionRequest(
     @field:Size(max = 10_000) val prohibitions: String = "",
     val inputSchema: Map<String, Any>? = null,
     val outputSchema: Map<String, Any>? = null,
+    @field:Size(max = 10_000) val requiredEvidence: String = "",
+    @field:Size(max = 10_000) val outputStyle: String = "",
+    @field:Size(max = 10_000) val rewriteCriteria: String = "",
+    @field:Size(max = 10_000) val approvalCriteria: String = "",
 )
 
 @RestController
@@ -133,7 +137,15 @@ class AgentDefinitionController(private val definitions: AgentDefinitionService)
         @PathVariable id: UUID,
         @Valid @RequestBody request: GenerateDefinitionRequest,
     ) = definitions.generate(id, principal.userId, GenerateDefinitionCommand(
-        request.taskDescription, request.desiredOutput, request.prohibitions, request.inputSchema, request.outputSchema,
+        request.taskDescription,
+        request.desiredOutput,
+        request.prohibitions,
+        request.inputSchema,
+        request.outputSchema,
+        request.requiredEvidence,
+        request.outputStyle,
+        request.rewriteCriteria,
+        request.approvalCriteria,
     ))
 
     @GetMapping("/{id}/definition")

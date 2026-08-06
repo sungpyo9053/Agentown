@@ -13,6 +13,10 @@ data class GenerateDefinitionCommand(
     val prohibitions: String,
     val inputSchema: Map<String, Any>?,
     val outputSchema: Map<String, Any>?,
+    val requiredEvidence: String = "",
+    val outputStyle: String = "",
+    val rewriteCriteria: String = "",
+    val approvalCriteria: String = "",
 )
 
 @Service
@@ -28,6 +32,16 @@ class AgentDefinitionService(
         val prohibitions = command.prohibitions.trim().ifEmpty { "확인되지 않은 사실을 단정하거나 비밀정보를 출력하지 않는다." }
         val task = command.taskDescription.trim().ifEmpty { agent.script }
         val desired = command.desiredOutput.trim().ifEmpty { "${agent.role} 역할에 맞는 검증 가능한 결과물" }
+        val evidence = command.requiredEvidence.trim().ifEmpty {
+            "결과에 사용한 근거와 직접 확인한 범위를 구분하고, 확인하지 못한 내용은 미검증으로 표시한다."
+        }
+        val outputStyle = command.outputStyle.trim().ifEmpty { "독자가 바로 사용할 수 있도록 제목과 항목을 나눈 구조화된 문서" }
+        val rewriteCriteria = command.rewriteCriteria.trim().ifEmpty {
+            "필수 입력 누락, 근거 없는 주장, 출력 형식 불일치 또는 사용자의 질문에 답하지 못한 경우"
+        }
+        val approvalCriteria = command.approvalCriteria.trim().ifEmpty {
+            "요청한 결과가 모두 포함되고, 근거와 미검증 범위가 구분되며, 출력 스키마를 만족한 경우"
+        }
         val agentMd = """# ${agent.name}
 
 ## 역할
@@ -68,6 +82,7 @@ ${agent.guide ?: "입력 의도를 먼저 확인하고 단계별로 결과를 �
 - 출력 스키마 준수
 - 핵심 주장과 결과의 일관성 확인
 - 불확실한 내용은 명시
+- 필수 근거: $evidence
 
 ## 금지사항
 $prohibitions
@@ -76,13 +91,13 @@ $prohibitions
 근거 없는 사실을 만들지 않으며 출처가 없으면 추정임을 표시한다.
 
 ## 출력 스타일
-간결하고 구조화된 결과를 반환한다.
+$outputStyle
 
 ## 재작성 기준
-스키마 불일치 또는 품질 기준 미달일 때만 제한된 횟수로 재작성한다.
+$rewriteCriteria
 
 ## 승인 기준
-완료 조건과 출력 스키마를 모두 충족하면 승인한다.
+$approvalCriteria
 """.trimIndent()
         val existing = definitions.findById(agentId).orElse(null)
         val definition = existing?.apply {

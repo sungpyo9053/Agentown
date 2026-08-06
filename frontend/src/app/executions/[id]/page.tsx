@@ -13,6 +13,7 @@ type ExecutionView = {execution:Execution;steps:{id:string;stepKey:string;status
 type EventItem = {id:string;sequenceNo:number;eventType:string;agentId?:string;payload:Record<string,unknown>;createdAt:string};
 type HarnessView = {harness:{id:string;name:string};steps:{id:string;stepKey:string;agentId?:string;sequenceNo:number}[]};
 type Home = {title:string;backgroundKey:string;items:OfficeRoomItem[]};
+type Artifact = {id:string;type:string;fileName:string;mimeType:string;expiresAt?:string;status:string};
 
 export default function Page({params}:{params:Promise<{id:string}>}) {
   const [id,setId]=useState("");
@@ -24,6 +25,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   const harness=useQuery({queryKey:["harness",harnessId],queryFn:()=>api<HarnessView>(`/harnesses/${harnessId}`),enabled:!!harnessId});
   const agents=useQuery({queryKey:["agents"],queryFn:()=>api<OfficeAgent[]>("/agents")});
   const home=useQuery({queryKey:["home"],queryFn:()=>api<Home>("/mini-homes/me")});
+  const artifacts=useQuery({queryKey:["artifacts",id],queryFn:()=>api<Artifact[]>(`/artifacts?executionId=${id}`),enabled:!!id&&execution.data?.execution.status==="SUCCEEDED"});
   useEffect(()=>{if(history.data)setEvents(history.data)},[history.data]);
   useEffect(()=>{if(execution.data)history.refetch()},[execution.data?.execution.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -58,7 +60,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
         {execution.data?.execution.errorCode&&<div className="rounded-3xl bg-red-50 p-5 text-red-700"><b>{execution.data.execution.errorCode}</b><p className="mt-2 text-sm">{execution.data.execution.errorMessage}</p></div>}
       </aside>
     </div>
-    {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><h2 className="text-xl font-black">최종 결과</h2><div className="mt-5 grid gap-6 lg:grid-cols-[1fr_340px]">{result.article&&<div><span className="rounded-full bg-cream px-3 py-1 text-xs font-black">글 초안</span><MarkdownResult content={result.article}/></div>}{result.publish&&<div className="rounded-2xl bg-emerald-50 p-5"><b className="text-leaf">발행 검증</b><MarkdownResult content={result.publish}/></div>}</div><details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
+    {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black text-coral">PRIVATE RESULT</p><h2 className="text-xl font-black">내 실행 결과물</h2></div><div className="flex flex-wrap gap-2"><a href={`/api/executions/${id}/download?format=markdown`} className="rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">글 .md 다운로드</a><a href={`/api/executions/${id}/download?format=json`} className="rounded-full border px-4 py-2 text-sm font-bold">전체 .json 다운로드</a></div></div><p className="mt-2 text-xs text-stone-500">이 결과는 실행한 계정만 조회하고 내려받을 수 있습니다.</p><div className="mt-5 grid gap-6 lg:grid-cols-[1fr_340px]">{result.article&&<div><span className="rounded-full bg-cream px-3 py-1 text-xs font-black">글 초안</span><MarkdownResult content={result.article}/></div>}{result.publish&&<div className="rounded-2xl bg-emerald-50 p-5"><b className="text-leaf">발행 검증</b><MarkdownResult content={result.publish}/></div>}</div>{(artifacts.data?.length??0)>0&&<div className="mt-6 border-t pt-5"><h3 className="font-black">외부 생성 파일</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">{artifacts.data?.map(item=><a key={item.id} href={`/api/artifacts/${item.id}/download`} className="rounded-2xl border p-4 hover:border-coral"><b className="block">{item.fileName}</b><small className="text-stone-500">{item.mimeType} · {item.status}</small></a>)}</div></div>}<details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
   </AppShell>;
 }
 

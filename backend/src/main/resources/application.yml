@@ -40,3 +40,6 @@ llm:
 execution:
   stub-enabled: ${EXECUTION_STUB_ENABLED:true}
   poll-interval-ms: ${EXECUTION_POLL_INTERVAL_MS:500}
+auth:
+  sms:
+    expose-development-values: ${SMS_EXPOSE_DEVELOPMENT_VALUES:false}

@@ -1,6 +1,6 @@
 # Agentown
 
-사람 형태의 AI 구성원을 만들고 미니홈에 배치하는 소셜 AI 에이전트 플랫폼의 MVP입니다.
+쉬운 질문에 답하면 Codex/OpenAI 또는 Claude가 필요한 AI 구성원과 실행 순서를 설계하고, 사람 형태 캐릭터로 오피스에 배치하는 소셜 AI 회사 플랫폼의 MVP입니다.
 
 ## 구성
 
@@ -92,10 +92,13 @@ VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하�
 ## MVP 기능
 
 - 세션/CSRF 기반 회원가입·로그인과 미니홈·일촌·차단
+- 회사 목표·입력·결과·근거·금지·승인 질문에서 전체 Agent·Guide·Schema·Harness 초안 생성
+- 사용자 OpenAI/Anthropic BYOK 설계와 API 비용 없는 Stub 설계, 서버 검증 후 승인 저장
 - 벽·바닥·책상·회의 공간이 있는 회사형 미니홈, 사람형 캐릭터 5종, 드래그 배치
 - Agent CRUD, Provider/Model 선택, Agent MD·Guide·Schema 자동 생성
 - AES-256-GCM BYOK 자격증명과 소유권/Provider/Model 사전 검증
 - 최대 5개 Agent의 순차 하네스 연결·검증·불변 발행·복제·ZIP
+- Codex CLI용 `AGENTS.md`와 Claude Code용 `CLAUDE.md`를 포함한 표준 회사 패키지
 - PostgreSQL Queue, Coroutine 내부 Worker, 작업별 동시성 제한, SSE 이벤트
 - 실제 단계 이벤트에 따른 캐릭터 작업 상태와 담당 순서 이동
 - 실행자 전용 결과와 외부 HTTPS 다운로드, 무료 마켓 기반

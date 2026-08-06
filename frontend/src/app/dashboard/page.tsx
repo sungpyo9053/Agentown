@@ -7,6 +7,7 @@ import { FormEvent, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { CharacterPicker } from "@/components/AgentCharacter";
 import { OfficeRoom } from "@/components/OfficeRoom";
+import { AppShell } from "@/components/AppShell";
 
 type RoomItem = { agentId?: string; itemType: "AGENT" | "ASSET"; positionX: number; positionY: number; width: number; height: number; zIndex: number; rotation: number };
 type Home = { id: string; handle: string; title: string; introduction?: string; backgroundKey?: string; visitCount: number; items: RoomItem[] };
@@ -24,10 +25,12 @@ export default function DashboardPage() {
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api<Agent[]>("/agents") });
   const credentials = useQuery({ queryKey: ["credentials"], queryFn: () => api<Credential[]>("/llm-credentials") });
 
-  if (home.error instanceof ApiError && home.error.status === 401) return <main className="mx-auto max-w-xl px-6 py-24 text-center"><h1 className="text-3xl font-black">로그인이 필요해요</h1><Link href="/login" className="mt-6 inline-block rounded-full bg-ink px-6 py-3 text-white">로그인하기</Link></main>;
-  return <main className="mx-auto max-w-6xl px-6 pb-20 pt-8">
+  if (home.isPending) return <AppShell kicker="MY AI OFFICE" title="회사를 불러오는 중…"><div className="h-96 animate-pulse rounded-[2rem] bg-white shadow-card"/></AppShell>;
+  if (home.error instanceof ApiError && home.error.status === 401) return <AppShell kicker="SESSION EXPIRED" title="로그인이 필요해요"><p className="text-stone-500">서버가 재시작되었거나 로그인 세션이 만료되었습니다.</p><Link href="/login" className="mt-6 inline-block rounded-full bg-ink px-6 py-3 text-white">다시 로그인하기</Link></AppShell>;
+  if (home.error || !home.data) return <AppShell kicker="LOAD FAILED" title="회사를 불러오지 못했습니다"><p className="rounded-2xl bg-red-50 p-5 text-red-700">{home.error?.message??"회사 공간 응답이 없습니다."}</p><button onClick={()=>home.refetch()} className="mt-4 rounded-full bg-ink px-5 py-3 font-bold text-white">다시 시도</button></AppShell>;
+  return <AppShell kicker="MY AI OFFICE" title={home.data.title}>
     <div className="flex flex-wrap items-end justify-between gap-4">
-      <div><p className="text-sm font-bold text-coral">MY MINI HOME</p><h1 className="mt-1 text-4xl font-black">{home.data?.title ?? "마을을 불러오는 중…"}</h1><p className="mt-2 text-stone-500">@{home.data?.handle} · 방문 {home.data?.visitCount ?? 0}</p></div>
+      <div><p className="text-stone-500">@{home.data.handle} · 방문 {home.data.visitCount}</p></div>
       <div className="flex flex-wrap gap-2"><Link href="/harnesses" className="rounded-full border bg-white px-5 py-3 font-bold">AI 팀</Link><Link href="/home/edit" className="rounded-full border bg-white px-5 py-3 font-bold">🏢 회사 꾸미기</Link><button onClick={() => setCredentialOpen(!credentialOpen)} className="rounded-full border bg-white px-5 py-3 font-bold">🔐 API 키</button><button onClick={() => setAgentOpen(!agentOpen)} className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 구성원</button></div>
     </div>
 
@@ -46,12 +49,19 @@ export default function DashboardPage() {
         <div className="rounded-3xl border border-stone-200 bg-cream p-6"><h2 className="font-bold">다음 단계</h2><p className="mt-2 text-sm leading-6 text-stone-600">구성원을 만들고 각자의 역할과 스크립트를 설정하세요. API 키는 복제하거나 공유할 때 포함되지 않습니다.</p></div>
       </aside>
     </section>
-  </main>;
+  </AppShell>;
 }
 
 function AgentForm({ credentials, done }: { credentials: Credential[]; done: () => void }) {
   const [provider, setProvider] = useState<Provider>("OPENAI");
   const [characterKey, setCharacterKey] = useState("writer");
+  const [draft,setDraft]=useState({name:"",role:"",script:"",guide:""});
+  const examples=[
+    {key:"writer",label:"✍️ 기술 작가",name:"Writer",role:"기술 콘텐츠 작가",script:"리서치 결과를 바탕으로 독자가 이해하기 쉬운 Markdown 초안을 작성한다.",guide:"근거 없는 수치를 만들지 않고, 한계와 검증 범위를 명시한다."},
+    {key:"reviewer",label:"🔎 검수자",name:"Reviewer",role:"사실·품질 검수자",script:"초안의 사실성, 논리, 출력 형식을 검토하고 승인 또는 수정 요청을 작성한다.",guide:"확인하지 못한 주장은 승인하지 않고 구체적인 수정 이유를 남긴다."},
+    {key:"developer",label:"🧭 리서처",name:"Researcher",role:"기술 리서처",script:"주제에 필요한 근거와 제약사항을 조사해 구조화된 메모로 전달한다.",guide:"출처와 직접 검증 여부를 구분하고 추측은 명확히 표시한다."},
+    {key:"manager",label:"📤 발행 담당",name:"Publisher",role:"최종 발행 담당자",script:"승인된 결과만 지정된 외부 서비스로 전달하고 발행 상태를 기록한다.",guide:"사용자 승인 없이는 외부 게시·전송을 수행하지 않는다."},
+  ];
   const models = useQuery({
     queryKey: ["llm-models", provider],
     queryFn: () => api<ModelOption[]>(`/llm-models?provider=${provider}`),
@@ -61,16 +71,19 @@ function AgentForm({ credentials, done }: { credentials: Credential[]; done: () 
     event.preventDefault(); const data = new FormData(event.currentTarget);
     mutation.mutate({ name: data.get("name"), role: data.get("role"), characterKey, script: data.get("script"), guide: data.get("guide"), modelProvider: data.get("provider"), modelName: data.get("model"), credentialId: data.get("credentialId") || null, maxOutputTokens: 2048, timeoutSeconds: 60, visibility: "PRIVATE" });
   };
-  return <form onSubmit={submit} className="mt-7 grid gap-4 rounded-3xl bg-white p-6 shadow-card md:grid-cols-2">
+  return <form onSubmit={submit} className="mt-7 grid gap-6 rounded-3xl bg-white p-6 shadow-card lg:grid-cols-[1fr_300px]">
+    <div className="grid gap-4 md:grid-cols-2">
     <h2 className="text-xl font-black md:col-span-2">새 AI 구성원</h2>
-    <Field label="이름"><input name="name" required maxLength={40} /></Field><Field label="역할"><input name="role" required maxLength={100} /></Field>
+    <div className="md:col-span-2"><p className="text-sm font-bold">역할 예시로 시작하기</p><div className="mt-2 flex flex-wrap gap-2">{examples.map(example=><button type="button" key={example.name} onClick={()=>{setDraft(example);setCharacterKey(example.key)}} className="rounded-full border px-4 py-2 text-xs font-black hover:border-coral">{example.label}</button>)}</div></div>
+    <Field label="이름"><input name="name" value={draft.name} onChange={event=>setDraft({...draft,name:event.target.value})} required maxLength={40} /></Field><Field label="역할"><input name="role" value={draft.role} onChange={event=>setDraft({...draft,role:event.target.value})} required maxLength={100} /></Field>
     <div className="md:col-span-2"><span className="text-sm font-bold">사람 캐릭터</span><div className="mt-2"><CharacterPicker value={characterKey} onChange={setCharacterKey} /></div></div>
     <Field label="제공자"><select name="provider" value={provider} onChange={(event) => setProvider(event.target.value as Provider)}><option>OPENAI</option><option>ANTHROPIC</option><option>GOOGLE</option></select></Field>
     <Field label="모델"><select name="model" key={provider} required disabled={models.isLoading}><option value="" disabled>{models.isLoading ? "모델 불러오는 중…" : "모델 선택"}</option>{models.data?.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></Field>
     <Field label="자격증명"><select name="credentialId" key={`credential-${provider}`}><option value="">나중에 연결 (실행 불가)</option>{credentials.filter((item) => item.provider === provider && item.status === "ACTIVE").map((item) => <option key={item.id} value={item.id}>{item.provider} · {item.maskedSecret}</option>)}</select></Field>
-    <Field label="스크립트" wide><textarea name="script" required rows={3} placeholder="주어진 주제로 초안을 작성한다." /></Field>
-    <Field label="가이드" wide><textarea name="guide" rows={2} placeholder="확인되지 않은 사실은 추측이라고 표시한다." /></Field>
-    {mutation.error && <p className="text-sm text-red-600 md:col-span-2">{mutation.error.message}</p>}<button className="rounded-2xl bg-ink py-3 font-bold text-white md:col-span-2">구성원 추가</button>
+    <Field label="스크립트" wide><textarea name="script" value={draft.script} onChange={event=>setDraft({...draft,script:event.target.value})} required rows={3} placeholder="주어진 주제로 초안을 작성한다." /></Field>
+    <Field label="가이드" wide><textarea name="guide" value={draft.guide} onChange={event=>setDraft({...draft,guide:event.target.value})} rows={2} placeholder="확인되지 않은 사실은 추측이라고 표시한다." /></Field>
+    {mutation.error && <p className="text-sm text-red-600 md:col-span-2">{mutation.error.message}</p>}<button className="rounded-2xl bg-ink py-3 font-bold text-white md:col-span-2">구성원 추가</button></div>
+    <aside className="rounded-3xl bg-stone-950 p-5 text-stone-100"><p className="text-xs font-black text-coral">생성 예정 표준 구조</p><pre className="mt-4 whitespace-pre-wrap text-xs leading-6">{`내-AI-회사/\n├── AGENTS.md\n├── CLAUDE.md\n├── harness.md\n├── harness.json\n├── agents/\n│   └── ${draft.name||"agent"}.md\n├── guides/\n│   └── ${draft.name||"agent"}-guide.md\n└── schemas/\n    ├── ${draft.name||"agent"}-input.json\n    └── ${draft.name||"agent"}-output.json`}</pre><p className="mt-5 text-xs leading-5 text-stone-400">사용자는 폴더나 MD를 직접 만들 필요가 없습니다. Agentown이 입력 내용을 파일로 자동 생성하며 API 키와 실행 결과는 내보내기에 포함하지 않습니다.</p></aside>
   </form>;
 }
 

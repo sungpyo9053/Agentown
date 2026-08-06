@@ -1,4 +1,5 @@
 import Link from "next/link";
+import {SessionNav} from "@/components/SessionNav";
 
 const team = [
   { emoji: "✍️", name: "모모", role: "콘텐츠 작가", color: "bg-amber-100" },
@@ -9,15 +10,16 @@ const team = [
 export default function Home() {
   return (
     <main>
+      <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-6"><Link href="/" className="text-xl font-black tracking-tight">Agentown</Link><nav className="flex items-center gap-5 text-sm font-semibold"><Link href="/dashboard">내 AI 회사</Link><SessionNav/></nav></header>
       <section className="mx-auto grid max-w-6xl gap-12 px-6 pb-24 pt-14 lg:grid-cols-[1.05fr_.95fr] lg:items-center">
         <div>
-          <span className="rounded-full border border-leaf/20 bg-emerald-50 px-4 py-2 text-sm font-bold text-leaf">AI 팀이 사는 나만의 마을</span>
+          <span className="rounded-full border border-leaf/20 bg-emerald-50 px-4 py-2 text-sm font-bold text-leaf">AI 팀이 일하는 나만의 회사</span>
           <h1 className="mt-7 max-w-2xl text-5xl font-black leading-[1.08] tracking-[-.04em] md:text-7xl">
             함께 일할 AI 팀을<br /><span className="text-coral">사람처럼</span> 만나세요.
           </h1>
-          <p className="mt-7 max-w-xl text-lg leading-8 text-stone-600">작가, 검수자, 디자이너를 만들고 미니홈에 배치하세요. 복잡한 노드 대신 익숙한 역할과 순서로 자동화를 완성합니다.</p>
+          <p className="mt-7 max-w-xl text-lg leading-8 text-stone-600">하고 싶은 일을 설명하면 설계 AI가 필요한 구성원, 가이드와 실행 순서를 제안합니다. 승인한 AI 회사를 오피스에 배치하고 실제 업무를 실행하세요.</p>
           <div className="mt-9 flex flex-wrap gap-3">
-            <Link href="/signup" className="rounded-full bg-coral px-7 py-4 font-bold text-white shadow-card">내 마을 만들기</Link>
+            <Link href="/signup" className="rounded-full bg-coral px-7 py-4 font-bold text-white shadow-card">내 AI 회사 만들기</Link>
             <Link href="/dashboard" className="rounded-full border border-stone-300 bg-white px-7 py-4 font-bold">미리 둘러보기</Link>
           </div>
         </div>
@@ -42,4 +44,3 @@ export default function Home() {
     </main>
   );
 }
-

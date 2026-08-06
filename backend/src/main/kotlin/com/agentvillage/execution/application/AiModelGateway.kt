@@ -3,6 +3,7 @@ package com.agentvillage.execution.application
 import com.agentvillage.llmcredential.domain.LlmProvider
 import java.math.BigDecimal
 
+@org.springframework.modulith.NamedInterface("application")
 class DecryptedCredential(
     val provider: LlmProvider,
     val secret: CharArray,
@@ -13,6 +14,7 @@ class DecryptedCredential(
     }
 }
 
+@org.springframework.modulith.NamedInterface("application")
 data class AiModelRequest(
     val model: String,
     val systemPrompt: String?,
@@ -23,20 +25,24 @@ data class AiModelRequest(
     val providerOptions: Map<String, Any> = emptyMap(),
 )
 
+@org.springframework.modulith.NamedInterface("application")
 data class TokenUsage(val inputTokens: Long, val outputTokens: Long)
 
+@org.springframework.modulith.NamedInterface("application")
 data class AiModelResponse(
     val content: String,
     val tokenUsage: TokenUsage,
     val providerRequestId: String?,
 )
 
+@org.springframework.modulith.NamedInterface("application")
 interface AiModelGateway {
     fun supports(provider: LlmProvider): Boolean
     fun supportsModel(model: String): Boolean = true
     fun execute(credential: DecryptedCredential, request: AiModelRequest): AiModelResponse
 }
 
+@org.springframework.modulith.NamedInterface("application")
 class AiModelGatewayRegistry(gateways: List<AiModelGateway>) {
     private val gatewaysByProvider = LlmProvider.entries.associateWith { provider ->
         gateways.singleOrNull { it.supports(provider) }
@@ -51,4 +57,3 @@ class StubAiModelGateway(private val provider: LlmProvider) : AiModelGateway {
     override fun execute(credential: DecryptedCredential, request: AiModelRequest) =
         AiModelResponse("stub:${request.input}", TokenUsage(1, 1), "stub-request")
 }
-

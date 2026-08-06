@@ -18,6 +18,8 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
 import java.util.UUID
+import java.io.ByteArrayInputStream
+import java.util.zip.ZipInputStream
 
 @AutoConfigureMockMvc
 class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
@@ -60,8 +62,18 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
             .andExpect(jsonPath("$.snapshotJson.agents[0].credentialId").doesNotExist()).andReturn().response.contentAsString
         assertThat(version).doesNotContain("encryptedSecret", "apiKey")
         postJson("/api/harnesses/$harnessId/clone", "{}").andExpect(status().isOk)
-        mvc.perform(get("/api/harnesses/$harnessId/download").with(user(principal)))
+        val zipBytes = mvc.perform(get("/api/harnesses/$harnessId/download").with(user(principal)))
             .andExpect(status().isOk).andExpect(header().string("Content-Type", "application/zip"))
+            .andReturn().response.contentAsByteArray
+        val zipEntries = mutableMapOf<String, String>()
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
+            generateSequence { zip.nextEntry }.forEach { entry -> zipEntries[entry.name] = zip.readBytes().decodeToString() }
+        }
+        assertThat(zipEntries.keys).anyMatch { it.endsWith("/AGENTS.md") }
+        assertThat(zipEntries.keys).anyMatch { it.endsWith("/CLAUDE.md") }
+        assertThat(zipEntries.keys).anyMatch { it.contains("/agents/") }
+        assertThat(zipEntries.keys).anyMatch { it.contains("/guides/") }
+        assertThat(zipEntries.values.joinToString("\n")).doesNotContain("credentialId", "encryptedSecret", "apiKey")
 
         val executionJson = postJson("/api/harnesses/$harnessId/executions", """{"input":{"topic":"Kotlin"},"stubMode":true}""",
             "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk).andReturn().response.contentAsString
@@ -74,6 +86,16 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
             if (mapper.readTree(body)["execution"]["status"].asText() == "SUCCEEDED") return@repeat
         }
         assertThat(mapper.readTree(body)["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
+        mvc.perform(get("/api/executions/$executionId/download").param("format", "markdown").with(user(principal)))
+            .andExpect(status().isOk)
+            .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".md")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("# Kotlin")))
+        mvc.perform(get("/api/executions/$executionId/download").param("format", "json").with(user(principal)))
+            .andExpect(status().isOk)
+            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+        val stranger = identities.register(RegisterUserCommand("stranger-$suffix@example.com", "password123", "stranger_$suffix", "다른 회원"))
+        mvc.perform(get("/api/executions/$executionId/download").with(user(AuthenticatedUser(stranger.id, stranger.email, "unused", true))))
+            .andExpect(status().isNotFound)
         val events = executionService.history(UUID.fromString(executionId), user.id).map { it.eventType }
         assertThat(events).containsSubsequence("EXECUTION_QUEUED", "EXECUTION_STARTED", "STEP_STARTED", "MODEL_REQUEST_SENT", "STEP_COMPLETED", "EXECUTION_COMPLETED")
 
