@@ -4,9 +4,15 @@
 
 `/auth/signup`, `/auth/login`, `/auth/me` 응답은 `role`을 반환한다. 값은 `USER` 또는 `ADMIN`이며 공개 가입 요청으로 역할을 지정하거나 관리자 권한을 획득할 수 없다.
 
+`GET /users/{handle}`은 표시 이름, 소개와 아바타만 반환하고 이메일·휴대폰·역할을 노출하지 않는다. `PATCH /users/me`, `PATCH /users/me/password`, `DELETE /users/me`로 프로필, 비밀번호와 탈퇴를 처리한다.
+
 `POST /market/products`의 `official=true`는 `ADMIN`만 사용할 수 있다. 관리자는 자신이 소유하고 발행한 하네스 버전만 공식 상품으로 저장할 수 있다.
 
 실행 생성은 `Idempotency-Key` 헤더가 필수다. `/executions/{id}/events`는 신규 이벤트 SSE이며 `/executions/{id}/history`는 화면 새로고침용 소유자 전용 이력이다. `/agents/{id}/test`는 BYOK 또는 개발용 Stub으로 단일 구성원을 검증한다. 하네스 내려받기는 ZIP, 결과 다운로드는 검증된 외부 HTTPS URL 리다이렉트다.
+
+`GET /executions`는 본인의 최근 실행 20건을 반환한다. `POST /agents/{id}/clone`과 `GET /public/users/{handle}/harnesses`는 PUBLIC/MARKET 콘텐츠만 취급하며 복제본에는 Credential이 없다.
+
+마켓 목록은 `query`, `order`, `category`를 지원한다. `POST /market/products/{id}/reviews`는 해당 상품 복제 이력이 있는 사용자만 1~5점 후기 한 건을 생성·수정할 수 있다.
 
 ## AI 회사 설계
 

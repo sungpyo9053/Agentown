@@ -15,6 +15,7 @@ data class CreateExecutionRequest(val input: Map<String, Any> = emptyMap(), val 
 
 @RestController
 class ExecutionController(private val service: ExecutionService, private val mapper: ObjectMapper) {
+    @GetMapping("/api/executions") fun list(@AuthenticationPrincipal p: AuthenticatedUser) = service.list(p.userId)
     @PostMapping("/api/harnesses/{id}/executions")
     fun create(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID,
                @RequestHeader("Idempotency-Key") key: String, @RequestBody request: CreateExecutionRequest) =

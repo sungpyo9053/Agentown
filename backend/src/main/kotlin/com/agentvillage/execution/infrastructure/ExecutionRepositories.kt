@@ -12,6 +12,7 @@ interface ExecutionRepository : JpaRepository<Execution, UUID> {
     fun findTop20ByStatusOrderByQueuedAt(status: ExecutionStatus): List<Execution>
     fun findAllByStatusAndHeartbeatAtBefore(status: ExecutionStatus, before: Instant): List<Execution>
     fun findTop100ByOrderByCreatedAtDesc(): List<Execution>
+    fun findTop20ByOwnerIdOrderByCreatedAtDesc(ownerId: UUID): List<Execution>
     fun countByStatus(status: ExecutionStatus): Long
 }
 interface ExecutionStepRepository : JpaRepository<ExecutionStep, UUID> { fun findAllByExecutionIdOrderByStartedAtAsc(executionId: UUID): List<ExecutionStep> }

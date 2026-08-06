@@ -4,6 +4,7 @@ import com.agentvillage.agent.domain.Agent
 import com.agentvillage.agent.infrastructure.AgentRepository
 import com.agentvillage.common.domain.Visibility
 import com.agentvillage.common.exception.NotFoundException
+import com.agentvillage.common.exception.ForbiddenException
 import com.agentvillage.llmcredential.application.CredentialDirectory
 import com.agentvillage.llmcredential.domain.LlmProvider
 import com.agentvillage.llmcredential.application.ProviderOptionsPolicy
@@ -69,6 +70,21 @@ class AgentService(
     @Transactional(readOnly = true)
     fun getOwned(id: UUID, ownerId: UUID): Agent = findOwned(id, ownerId)
 
+    @Transactional(readOnly = true)
+    fun getPublic(id: UUID): Agent {
+        val agent = agents.findById(id).orElseThrow { NotFoundException("AGENT_NOT_FOUND", "에이전트를 찾을 수 없습니다.") }
+        if (agent.visibility !in setOf(Visibility.PUBLIC, Visibility.MARKET)) {
+            throw ForbiddenException("AGENT_PRIVATE", "공개되지 않은 에이전트입니다.")
+        }
+        return agent
+    }
+
+    @Transactional
+    fun clonePublic(id: UUID, ownerId: UUID): Agent {
+        val source = getPublic(id)
+        return agents.findById(cloneFrom(describe(source), ownerId)).orElseThrow()
+    }
+
     @Transactional
     fun update(id: UUID, ownerId: UUID, command: SaveAgentCommand): Agent {
         validateCredential(ownerId, command)
@@ -126,6 +142,11 @@ class AgentService(
     private fun findOwned(id: UUID, ownerId: UUID): Agent =
         agents.findByIdAndOwnerId(id, ownerId)
             ?: throw NotFoundException("AGENT_NOT_FOUND", "에이전트를 찾을 수 없습니다.")
+
+    private fun describe(agent: Agent) = AgentDescriptor(
+        agent.id, agent.name, agent.role, agent.script, agent.guide, agent.modelProvider, agent.modelName,
+        agent.temperature, agent.maxOutputTokens, agent.timeoutSeconds, agent.providerOptions, null, agent.systemPrompt,
+    )
 
     private fun validateCredential(ownerId: UUID, command: SaveAgentCommand) {
         optionsPolicy.validate(command.providerOptions)

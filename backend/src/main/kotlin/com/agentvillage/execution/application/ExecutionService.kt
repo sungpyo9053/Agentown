@@ -44,6 +44,7 @@ class ExecutionService(
         return execution
     }
     @Transactional(readOnly = true) fun get(id: UUID, ownerId: UUID) = ExecutionView(requireOwned(id, ownerId), executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id))
+    @Transactional(readOnly = true) fun list(ownerId: UUID) = executions.findTop20ByOwnerIdOrderByCreatedAtDesc(ownerId)
     @Transactional fun cancel(id: UUID, ownerId: UUID): Execution { val e = requireOwned(id, ownerId); e.status = ExecutionStatus.CANCELLED; e.finishedAt = Instant.now(); record(id, "EXECUTION_FAILED", null, mapOf("status" to "CANCELLED")); return e }
     @Transactional fun approve(id: UUID, ownerId: UUID): Execution {
         val e = requireOwned(id, ownerId)

@@ -7,6 +7,7 @@ import java.util.UUID
 interface HarnessRepository : JpaRepository<Harness, UUID> {
     fun findByIdAndOwnerId(id: UUID, ownerId: UUID): Harness?
     fun findAllByOwnerIdOrderByCreatedAtDesc(ownerId: UUID): List<Harness>
+    fun findAllByOwnerIdAndVisibilityInOrderByCreatedAtDesc(ownerId: UUID, visibilities: Collection<com.agentvillage.common.domain.Visibility>): List<Harness>
     fun findTop100ByOrderByCreatedAtDesc(): List<Harness>
     fun countByStatus(status: HarnessStatus): Long
 }

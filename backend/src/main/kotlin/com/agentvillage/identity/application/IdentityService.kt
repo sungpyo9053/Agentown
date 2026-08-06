@@ -2,6 +2,7 @@ package com.agentvillage.identity.application
 
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.common.exception.NotFoundException
+import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.identity.domain.Profile
 import com.agentvillage.identity.domain.UserAccount
 import com.agentvillage.identity.infrastructure.ProfileRepository
@@ -24,6 +25,7 @@ data class RegisterUserCommand(
 )
 
 data class AccountAvailability(val handleAvailable: Boolean?)
+data class PublicProfile(val id: UUID, val handle: String, val displayName: String, val bio: String?, val avatarUrl: String?)
 
 @Service
 class IdentityService(
@@ -82,6 +84,46 @@ class IdentityService(
         val user = users.findByHandle(handle.lowercase(Locale.ROOT)) ?: return null
         val profile = profiles.findById(user.id).orElse(null) ?: return null
         return user.toIdentity(profile)
+    }
+
+    @Transactional(readOnly = true)
+    fun publicProfile(handle: String): PublicProfile? {
+        val user = users.findByHandle(handle.lowercase(Locale.ROOT)) ?: return null
+        val profile = profiles.findById(user.id).orElse(null) ?: return null
+        return PublicProfile(user.id, user.handle, profile.displayName, profile.bio, profile.avatarUrl)
+    }
+
+    @Transactional
+    fun updateProfile(userId: UUID, displayName: String, bio: String?, avatarUrl: String?): PublicProfile {
+        val user = users.findById(userId).orElseThrow { NotFoundException("USER_NOT_FOUND", "사용자를 찾을 수 없습니다.") }
+        val profile = profiles.findById(userId).orElseThrow { NotFoundException("PROFILE_NOT_FOUND", "프로필을 찾을 수 없습니다.") }
+        profile.displayName = displayName.trim()
+        profile.bio = bio?.trim()?.takeIf { it.isNotEmpty() }
+        profile.avatarUrl = avatarUrl?.trim()?.takeIf { it.isNotEmpty() }
+        return PublicProfile(user.id, user.handle, profile.displayName, profile.bio, profile.avatarUrl)
+    }
+
+    @Transactional
+    fun changePassword(userId: UUID, currentPassword: String, newPassword: String) {
+        val user = users.findById(userId).orElseThrow { NotFoundException("USER_NOT_FOUND", "사용자를 찾을 수 없습니다.") }
+        if (!passwordEncoder.matches(currentPassword, user.passwordHash)) {
+            throw BadRequestException("CURRENT_PASSWORD_INVALID", "현재 비밀번호가 올바르지 않습니다.")
+        }
+        user.passwordHash = passwordEncoder.encode(newPassword)
+    }
+
+    @Transactional
+    fun withdraw(userId: UUID, currentPassword: String) {
+        val user = users.findById(userId).orElseThrow { NotFoundException("USER_NOT_FOUND", "사용자를 찾을 수 없습니다.") }
+        if (!passwordEncoder.matches(currentPassword, user.passwordHash)) {
+            throw BadRequestException("CURRENT_PASSWORD_INVALID", "현재 비밀번호가 올바르지 않습니다.")
+        }
+        user.status = com.agentvillage.identity.domain.UserStatus.WITHDRAWN
+        user.email = null
+        user.phoneHash = null
+        user.phoneMasked = null
+        user.phoneVerifiedAt = null
+        user.passwordHash = passwordEncoder.encode(UUID.randomUUID().toString())
     }
 
     private fun UserAccount.toIdentity(profile: Profile) =

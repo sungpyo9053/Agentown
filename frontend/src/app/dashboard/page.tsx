@@ -15,6 +15,7 @@ type Agent = { id: string; name: string; role: string; characterKey: string; mod
 type Credential = { id: string; provider: string; maskedSecret: string; status: string; lastVerifiedAt?: string };
 type Provider = "OPENAI" | "ANTHROPIC" | "GOOGLE";
 type ModelOption = { id: string; displayName: string };
+type Execution = { id:string; status:string; currentStepKey?:string; createdAt:string };
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -24,6 +25,7 @@ export default function DashboardPage() {
   const home = useQuery({ queryKey: ["home"], queryFn: () => api<Home>("/mini-homes/me") });
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api<Agent[]>("/agents") });
   const credentials = useQuery({ queryKey: ["credentials"], queryFn: () => api<Credential[]>("/llm-credentials") });
+  const executions = useQuery({ queryKey: ["executions"], queryFn: () => api<Execution[]>("/executions") });
 
   if (home.isPending) return <AppShell kicker="MY AI OFFICE" title="회사를 불러오는 중…"><div className="h-96 animate-pulse rounded-[2rem] bg-white shadow-card"/></AppShell>;
   if (home.error instanceof ApiError && home.error.status === 401) return <AppShell kicker="SESSION EXPIRED" title="로그인이 필요해요"><p className="text-stone-500">서버가 재시작되었거나 로그인 세션이 만료되었습니다.</p><Link href="/login" className="mt-6 inline-block rounded-full bg-ink px-6 py-3 text-white">다시 로그인하기</Link></AppShell>;
@@ -47,6 +49,7 @@ export default function DashboardPage() {
         <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-coral">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
         <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">연결된 모델 키</h2><div className="mt-4 space-y-3">{credentials.data?.map((item) => <div key={item.id} className="rounded-2xl bg-stone-50 p-3 text-sm"><b>{item.provider}</b><br /><span className="text-stone-500">{item.maskedSecret}</span><span className="ml-2 text-xs text-leaf">{item.status}</span></div>)}{credentials.data?.length === 0 && <p className="text-sm text-stone-500">BYOK 키를 연결하면 실제 작업을 시작할 수 있어요.</p>}</div></div>
         <div className="rounded-3xl border border-stone-200 bg-cream p-6"><h2 className="font-bold">다음 단계</h2><p className="mt-2 text-sm leading-6 text-stone-600">구성원을 만들고 각자의 역할과 스크립트를 설정하세요. API 키는 복제하거나 공유할 때 포함되지 않습니다.</p></div>
+        <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">최근 실행</h2><div className="mt-3 space-y-2">{executions.data?.slice(0,5).map(item=><Link key={item.id} href={`/executions/${item.id}`} className="flex justify-between rounded-xl bg-stone-50 p-3 text-xs"><span>{item.currentStepKey??"실행"}</span><b className="text-leaf">{item.status}</b></Link>)}{executions.data?.length===0&&<p className="text-sm text-stone-500">아직 실행 기록이 없습니다.</p>}</div></div>
       </aside>
     </section>
   </AppShell>;

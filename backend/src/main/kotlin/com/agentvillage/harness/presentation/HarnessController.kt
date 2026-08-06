@@ -41,7 +41,7 @@ class HarnessController(private val service: HarnessService, private val mapper:
 
     @GetMapping("/{id}/download", produces = ["application/zip"])
     fun download(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID): ResponseEntity<ByteArray> {
-        val version = service.latestPublished(id)
+        val version = service.downloadableVersion(id, p.userId)
         val bytes = ByteArrayOutputStream().use { out -> ZipOutputStream(out).use { zip ->
             fun entry(path: String, content: String) { zip.putNextEntry(ZipEntry(path)); zip.write(content.toByteArray()); zip.closeEntry() }
             val root = "${p.username}-ai-company".safeFileName()
@@ -138,4 +138,11 @@ CLI 설치와 각 공급자 인증은 사용자 로컬 환경에서 별도로 �
     )
 
     private fun String.safeFileName() = replace(Regex("[^a-zA-Z0-9가-힣_-]"), "-").trim('-').ifBlank { "agentown-village" }
+}
+
+@RestController
+@RequestMapping("/api/public/users")
+class PublicHarnessController(private val service: HarnessService, private val users: com.agentvillage.identity.application.UserDirectory) {
+    @GetMapping("/{handle}/harnesses")
+    fun list(@PathVariable handle: String) = users.findByHandle(handle)?.let { service.listPublic(it.id) } ?: emptyList<com.agentvillage.harness.domain.Harness>()
 }

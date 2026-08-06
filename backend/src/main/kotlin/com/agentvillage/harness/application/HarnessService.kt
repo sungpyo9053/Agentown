@@ -5,6 +5,7 @@ import com.agentvillage.agent.application.AgentDirectory
 import com.agentvillage.common.domain.Visibility
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.NotFoundException
+import com.agentvillage.common.exception.ForbiddenException
 import com.agentvillage.harness.domain.*
 import com.agentvillage.harness.infrastructure.*
 import org.springframework.stereotype.Service
@@ -30,6 +31,7 @@ class HarnessService(
     @Transactional fun create(ownerId: UUID, name: String, description: String?) =
         harnesses.save(Harness(ownerId = ownerId, name = name.trim(), description = description?.trim()))
     @Transactional(readOnly = true) fun list(ownerId: UUID) = harnesses.findAllByOwnerIdOrderByCreatedAtDesc(ownerId)
+    @Transactional(readOnly = true) fun listPublic(ownerId: UUID) = harnesses.findAllByOwnerIdAndVisibilityInOrderByCreatedAtDesc(ownerId, listOf(Visibility.PUBLIC, Visibility.MARKET))
     @Transactional(readOnly = true) override fun requireOwnedView(id: UUID, ownerId: UUID): HarnessView {
         val harness = harnesses.findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException("HARNESS_NOT_FOUND", "하네스를 찾을 수 없습니다.")
         return HarnessView(harness, steps.findAllByHarnessIdOrderBySequenceNo(id), edges.findAllByHarnessId(id), versions.findFirstByHarnessIdOrderByCreatedAtDesc(id))
@@ -116,6 +118,10 @@ class HarnessService(
 
     @Transactional
     fun clone(id: UUID, ownerId: UUID): Harness {
+        val source = harnesses.findById(id).orElseThrow { NotFoundException("HARNESS_NOT_FOUND", "하네스를 찾을 수 없습니다.") }
+        if (source.ownerId != ownerId && source.visibility !in setOf(Visibility.PUBLIC, Visibility.MARKET)) {
+            throw ForbiddenException("HARNESS_PRIVATE", "복제할 수 있도록 공개되지 않은 하네스입니다.")
+        }
         val version = latestPublished(id)
         val cloned = harnesses.save(Harness(ownerId = ownerId, name = "${version.snapshotJson["name"]} 복제본", description = "스냅샷에서 복제됨"))
         @Suppress("UNCHECKED_CAST") val agentMaps = version.snapshotJson["agents"] as? List<Map<String, Any>> ?: emptyList()
@@ -125,6 +131,23 @@ class HarnessService(
         val approvalAfterLast = stepMaps.any { it["requiresApproval"] == true }
         connect(cloned.id, ownerId, clonedAgentIds, approvalAfterLast, approvalBeforeLast)
         return cloned
+    }
+
+    @Transactional
+    fun publishToMarket(id: UUID, ownerId: UUID): HarnessVersion {
+        val view = requireOwnedView(id, ownerId)
+        val version = view.latestVersion ?: throw NotFoundException("HARNESS_VERSION_NOT_FOUND", "발행된 하네스 버전이 없습니다.")
+        view.harness.visibility = Visibility.MARKET
+        return version
+    }
+
+    @Transactional(readOnly = true)
+    fun downloadableVersion(id: UUID, requesterId: UUID): HarnessVersion {
+        val harness = harnesses.findById(id).orElseThrow { NotFoundException("HARNESS_NOT_FOUND", "하네스를 찾을 수 없습니다.") }
+        if (harness.ownerId != requesterId && harness.visibility !in setOf(Visibility.PUBLIC, Visibility.MARKET)) {
+            throw ForbiddenException("HARNESS_PRIVATE", "내려받을 수 있도록 공개되지 않은 하네스입니다.")
+        }
+        return latestPublished(id)
     }
 
     private fun snapshot(view: HarnessView, descriptors: Map<UUID, AgentDescriptor?>): Map<String, Any> = mapOf(

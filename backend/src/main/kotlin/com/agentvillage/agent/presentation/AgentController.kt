@@ -114,6 +114,23 @@ class AgentController(private val agentService: AgentService) {
     fun delete(@AuthenticationPrincipal principal: AuthenticatedUser, @PathVariable id: UUID) {
         agentService.delete(id, principal.userId)
     }
+
+    @PostMapping("/{id}/clone")
+    @ResponseStatus(HttpStatus.CREATED)
+    fun clone(@AuthenticationPrincipal principal: AuthenticatedUser, @PathVariable id: UUID) =
+        AgentResponse.from(agentService.clonePublic(id, principal.userId))
+}
+
+data class PublicAgentResponse(val id: UUID, val name: String, val role: String, val characterKey: String,
+                               val modelProvider: LlmProvider, val modelName: String, val visibility: Visibility)
+
+@RestController
+@RequestMapping("/api/public/agents")
+class PublicAgentController(private val agentService: AgentService) {
+    @GetMapping("/{id}")
+    fun get(@PathVariable id: UUID) = agentService.getPublic(id).let {
+        PublicAgentResponse(it.id, it.name, it.role, it.characterKey, it.modelProvider, it.modelName, it.visibility)
+    }
 }
 
 data class GenerateDefinitionRequest(
