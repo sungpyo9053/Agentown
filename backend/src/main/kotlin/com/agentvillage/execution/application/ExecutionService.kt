@@ -34,20 +34,21 @@ class ExecutionService(
     @Value("\${execution.stub-enabled:true}") private val stubEnabled: Boolean,
 ) {
     @Transactional
-    fun create(harnessId: UUID, ownerId: UUID, idempotencyKey: String, input: Map<String, Any>, stubMode: Boolean): Execution {
+    fun create(harnessId: UUID, ownerId: UUID, idempotencyKey: String, input: Map<String, Any>, stubMode: Boolean, executionMode: ExecutionMode = if (stubMode) ExecutionMode.STUB else ExecutionMode.CLOUD_API): Execution {
         executions.findByOwnerIdAndIdempotencyKey(ownerId, idempotencyKey)?.let { return it }
         val queued = executions.countByOwnerIdAndStatusIn(ownerId, listOf(ExecutionStatus.QUEUED))
         if (queued >= 3) throw ConflictException("EXECUTION_QUEUE_LIMIT", "사용자당 대기 실행은 최대 3개입니다.")
         val view = harnesses.requireOwnedView(harnessId, ownerId)
         if (stubMode && !stubEnabled) throw ConflictException("STUB_DISABLED", "Stub 실행은 이 환경에서 비활성화되어 있습니다.")
-        if (!stubMode) {
+        if (!stubMode && executionMode == ExecutionMode.CLOUD_API) {
             preflight.validate(ownerId, view.steps.filter { it.stepType == HarnessStepType.LLM }.mapNotNull { it.agentId }.map {
                 agents.describeOwned(it, ownerId).let { a -> AgentExecutionConfig(a.id, a.provider, a.model, a.credentialId) }
             })
         }
         val execution = executions.save(Execution(harnessId = harnessId, harnessVersionId = view.latestVersion?.id,
-            ownerId = ownerId, idempotencyKey = idempotencyKey, inputJson = input + ("_stubMode" to stubMode), timeoutAt = Instant.now().plus(30, ChronoUnit.MINUTES)))
-        record(execution.id, "EXECUTION_QUEUED", null, mapOf("status" to "QUEUED"))
+            ownerId = ownerId, idempotencyKey = idempotencyKey, executionMode = executionMode,
+            inputJson = input + ("_stubMode" to stubMode), timeoutAt = Instant.now().plus(30, ChronoUnit.MINUTES)))
+        record(execution.id, "EXECUTION_QUEUED", null, mapOf("status" to "QUEUED", "mode" to executionMode.name))
         metrics.queued()
         return execution
     }

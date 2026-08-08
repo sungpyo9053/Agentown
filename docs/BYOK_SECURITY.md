@@ -1,5 +1,11 @@
 # BYOK 보안
 
+## 구독 계정 Local Runner
+
+기본 경로는 사용자 컴퓨터의 Codex CLI 또는 Claude Code다. Runner는 무작위 페어링 토큰으로 사용자 계정과 연결되고 서버에는 SHA-256 해시만 저장한다. Runner가 HTTPS로 자기 소유의 QUEUED 작업을 Pull하며, 공급자 비밀번호·OAuth 토큰·CLI 인증 캐시는 Agentown 서버에 전송하지 않는다. CLI는 비대화식·세션 비영속·도구 비활성 또는 읽기 전용 모드로 실행한다.
+
+## API 키 보조 경로
+
 플랫폼 공용 키를 사용하지 않는다. 사용자 키는 임의 96-bit nonce의 AES-256-GCM으로 인증 암호화하며 키 버전을 함께 저장한다. 마스터 키는 DB 밖 환경변수에 두고 `SecretEncryptor` 포트로 KMS 교체를 허용한다.
 
 키 원문은 등록 응답·조회·로그·하네스·실행 이력에 나타나지 않는다. 복호화된 `CharArray`는 호출 범위가 끝나면 덮어쓴다. 실행 전 소유자, ACTIVE 상태, Provider와 지원 Model 일치를 확인한다.

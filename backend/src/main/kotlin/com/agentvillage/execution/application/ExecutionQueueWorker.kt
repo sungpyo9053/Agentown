@@ -215,7 +215,7 @@ class ExecutionQueueWorker(private val executions: ExecutionRepository, private 
 
     @Scheduled(fixedDelayString = "\${execution.poll-interval-ms:500}")
     fun poll() {
-        executions.findTop20ByStatusOrderByQueuedAt(ExecutionStatus.QUEUED).forEach { execution ->
+        executions.findTop20ByStatusAndExecutionModeInOrderByQueuedAt(ExecutionStatus.QUEUED, listOf(ExecutionMode.CLOUD_API, ExecutionMode.STUB)).forEach { execution ->
             if (activeUsers.add(execution.ownerId)) scope.launch { total.withPermit {
                 try { processor.process(execution.id) } finally { activeUsers.remove(execution.ownerId) }
             } }

@@ -7,7 +7,8 @@ import java.math.BigDecimal
 import java.time.Instant
 import java.util.UUID
 
-enum class ExecutionStatus { QUEUED, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, CANCELLED, TIMEOUT }
+enum class ExecutionStatus { QUEUED, RUNNING, WAITING_RUNNER, WAITING_APPROVAL, SUCCEEDED, FAILED, CANCELLED, TIMEOUT }
+enum class ExecutionMode { CLOUD_API, LOCAL_CLI, STUB }
 enum class StepStatus { PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, CANCELLED, TIMEOUT }
 
 @Entity @Table(name = "executions")
@@ -18,6 +19,8 @@ class Execution(
     @Column(name = "owner_id", nullable = false) val ownerId: UUID,
     @Column(name = "idempotency_key", nullable = false) val idempotencyKey: String,
     @Enumerated(EnumType.STRING) @Column(nullable = false) var status: ExecutionStatus = ExecutionStatus.QUEUED,
+    @Enumerated(EnumType.STRING) @Column(name = "execution_mode", nullable = false) val executionMode: ExecutionMode = ExecutionMode.CLOUD_API,
+    @Column(name = "runner_connection_id") var runnerConnectionId: UUID? = null,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_json", columnDefinition = "jsonb") val inputJson: Map<String, Any>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_json", columnDefinition = "jsonb") var outputJson: Map<String, Any>? = null,
     @Column(name = "current_step_key") var currentStepKey: String? = null,

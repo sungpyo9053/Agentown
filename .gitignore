@@ -9,6 +9,7 @@ node_modules/
 .next/
 .env
 .env.local
+.agentown/
 deploy/.env.production
 frontend/playwright-report/
 frontend/test-results/

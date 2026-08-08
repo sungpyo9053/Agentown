@@ -23,13 +23,14 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await expect(page).toHaveURL(/\/dashboard$/);
 
   await page.goto("/settings/credentials");
-  await expect(page.getByText("Project API Secret Key")).toBeVisible();
-  await expect(page.getByText(/sk-proj-/)).toBeVisible();
-  await page.getByLabel("서비스").selectOption("ANTHROPIC");
-  await expect(page.getByText("Anthropic API Key")).toBeVisible();
-  await expect(page.getByRole("link", { name: /공식 키 발급 화면/ })).toHaveAttribute("href", /console\.anthropic\.com/);
-  await page.getByLabel("서비스").selectOption("GOOGLE");
-  await expect(page.getByText("Gemini API Key")).toBeVisible();
+  await expect(page.getByText("ChatGPT Pro · Claude Pro를 그대로 사용하세요")).toBeVisible();
+  await page.getByLabel("구독 서비스").selectOption("CLAUDE");
+  await page.getByRole("button", { name: "Runner 연결 토큰 만들기" }).click();
+  await expect(page.getByText("한 번만 표시되는 Runner 토큰")).toBeVisible();
+  await expect(page.getByText("Agentown Runner 연결.command")).toBeVisible();
+  await page.getByText("고급 옵션: API 키로 서버에서 바로 실행").click();
+  await page.getByLabel("API 공급자").selectOption("ANTHROPIC");
+  await expect(page.getByPlaceholder(/sk-ant-api03-/)).toBeVisible();
 
   await page.goto("/harnesses/new");
   await page.getByLabel("회사 이름은 무엇인가요?").fill("E2E 블로그 회사");
@@ -52,7 +53,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await expect(page.getByText(/검증 통과/)).toBeVisible();
   await page.getByRole("button", { name: "3. 버전 발행" }).click();
   await expect(page.getByText("불변 버전을 발행했습니다.")).toBeVisible();
-  await page.getByRole("button", { name: "Stub으로 실행 검증" }).click();
+  await page.getByRole("button", { name: "비용 없이 Stub 검증" }).click();
   await expect(page).toHaveURL(/\/executions\/[^/]+$/);
 
   await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 })

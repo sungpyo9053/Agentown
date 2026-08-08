@@ -29,6 +29,17 @@ fi
 
 echo "Agentown DB, 백엔드, 프론트엔드를 시작합니다..."
 docker compose up -d --build --wait
+if [[ -f .agentown/runner.env ]]; then
+  mkdir -p .agentown
+  if [[ -f .agentown/runner.pid ]] && kill -0 "$(<.agentown/runner.pid)" 2>/dev/null; then
+    echo "로컬 AI Runner가 이미 실행 중입니다."
+  else
+    set -a; source .agentown/runner.env; set +a
+    nohup node local-runner/runner.mjs > .agentown/runner.log 2>&1 &
+    echo $! > .agentown/runner.pid
+    echo "ChatGPT Pro/Claude 구독용 로컬 Runner를 시작했습니다."
+  fi
+fi
 echo "Agentown이 준비됐습니다: http://localhost:3000"
 open "http://localhost:3000"
 read "?Enter를 누르면 이 창만 닫힙니다. 서버는 계속 실행됩니다."

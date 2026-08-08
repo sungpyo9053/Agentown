@@ -15,7 +15,7 @@ import org.springframework.web.util.HtmlUtils
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
-data class CreateExecutionRequest(val input: Map<String, Any> = emptyMap(), val stubMode: Boolean = false)
+data class CreateExecutionRequest(val input: Map<String, Any> = emptyMap(), val stubMode: Boolean = false, val executionMode: com.agentvillage.execution.domain.ExecutionMode? = null)
 
 @RestController
 class ExecutionController(private val service: ExecutionService, private val mapper: ObjectMapper) {
@@ -23,7 +23,7 @@ class ExecutionController(private val service: ExecutionService, private val map
     @PostMapping("/api/harnesses/{id}/executions")
     fun create(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID,
                @RequestHeader("Idempotency-Key") key: String, @RequestBody request: CreateExecutionRequest) =
-        service.create(id, p.userId, key, request.input, request.stubMode)
+        service.create(id, p.userId, key, request.input, request.stubMode, request.executionMode ?: if (request.stubMode) com.agentvillage.execution.domain.ExecutionMode.STUB else com.agentvillage.execution.domain.ExecutionMode.CLOUD_API)
     @GetMapping("/api/executions/{id}") fun get(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.get(id, p.userId)
     @PostMapping("/api/executions/{id}/cancel") fun cancel(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.cancel(id, p.userId)
     @PostMapping("/api/executions/{id}/approve") fun approve(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.approve(id, p.userId)

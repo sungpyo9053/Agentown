@@ -11,6 +11,8 @@
 
 ## 로컬 실행
 
+ChatGPT Plus/Pro 또는 Claude Pro/Max 구독 실행은 `AI 연결`에서 Runner 토큰을 만든 뒤 `Agentown Runner 연결.command`를 한 번 실행한다. 이후 `Agentown 시작.command`가 Docker와 Local Runner를 함께 시작한다. API 키 연결은 서버에서 바로 실행할 때만 필요한 보조 옵션이다.
+
 ### macOS 더블클릭 실행
 
 Finder에서 `Agentown 시작.command`를 더블클릭하면 Docker Desktop, PostgreSQL, 백엔드와 프론트엔드를 한 번에 준비하고 브라우저를 엽니다. 종료할 때는 `Agentown 종료.command`를 더블클릭합니다. 종료는 DB 볼륨을 삭제하지 않으므로 계정과 하네스가 유지됩니다.

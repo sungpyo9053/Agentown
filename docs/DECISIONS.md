@@ -6,9 +6,11 @@
 - Kotlin Coroutine: 외부 I/O 대기를 효율적으로 처리한다.
 - PostgreSQL Queue: 새 인프라 없이 재시작 복구와 상태 일관성을 얻는다.
 - Orchestrator 기반 실행: 단계 선택·검증·재시도·승인을 한곳에서 통제한다.
-- BYOK: 공급자 비용과 계정을 사용자에게 귀속한다.
+- 구독 계정 Local Runner 우선: ChatGPT Plus/Pro와 Claude Pro/Max 사용자는 자기 컴퓨터의 공식 CLI로 실행한다. Runner는 HTTPS Pull 방식이며 공급자 로그인 토큰은 서버에 보내지 않는다.
+- 구독 모델 선택: Codex는 사용자의 CLI 기본 모델을 우선하고 Claude는 공식 alias를 사용한다. API용 모델 ID를 구독 CLI에 강제로 전달하지 않는다.
+- BYOK API 보조 경로: 컴퓨터가 꺼져 있어도 서버 실행이 필요한 고급 사용자는 자기 API 키를 연결한다.
 - 블로그 하네스를 범용 설계 기준으로 사용: 실제 운영 구조의 최상위 오케스트레이션, 구성원 책임, 공통 가이드, schema와 승인 경계를 업종 독립적인 질문형 설계기로 일반화한다.
-- 웹 API 실행과 로컬 CLI 실행 분리: 웹은 BYOK Provider API만 호출한다. 내보내기는 동일한 선언형 정의를 참조하는 Codex용 `AGENTS.md`와 Claude Code용 `CLAUDE.md`를 함께 제공하며 서버에서 CLI나 Shell을 실행하지 않는다.
+- 웹과 로컬 실행 분리: 공개 서버는 하네스·Queue·결과만 관리하고 구독 계정 실행은 사용자 PC의 Local Runner가 수행한다. 서버는 CLI나 공급자 OAuth 토큰을 보관하지 않는다.
 - 외부 AI/API 연산: GPU·인코딩 서버를 운영하지 않는다.
 - 결과 영구 저장 제외 및 HTTPS 직접 다운로드: 비용과 개인정보 노출을 줄인다.
 - SSE 실행 시각화: 단방향 상태 전송에 WebSocket보다 단순하다.

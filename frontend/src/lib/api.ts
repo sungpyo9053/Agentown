@@ -25,9 +25,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "요청을 처리하지 못했습니다." }));
-    throw new ApiError(response.status, error.message);
+    throw new ApiError(response.status, response.status === 401 ? "로그인 후 연결할 수 있습니다." : error.message);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
-

@@ -329,9 +329,11 @@ Kafka와 SQS는 사용하지 마라.
 
 서버가 재시작돼도 QUEUED 및 오래된 RUNNING 실행을 복구할 수 있어야 한다.
 
-8. BYOK 정책
+8. AI 계정 연결 정책
 
-모든 실제 AI 및 외부 생성 서비스 실행은 BYOK 방식으로 처리하라.
+공개 서비스의 기본 실행은 사용자의 ChatGPT Plus/Pro 또는 Claude Pro/Max 구독을 사용하는 Local Runner 방식으로 처리한다. 사용자는 Agentown 웹에서 하네스를 설계하고, 사용자 컴퓨터의 Codex CLI 또는 Claude Code가 HTTPS Pull 방식으로 실행 작업을 가져간다. 공급자 로그인 토큰과 비밀번호는 Agentown 서버에 저장하지 않는다.
+
+사용자의 컴퓨터가 꺼져 있거나 서버에서 바로 실행해야 하는 경우에는 BYOK API 키를 보조 경로로 제공한다. 플랫폼 공용 API 키를 기본 실행 경로로 사용하지 않는다.
 
 플랫폼 공용 키를 기본 실행 경로로 사용하지 마라.
 
