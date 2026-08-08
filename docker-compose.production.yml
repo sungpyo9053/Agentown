@@ -1,35 +1,39 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-agent_village}
       POSTGRES_USER: ${POSTGRES_USER:-agent_village}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_village_local}
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    restart: unless-stopped
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
       DB_USERNAME: ${POSTGRES_USER:-agent_village}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-agent_village_local}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
-      LLM_MASTER_KEY: ${LLM_MASTER_KEY:?Set a base64-encoded 32-byte LLM_MASTER_KEY}
-      COOKIE_SECURE: "false"
-      SMS_EXPOSE_DEVELOPMENT_VALUES: "true"
-      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://host.docker.internal:3000"
-    ports:
-      - "8080:8080"
+      LLM_MASTER_KEYS: ${LLM_MASTER_KEYS:?Set versioned LLM_MASTER_KEYS}
+      COOKIE_SECURE: "true"
+      CORS_ALLOWED_ORIGINS: https://${DOMAIN:?Set DOMAIN}
+      RATE_LIMIT_ENABLED: "true"
+      TRUST_FORWARDED_FOR: "true"
+      EXECUTION_STUB_ENABLED: "false"
+      SMS_PROVIDER: ${SMS_PROVIDER:-webhook}
+      SMS_EXPOSE_DEVELOPMENT_VALUES: "false"
+      SMS_WEBHOOK_URL: ${SMS_WEBHOOK_URL:-}
+      SMS_WEBHOOK_TOKEN: ${SMS_WEBHOOK_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,7 +41,7 @@ services:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/actuator/health"]
       interval: 10s
       timeout: 3s
-      retries: 12
+      retries: 20
 
   frontend:
     build:
@@ -45,10 +49,9 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         API_INTERNAL_URL: http://backend:8080
+    restart: unless-stopped
     environment:
       API_INTERNAL_URL: http://backend:8080
-    ports:
-      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
@@ -58,5 +61,24 @@ services:
       timeout: 3s
       retries: 20
 
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

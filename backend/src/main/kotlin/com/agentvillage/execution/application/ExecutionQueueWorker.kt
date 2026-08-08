@@ -32,6 +32,7 @@ class ExecutionProcessor(
     private val harnesses: HarnessDirectory, private val agents: AgentDirectory,
     private val credentials: CredentialDirectory, private val gateways: AiModelGatewayRegistry,
     private val service: ExecutionService,
+    private val metrics: ExecutionMetrics,
 ) {
     private val llmSemaphore = Semaphore(50)
     private val externalSemaphore = Semaphore(100)
@@ -42,6 +43,7 @@ class ExecutionProcessor(
         if (execution.status != ExecutionStatus.QUEUED) return
         execution.status = ExecutionStatus.RUNNING; execution.startedAt = Instant.now(); execution.heartbeatAt = Instant.now()
         executions.save(execution)
+        metrics.started()
         service.record(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))
         val harness = harnesses.requireOwnedView(execution.harnessId, execution.ownerId)
         val priorSteps = executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id)
@@ -85,12 +87,14 @@ class ExecutionProcessor(
             execution.outputJson = current; execution.status = ExecutionStatus.SUCCEEDED; execution.finishedAt = Instant.now()
             executions.save(execution)
             service.record(id, "EXECUTION_COMPLETED", null, mapOf("status" to "SUCCEEDED"))
+            metrics.completed(execution.startedAt, "SUCCEEDED")
         } catch (e: Exception) {
             execution.status = if (e is TimeoutCancellationException || e is ExecutionExpiredException) ExecutionStatus.TIMEOUT else ExecutionStatus.FAILED
             execution.errorCode = if (execution.status == ExecutionStatus.TIMEOUT) "EXECUTION_TIMEOUT" else "STEP_EXECUTION_FAILED"
             execution.errorMessage = e.message?.take(1000); execution.finishedAt = Instant.now()
             executions.save(execution)
             service.record(id, "EXECUTION_FAILED", null, mapOf("errorCode" to execution.errorCode!!))
+            metrics.completed(execution.startedAt, execution.status.name)
         }
     }
 

@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpHeaders
 import org.springframework.stereotype.Component
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.web.client.RestClient
 
 abstract class JsonAiModelGateway(
@@ -27,8 +28,8 @@ abstract class JsonAiModelGateway(
 }
 
 @Component
-class OpenAiModelGateway(builder: RestClient.Builder) :
-    JsonAiModelGateway(LlmProvider.OPENAI, builder.baseUrl("https://api.openai.com").build()) {
+class OpenAiModelGateway(builder: RestClient.Builder, @Value("\${providers.openai.base-url:https://api.openai.com}") baseUrl: String) :
+    JsonAiModelGateway(LlmProvider.OPENAI, builder.baseUrl(baseUrl).build()) {
     override fun execute(credential: DecryptedCredential, request: AiModelRequest): AiModelResponse {
         val body = linkedMapOf<String, Any>().apply {
             putAll(request.providerOptions.filterKeys { it !in openAiReservedFields })
@@ -63,8 +64,8 @@ class OpenAiModelGateway(builder: RestClient.Builder) :
 }
 
 @Component
-class AnthropicModelGateway(builder: RestClient.Builder) :
-    JsonAiModelGateway(LlmProvider.ANTHROPIC, builder.baseUrl("https://api.anthropic.com").build()) {
+class AnthropicModelGateway(builder: RestClient.Builder, @Value("\${providers.anthropic.base-url:https://api.anthropic.com}") baseUrl: String) :
+    JsonAiModelGateway(LlmProvider.ANTHROPIC, builder.baseUrl(baseUrl).build()) {
     override fun execute(credential: DecryptedCredential, request: AiModelRequest): AiModelResponse {
         val body = linkedMapOf<String, Any>(
             "model" to request.model,
@@ -87,8 +88,8 @@ class AnthropicModelGateway(builder: RestClient.Builder) :
 }
 
 @Component
-class GoogleModelGateway(builder: RestClient.Builder) :
-    JsonAiModelGateway(LlmProvider.GOOGLE, builder.baseUrl("https://generativelanguage.googleapis.com").build()) {
+class GoogleModelGateway(builder: RestClient.Builder, @Value("\${providers.google.base-url:https://generativelanguage.googleapis.com}") baseUrl: String) :
+    JsonAiModelGateway(LlmProvider.GOOGLE, builder.baseUrl(baseUrl).build()) {
     override fun supportsModel(model: String) = model.matches(Regex("^[A-Za-z0-9._-]+$"))
 
     override fun execute(credential: DecryptedCredential, request: AiModelRequest): AiModelResponse {

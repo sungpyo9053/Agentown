@@ -2,6 +2,7 @@ package com.agentvillage.harness.presentation
 
 import com.agentvillage.common.domain.Visibility
 import com.agentvillage.harness.application.HarnessService
+import com.agentvillage.harness.domain.HarnessResultFormat
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.validation.Valid
@@ -17,7 +18,9 @@ import java.util.zip.ZipOutputStream
 
 data class SaveHarnessRequest(@field:NotBlank @field:Size(max = 100) val name: String,
                               @field:Size(max = 1000) val description: String? = null,
-                              val visibility: Visibility = Visibility.PRIVATE)
+                              val visibility: Visibility = Visibility.PRIVATE,
+                              val resultFormat: HarnessResultFormat = HarnessResultFormat.AUTO)
+data class ConfigureHarnessResultRequest(val resultFormat: HarnessResultFormat, val resultAgentId: UUID? = null)
 data class ConnectHarnessRequest(
     val agentIds: List<UUID>,
     val approvalAfterLast: Boolean = false,
@@ -27,10 +30,12 @@ data class ConnectHarnessRequest(
 @RestController @RequestMapping("/api/harnesses")
 class HarnessController(private val service: HarnessService, private val mapper: ObjectMapper) {
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
-    fun create(@AuthenticationPrincipal p: AuthenticatedUser, @Valid @RequestBody r: SaveHarnessRequest) = service.create(p.userId, r.name, r.description)
+    fun create(@AuthenticationPrincipal p: AuthenticatedUser, @Valid @RequestBody r: SaveHarnessRequest) = service.create(p.userId, r.name, r.description, r.resultFormat)
     @GetMapping fun list(@AuthenticationPrincipal p: AuthenticatedUser) = service.list(p.userId)
     @GetMapping("/{id}") fun get(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.requireOwnedView(id, p.userId)
-    @PatchMapping("/{id}") fun update(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @Valid @RequestBody r: SaveHarnessRequest) = service.update(id, p.userId, r.name, r.description, r.visibility)
+    @PatchMapping("/{id}") fun update(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @Valid @RequestBody r: SaveHarnessRequest) = service.update(id, p.userId, r.name, r.description, r.visibility, r.resultFormat)
+    @PatchMapping("/{id}/result") fun configureResult(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @RequestBody r: ConfigureHarnessResultRequest) =
+        service.configureResult(id, p.userId, r.resultFormat, r.resultAgentId)
     @DeleteMapping("/{id}") @ResponseStatus(HttpStatus.NO_CONTENT)
     fun delete(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.delete(id, p.userId)
     @PostMapping("/{id}/connect") fun connect(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID, @RequestBody r: ConnectHarnessRequest) =

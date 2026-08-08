@@ -11,7 +11,8 @@ import { api } from "@/lib/api";
 type Execution = {id:string;harnessId:string;status:string;currentStepKey?:string;outputJson?:Record<string,unknown>;errorCode?:string;errorMessage?:string;startedAt?:string;finishedAt?:string};
 type ExecutionView = {execution:Execution;steps:{id:string;stepKey:string;status:string;provider?:string;model?:string;outputJson?:Record<string,unknown>}[]};
 type EventItem = {id:string;sequenceNo:number;eventType:string;agentId?:string;payload:Record<string,unknown>;createdAt:string};
-type HarnessView = {harness:{id:string;name:string};steps:{id:string;stepKey:string;agentId?:string;sequenceNo:number}[]};
+type ResultFormat="AUTO"|"TEXT"|"MARKDOWN"|"HTML"|"JSON"|"CSV"|"EXTERNAL";
+type HarnessView = {harness:{id:string;name:string;resultFormat:ResultFormat;resultStepKey?:string};steps:{id:string;stepKey:string;agentId?:string;sequenceNo:number}[]};
 type Home = {title:string;backgroundKey:string;items:OfficeRoomItem[]};
 type Artifact = {id:string;type:string;fileName:string;mimeType:string;expiresAt?:string;status:string};
 
@@ -46,7 +47,8 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   const scene=useMemo(()=>buildScene(events,workflowAgents,home.data?.items??[]),[events,workflowAgents,home.data?.items]);
   const action=useMutation({mutationFn:(name:"approve"|"reject"|"cancel")=>api(`/executions/${id}/${name}`,{method:"POST"}),onSuccess:()=>execution.refetch()});
   const status=execution.data?.execution.status??"QUEUED";
-  const result=extractExecutionResult(execution.data?.execution.outputJson);
+  const result=extractExecutionResult(execution.data?.execution.outputJson,harness.data?.harness.resultStepKey);
+  const resultFormat=resolveResultFormat(harness.data?.harness.resultFormat??"AUTO",result);
 
   return <AppShell kicker="LIVE ORCHESTRATION" title={harness.data?.harness.name??"AI 팀 실행 관제"}>
     <div className="overflow-hidden rounded-[2rem] border-8 border-white bg-white shadow-card"><OfficeRoom title="ORCHESTRATION FLOOR" agents={workflowAgents} items={home.data?.items??[]} statuses={scene.statuses} positionOverrides={scene.positions} backgroundKey={home.data?.backgroundKey} /></div>
@@ -60,7 +62,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
         {execution.data?.execution.errorCode&&<div className="rounded-3xl bg-red-50 p-5 text-red-700"><b>{execution.data.execution.errorCode}</b><p className="mt-2 text-sm">{execution.data.execution.errorMessage}</p></div>}
       </aside>
     </div>
-    {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black text-coral">PRIVATE RESULT</p><h2 className="text-xl font-black">내 실행 결과물</h2></div><div className="flex flex-wrap gap-2"><a href={`/api/executions/${id}/download?format=markdown`} className="rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">글 .md 다운로드</a><a href={`/api/executions/${id}/download?format=json`} className="rounded-full border px-4 py-2 text-sm font-bold">전체 .json 다운로드</a></div></div><p className="mt-2 text-xs text-stone-500">이 결과는 실행한 계정만 조회하고 내려받을 수 있습니다.</p><div className="mt-5 grid gap-6 lg:grid-cols-[1fr_340px]">{result.article&&<div><span className="rounded-full bg-cream px-3 py-1 text-xs font-black">글 초안</span><MarkdownResult content={result.article}/></div>}{result.publish&&<div className="rounded-2xl bg-emerald-50 p-5"><b className="text-leaf">발행 검증</b><MarkdownResult content={result.publish}/></div>}</div>{(artifacts.data?.length??0)>0&&<div className="mt-6 border-t pt-5"><h3 className="font-black">외부 생성 파일</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">{artifacts.data?.map(item=><a key={item.id} href={`/api/artifacts/${item.id}/download`} className="rounded-2xl border p-4 hover:border-coral"><b className="block">{item.fileName}</b><small className="text-stone-500">{item.mimeType} · {item.status}</small></a>)}</div></div>}<details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
+    {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black text-coral">PRIVATE RESULT · {resultFormat}</p><h2 className="text-xl font-black">내 실행 결과물</h2></div><div className="flex flex-wrap gap-2">{resultFormat!=="EXTERNAL"&&<a href={`/api/executions/${id}/download?format=${resultFormat.toLowerCase()}`} className="rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">최종 {resultFormatLabel(resultFormat)} 다운로드</a>}<a href={`/api/executions/${id}/download?format=debug-json`} className="rounded-full border px-4 py-2 text-sm font-bold">실행 기록 .json</a></div></div><p className="mt-2 text-xs text-stone-500">결과 형식과 담당 단계는 하네스가 결정합니다. 실행 결과는 실행한 계정만 접근할 수 있습니다.</p><div className="mt-5">{resultFormat==="JSON"?<pre className="max-h-[34rem] overflow-auto whitespace-pre-wrap rounded-2xl bg-stone-950 p-5 text-xs text-stone-100">{typeof result==="string"?result:JSON.stringify(result,null,2)}</pre>:resultFormat==="EXTERNAL"?<p className="rounded-2xl bg-amber-50 p-5 text-sm">외부 서비스가 만든 파일은 아래 결과물 목록에서 MIME 형식 그대로 내려받습니다.</p>:<MarkdownResult content={typeof result==="string"?result:JSON.stringify(result,null,2)}/>}</div>{(artifacts.data?.length??0)>0&&<div className="mt-6 border-t pt-5"><h3 className="font-black">외부 생성 파일</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">{artifacts.data?.map(item=><a key={item.id} href={`/api/artifacts/${item.id}/download`} className="rounded-2xl border p-4 hover:border-coral"><b className="block">{item.fileName}</b><small className="text-stone-500">{item.mimeType} · {item.status}</small></a>)}</div></div>}<details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
   </AppShell>;
 }
 
@@ -79,8 +81,11 @@ function buildScene(events:EventItem[],agents:OfficeAgent[],items:OfficeRoomItem
 }
 function eventLabel(type:string){return ({EXECUTION_QUEUED:"대기열 등록",EXECUTION_STARTED:"업무 시작",STEP_STARTED:"담당자가 작업 구역으로 이동",MODEL_REQUEST_SENT:"모델에 요청",TOOL_CALLED:"외부 도구 사용",STEP_OUTPUT_CREATED:"결과물 생성",STEP_COMPLETED:"다음 담당자에게 전달",STEP_FAILED:"단계 실패",WAITING_APPROVAL:"승인 요청",EXECUTION_COMPLETED:"전체 업무 완료",EXECUTION_FAILED:"실행 실패"} as Record<string,string>)[type]??type}
 
-function extractExecutionResult(output?:Record<string,unknown>){
+function extractExecutionResult(output?:Record<string,unknown>,resultStepKey?:string):string|null{
  if(!output)return null;
+ const configured=resultStepKey?output[resultStepKey]:undefined;
+ if(configured&&typeof configured==="object"&&!Array.isArray(configured)){const value=configured as Record<string,unknown>;return typeof value.result==="string"?value.result:JSON.stringify(value,null,2)}
+ if(configured!==undefined)return typeof configured==="string"?configured:JSON.stringify(configured,null,2);
  const stages=Object.values(output).filter((value):value is Record<string,unknown>=>!!value&&typeof value==="object"&&!Array.isArray(value));
  const finalText=typeof output.result==="string"?output.result:undefined;
  const writer=stages.find(stage=>{
@@ -90,8 +95,11 @@ function extractExecutionResult(output?:Record<string,unknown>){
  });
  const publishResult=finalText&&(/publish result|draft_ready|external_write/i.test(finalText))?finalText:undefined;
  const article=typeof writer?.result==="string"?writer.result:publishResult?undefined:finalText;
- return article||publishResult?{article,publish:publishResult}:null;
+ return article??publishResult??finalText??JSON.stringify(output,null,2);
 }
+
+function resolveResultFormat(configured:ResultFormat,result:unknown):ResultFormat{if(configured!=="AUTO")return configured;if(typeof result!=="string")return "JSON";const value=result.trimStart();if(/^\{|^\[/.test(value))return "JSON";if(/^<!doctype html|^<html/i.test(value))return "HTML";if(value.split("\n").some(line=>/^#{1,3} /.test(line)))return "MARKDOWN";return "TEXT"}
+function resultFormatLabel(format:ResultFormat){return ({AUTO:"파일",TEXT:"텍스트 (.txt)",MARKDOWN:"Markdown (.md)",HTML:"HTML (.html)",JSON:"JSON (.json)",CSV:"CSV (.csv)",EXTERNAL:"외부 파일"} as Record<ResultFormat,string>)[format]}
 
 function MarkdownResult({content}:{content:string}){
  const rawLines=content.split("\n");const frontmatterEnd=rawLines[0]?.trim()==="---"?rawLines.slice(1).findIndex(line=>line.trim()==="---"):-1;const lines=frontmatterEnd>=0?rawLines.slice(frontmatterEnd+2):rawLines;

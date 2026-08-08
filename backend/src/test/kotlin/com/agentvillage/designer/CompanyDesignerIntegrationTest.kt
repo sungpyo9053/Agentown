@@ -106,6 +106,6 @@ class CompanyDesignerIntegrationTest : IntegrationTestSupport() {
                 .contentType(MediaType.APPLICATION_JSON).content("""{"draft":$unsafeDraft,"stubMode":true}"""),
         ).andExpect(status().isOk)
             .andExpect(jsonPath("$.valid").value(false))
-            .andExpect(jsonPath("$.errors[0]").value(org.hamcrest.Matchers.containsString("사용자 코드")))
+            .andExpect(jsonPath("$.errors").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("사용자 코드"))))
     }
 }

@@ -9,6 +9,7 @@ import java.time.Instant
 import java.util.UUID
 
 enum class HarnessStatus { DRAFT, PUBLISHED, DEPRECATED, BLOCKED }
+enum class HarnessResultFormat { AUTO, TEXT, MARKDOWN, HTML, JSON, CSV, EXTERNAL }
 enum class HarnessStepType { LLM, EXTERNAL_API, DOWNLOAD, APPROVAL }
 enum class EdgeCondition { SUCCESS, APPROVE, REJECT, FAILURE }
 
@@ -20,6 +21,9 @@ class Harness(
     @Column(length = 1000) var description: String? = null,
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) var visibility: Visibility = Visibility.PRIVATE,
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) var status: HarnessStatus = HarnessStatus.DRAFT,
+    @Enumerated(EnumType.STRING) @Column(name = "result_format", nullable = false, length = 20)
+    var resultFormat: HarnessResultFormat = HarnessResultFormat.AUTO,
+    @Column(name = "result_step_key", length = 100) var resultStepKey: String? = null,
 ) : AuditedEntity()
 
 @Entity @Table(name = "harness_steps")

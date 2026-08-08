@@ -1,6 +1,6 @@
 "use client";
 
-type CharacterKey = "writer" | "reviewer" | "designer" | "developer" | "manager";
+export type CharacterKey = "writer" | "reviewer" | "designer" | "developer" | "manager";
 export type AgentVisualStatus = "IDLE" | "WORKING" | "THINKING" | "TOOL" | "SUCCESS" | "WAITING" | "FAILED";
 
 const palettes: Record<CharacterKey, { hair: string; shirt: string; accent: string; skin: string }> = {
@@ -12,11 +12,11 @@ const palettes: Record<CharacterKey, { hair: string; shirt: string; accent: stri
 };
 
 export const characterLabels: Record<CharacterKey, string> = {
-  writer: "작가",
-  reviewer: "검수자",
-  designer: "디자이너",
-  developer: "개발자",
-  manager: "매니저",
+  writer: "코랄 스타일",
+  reviewer: "블루 스타일",
+  designer: "바이올렛 스타일",
+  developer: "민트 스타일",
+  manager: "골드 스타일",
 };
 
 function normalizedKey(value: string): CharacterKey {
@@ -30,7 +30,7 @@ export function AgentCharacter({ characterKey, status = "IDLE", className = "" }
 }) {
   const key = normalizedKey(characterKey);
   const color = palettes[key];
-  return <div className={`agent-character agent-character--${status.toLowerCase()} ${className}`} role="img" aria-label={`${characterLabels[key]} 캐릭터 · ${status}`}>
+  return <div className={`agent-character agent-character--${status.toLowerCase()} ${className}`} role="img" aria-label={`${characterLabels[key]} 외형 · ${status}`}>
     <svg viewBox="0 0 140 190" aria-hidden="true">
       <ellipse cx="70" cy="181" rx="40" ry="7" fill="#2d2926" opacity=".12" />
       <g className="agent-character__body">

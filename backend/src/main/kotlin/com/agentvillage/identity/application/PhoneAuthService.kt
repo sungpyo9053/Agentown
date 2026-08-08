@@ -5,6 +5,7 @@ import com.agentvillage.identity.domain.PhoneVerification
 import com.agentvillage.identity.infrastructure.PhoneVerificationRepository
 import com.agentvillage.identity.infrastructure.UserAccountRepository
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -19,6 +20,7 @@ interface SmsGateway {
 }
 
 @Service
+@ConditionalOnProperty(name = ["auth.sms.provider"], havingValue = "stub", matchIfMissing = true)
 class StubSmsGateway : SmsGateway {
     override fun send(phone: String, message: String) = Unit
 }

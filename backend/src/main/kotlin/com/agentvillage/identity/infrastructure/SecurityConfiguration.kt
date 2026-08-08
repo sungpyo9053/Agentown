@@ -25,6 +25,7 @@ import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.CorsConfigurationSource
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 import org.springframework.http.HttpStatus
+import org.springframework.beans.factory.annotation.Value
 import java.io.Serializable
 import java.util.UUID
 
@@ -101,9 +102,11 @@ class SecurityConfiguration {
     }
 
     @Bean
-    fun corsConfigurationSource(): CorsConfigurationSource {
+    fun corsConfigurationSource(
+        @Value("\${security.cors.allowed-origins:http://localhost:3000}") allowedOrigins: String,
+    ): CorsConfigurationSource {
         val configuration = CorsConfiguration().apply {
-            allowedOrigins = listOf("http://localhost:3000")
+            this.allowedOrigins = allowedOrigins.split(',').map(String::trim).filter(String::isNotBlank)
             allowedMethods = listOf("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
             allowedHeaders = listOf("Content-Type", "X-XSRF-TOKEN")
             allowCredentials = true

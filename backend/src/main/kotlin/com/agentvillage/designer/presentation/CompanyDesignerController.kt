@@ -5,6 +5,7 @@ import com.agentvillage.designer.application.CompanyDesignDraft
 import com.agentvillage.designer.application.CompanyDesignerService
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import com.agentvillage.llmcredential.domain.LlmProvider
+import com.agentvillage.harness.domain.HarnessResultFormat
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
@@ -20,6 +21,7 @@ data class DesignCompanyRequest(
     @field:NotBlank @field:Size(max = 4_000) val goal: String,
     @field:NotBlank @field:Size(max = 4_000) val primaryInput: String,
     @field:NotBlank @field:Size(max = 4_000) val desiredOutput: String,
+    val outputFormat: HarnessResultFormat = HarnessResultFormat.AUTO,
     @field:Size(max = 4_000) val requiredEvidence: String = "",
     @field:Size(max = 4_000) val prohibitions: String = "",
     @field:Size(max = 4_000) val approvalPolicy: String = "",
@@ -28,7 +30,7 @@ data class DesignCompanyRequest(
     val credentialId: UUID? = null,
     val stubMode: Boolean = false,
 ) {
-    fun toCommand() = CompanyDesignCommand(companyName, goal, primaryInput, desiredOutput, requiredEvidence, prohibitions, approvalPolicy, provider, model, credentialId, stubMode)
+    fun toCommand() = CompanyDesignCommand(companyName, goal, primaryInput, desiredOutput, outputFormat, requiredEvidence, prohibitions, approvalPolicy, provider, model, credentialId, stubMode)
 }
 
 data class ApplyCompanyDesignRequest(val draft: CompanyDesignDraft, val credentialId: UUID? = null, val stubMode: Boolean = false)

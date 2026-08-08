@@ -9,5 +9,8 @@ node_modules/
 .next/
 .env
 .env.local
+deploy/.env.production
+frontend/playwright-report/
+frontend/test-results/
 *.iml
 *.tsbuildinfo

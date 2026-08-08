@@ -11,6 +11,10 @@
 
 ## 로컬 실행
 
+### macOS 더블클릭 실행
+
+Finder에서 `Agentown 시작.command`를 더블클릭하면 Docker Desktop, PostgreSQL, 백엔드와 프론트엔드를 한 번에 준비하고 브라우저를 엽니다. 종료할 때는 `Agentown 종료.command`를 더블클릭합니다. 종료는 DB 볼륨을 삭제하지 않으므로 계정과 하네스가 유지됩니다.
+
 ```bash
 cp .env.example .env
 docker compose up --build
@@ -42,6 +46,7 @@ npm --prefix frontend run dev
 npm --prefix frontend ci
 npm --prefix frontend run lint
 npm --prefix frontend run build
+npm --prefix frontend run test:e2e
 ```
 
 Docker가 가능한 환경에서는 통합 테스트가 Testcontainers PostgreSQL을 자동으로 사용합니다. 로컬 PostgreSQL을 쓰려면 `TEST_DATABASE_URL`, `TEST_DATABASE_USERNAME`, `TEST_DATABASE_PASSWORD`를 지정하세요.
@@ -108,3 +113,7 @@ VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하�
 - 외부 API 키 없이 전체 흐름을 검증하는 Stub 실행
 
 사용자 Python/Node/Shell, 임의 패키지, Dockerfile과 바이너리는 실행하지 않습니다.
+
+## 운영 배포 준비
+
+서버 구매 전까지 필요한 운영 구성이 `docker-compose.production.yml`과 `deploy/`에 포함되어 있습니다. 운영 구성은 Caddy 자동 HTTPS만 공개하고 Backend와 PostgreSQL은 내부 네트워크에 둡니다. 서버·고정 IP·도메인·SMS 계약이 준비되면 [`docs/PRODUCTION_RUNBOOK.md`](docs/PRODUCTION_RUNBOOK.md)의 값 입력과 배포 점검을 수행하세요.

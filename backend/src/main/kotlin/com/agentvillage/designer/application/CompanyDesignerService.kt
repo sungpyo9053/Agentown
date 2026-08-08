@@ -10,6 +10,7 @@ import com.agentvillage.execution.application.AiModelGatewayRegistry
 import com.agentvillage.execution.application.AiModelRequest
 import com.agentvillage.execution.application.DecryptedCredential
 import com.agentvillage.harness.application.HarnessService
+import com.agentvillage.harness.domain.HarnessResultFormat
 import com.agentvillage.llmcredential.application.CredentialDirectory
 import com.agentvillage.llmcredential.application.SupportedModelCatalog
 import com.agentvillage.llmcredential.domain.LlmProvider
@@ -25,6 +26,7 @@ data class CompanyDesignCommand(
     val goal: String,
     val primaryInput: String,
     val desiredOutput: String,
+    val outputFormat: HarnessResultFormat = HarnessResultFormat.AUTO,
     val requiredEvidence: String,
     val prohibitions: String,
     val approvalPolicy: String,
@@ -65,6 +67,8 @@ data class CompanyDesignDraft(
     val steps: List<DesignedStep>,
     val approvalAfterLast: Boolean = true,
     val designSource: String = "BYOK",
+    val resultAgentKey: String? = null,
+    val outputFormat: HarnessResultFormat = HarnessResultFormat.AUTO,
 )
 
 data class CompanyDesignResult(val draft: CompanyDesignDraft, val valid: Boolean, val errors: List<String>)
@@ -103,7 +107,9 @@ class CompanyDesignerService(
                         providerOptions = options,
                     ),
                 )
-                parseDraft(response.content, command)
+                parseDraft(response.content, command).let { draft ->
+                    draft.copy(outputFormat = if (command.outputFormat == HarnessResultFormat.AUTO) draft.outputFormat else command.outputFormat)
+                }
             }
         }
         val errors = validate(draft, ownerId, command.credentialId, command.stubMode)
@@ -158,6 +164,11 @@ class CompanyDesignerService(
             ordered.map { createdIds.getValue(agentByKey.getValue(it.agentKey).key) },
             approvalAfterLast = draft.approvalAfterLast,
         )
+        val resultAgentId = (draft.resultAgentKey?.let(createdIds::get)
+            ?: ordered.asReversed().mapNotNull { createdIds[it.agentKey] }.first())
+        harnesses.configureResult(harness.id, ownerId, resolvedFormat(draft.outputFormat, agentByKey.getValue(
+            draft.resultAgentKey?.takeIf(agentByKey::containsKey) ?: ordered.last().agentKey
+        ).desiredOutput), resultAgentId)
         return AppliedCompanyDesign(harness.id, createdIds.values.toList())
     }
 
@@ -177,6 +188,7 @@ class CompanyDesignerService(
         if (draft.steps.isEmpty() || draft.steps.size != draft.agents.size) errors += "각 구성원은 정확히 한 번 실행 순서에 포함되어야 합니다."
         if (draft.steps.map { it.sequence }.sorted() != (1..draft.steps.size).toList()) errors += "실행 순서는 1부터 연속되어야 합니다."
         if (draft.steps.map { it.agentKey }.toSet() != draft.agents.map { it.key }.toSet()) errors += "실행 단계가 존재하는 구성원을 정확히 참조해야 합니다."
+        if (draft.resultAgentKey == null || draft.agents.none { it.key == draft.resultAgentKey }) errors += "최종 결과 담당 구성원이 존재하지 않습니다."
         if (draft.steps.any { it.maxRetries !in 0..3 }) errors += "재시도 횟수는 0~3회여야 합니다."
         if (draft.agents.any { containsDangerousWork(it.taskDescription + " " + it.responsibility) }) errors += "사용자 코드, Shell, 패키지 또는 컨테이너 실행 작업은 허용되지 않습니다."
         draft.agents.forEach { agent ->
@@ -216,19 +228,25 @@ class CompanyDesignerService(
                 Triple("reviewer", "품질 검수자", "입력, 근거와 결과를 대조해 완료 조건을 검증한다."),
             )
         }
+        val resultAgentKey = templates.firstOrNull { (key, role) -> key !in setOf("reviewer", "validator") && listOf("작가", "작성자", "담당자", "specialist", "responder", "writer").any { it in (key + role).lowercase() } }?.first
+            ?: templates.dropLast(1).lastOrNull()?.first ?: templates.last().first
         val designed = templates.mapIndexed { index, (key, role, task) -> DesignedAgent(
             key = key,
             name = role,
             role = role,
             responsibility = task,
             taskDescription = "$task 입력: ${command.primaryInput}",
-            desiredOutput = if (index == templates.lastIndex) command.desiredOutput else "다음 구성원이 바로 사용할 수 있는 구조화된 중간 결과",
+            desiredOutput = when {
+                key == resultAgentKey -> command.desiredOutput
+                index == templates.lastIndex -> "APPROVED 또는 REJECTED 판정, 근거와 구체적인 수정 지시"
+                else -> "다음 구성원이 바로 사용할 수 있는 구조화된 중간 결과"
+            },
             requiredEvidence = command.requiredEvidence.ifBlank { "제공된 입력과 직접 확인한 근거를 구분한다." },
             guide = "결론과 근거, 미검증 범위, 다음 전달 항목을 명확히 구분한다.",
             prohibitions = command.prohibitions.ifBlank { "확인하지 않은 사실과 비밀정보를 만들거나 출력하지 않는다." },
             rewriteCriteria = "필수 입력 누락, 근거 없는 주장, 출력 형식 불일치가 있으면 다시 작성한다.",
             approvalCriteria = if (index == templates.lastIndex) command.approvalPolicy.ifBlank { "요청 결과와 근거, 한계가 모두 확인되면 승인한다." } else "다음 단계가 추가 질문 없이 작업할 수 있으면 완료한다.",
-            characterKey = listOf("developer", "writer", "reviewer").getOrElse(index) { "manager" },
+            characterKey = listOf("developer", "writer", "reviewer", "designer", "manager")[index % 5],
             provider = command.provider,
             recommendedModel = command.model,
         ) }
@@ -239,7 +257,22 @@ class CompanyDesignerService(
             steps = designed.mapIndexed { index, agent -> DesignedStep("step-${index + 1}", agent.key, index + 1, if (index == designed.lastIndex) 2 else 1) },
             approvalAfterLast = true,
             designSource = "STUB",
+            resultAgentKey = resultAgentKey,
+            outputFormat = resolvedFormat(command.outputFormat, command.desiredOutput),
         )
+    }
+
+    private fun resolvedFormat(format: HarnessResultFormat, desiredOutput: String): HarnessResultFormat {
+        if (format != HarnessResultFormat.AUTO) return format
+        val normalized = desiredOutput.lowercase()
+        return when {
+            "html" in normalized || "웹페이지" in normalized -> HarnessResultFormat.HTML
+            "markdown" in normalized || "마크다운" in normalized || Regex("\\bmd\\b").containsMatchIn(normalized) -> HarnessResultFormat.MARKDOWN
+            "json" in normalized -> HarnessResultFormat.JSON
+            "csv" in normalized -> HarnessResultFormat.CSV
+            listOf("pdf", "ppt", "docx", "이미지", "영상", "음성", "zip").any(normalized::contains) -> HarnessResultFormat.EXTERNAL
+            else -> HarnessResultFormat.TEXT
+        }
     }
 
     private fun designerSystemPrompt() = """You design safe declarative AI companies for Agentown.
@@ -256,6 +289,7 @@ Company name: ${command.companyName}
 Goal: ${command.goal}
 Primary input: ${command.primaryInput}
 Desired output: ${command.desiredOutput}
+Requested output format: ${command.outputFormat}
 Required evidence: ${command.requiredEvidence}
 Prohibitions: ${command.prohibitions}
 Human approval policy: ${command.approvalPolicy}
@@ -263,7 +297,7 @@ Provider: ${command.provider}
 Recommended model: ${command.model}
 
 Required JSON shape:
-{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"...","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager","provider":"${command.provider}","recommendedModel":"${command.model}"}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"${command.provider}"}
+{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"any free-form job role","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager (appearance only, never a role constraint)","provider":"${command.provider}","recommendedModel":"${command.model}"}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"${command.provider}","resultAgentKey":"writer","outputFormat":"AUTO|TEXT|MARKDOWN|HTML|JSON|CSV|EXTERNAL"}
 """.trimIndent()
 
     companion object {

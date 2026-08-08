@@ -28,17 +28,17 @@ class HarnessService(
     private val versions: HarnessVersionRepository,
     private val agents: AgentDirectory,
 ) : HarnessDirectory {
-    @Transactional fun create(ownerId: UUID, name: String, description: String?) =
-        harnesses.save(Harness(ownerId = ownerId, name = name.trim(), description = description?.trim()))
+    @Transactional fun create(ownerId: UUID, name: String, description: String?, resultFormat: HarnessResultFormat = HarnessResultFormat.AUTO) =
+        harnesses.save(Harness(ownerId = ownerId, name = name.trim(), description = description?.trim(), resultFormat = resultFormat))
     @Transactional(readOnly = true) fun list(ownerId: UUID) = harnesses.findAllByOwnerIdOrderByCreatedAtDesc(ownerId)
     @Transactional(readOnly = true) fun listPublic(ownerId: UUID) = harnesses.findAllByOwnerIdAndVisibilityInOrderByCreatedAtDesc(ownerId, listOf(Visibility.PUBLIC, Visibility.MARKET))
     @Transactional(readOnly = true) override fun requireOwnedView(id: UUID, ownerId: UUID): HarnessView {
         val harness = harnesses.findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException("HARNESS_NOT_FOUND", "하네스를 찾을 수 없습니다.")
         return HarnessView(harness, steps.findAllByHarnessIdOrderBySequenceNo(id), edges.findAllByHarnessId(id), versions.findFirstByHarnessIdOrderByCreatedAtDesc(id))
     }
-    @Transactional fun update(id: UUID, ownerId: UUID, name: String, description: String?, visibility: Visibility): Harness {
+    @Transactional fun update(id: UUID, ownerId: UUID, name: String, description: String?, visibility: Visibility, resultFormat: HarnessResultFormat): Harness {
         val h = requireOwnedView(id, ownerId).harness
-        h.name = name.trim(); h.description = description?.trim(); h.visibility = visibility
+        h.name = name.trim(); h.description = description?.trim(); h.visibility = visibility; h.resultFormat = resultFormat
         return h
     }
     @Transactional fun delete(id: UUID, ownerId: UUID) = harnesses.delete(requireOwnedView(id, ownerId).harness)
@@ -78,7 +78,22 @@ class HarnessService(
             )
         })
         edges.saveAll(saved.zipWithNext().map { (a, b) -> HarnessEdge(harnessId = id, sourceStepId = a.id, targetStepId = b.id) })
+        val harness = requireOwnedView(id, ownerId).harness
+        if (harness.resultStepKey == null || saved.none { it.stepKey == harness.resultStepKey }) {
+            harness.resultStepKey = saved.lastOrNull { it.stepType != HarnessStepType.APPROVAL }?.stepKey
+        }
         return requireOwnedView(id, ownerId)
+    }
+
+    @Transactional
+    fun configureResult(id: UUID, ownerId: UUID, format: HarnessResultFormat, resultAgentId: UUID? = null): Harness {
+        val view = requireOwnedView(id, ownerId)
+        val resultStep = resultAgentId?.let { agentId -> view.steps.firstOrNull { it.agentId == agentId } }
+            ?: view.steps.lastOrNull { it.stepType != HarnessStepType.APPROVAL }
+            ?: throw BadRequestException("HARNESS_RESULT_STEP_NOT_FOUND", "결과를 만들 실행 단계를 선택해 주세요.")
+        view.harness.resultFormat = format
+        view.harness.resultStepKey = resultStep.stepKey
+        return view.harness
     }
 
     @Transactional(readOnly = true)
@@ -130,6 +145,12 @@ class HarnessService(
         val approvalBeforeLast = stepMaps.any { it["type"]?.toString() == HarnessStepType.APPROVAL.name }
         val approvalAfterLast = stepMaps.any { it["requiresApproval"] == true }
         connect(cloned.id, ownerId, clonedAgentIds, approvalAfterLast, approvalBeforeLast)
+        @Suppress("UNCHECKED_CAST") val result = version.snapshotJson["result"] as? Map<String, Any>
+        val resultFormat = result?.get("format")?.toString()?.let { runCatching { HarnessResultFormat.valueOf(it) }.getOrNull() }
+            ?: HarnessResultFormat.AUTO
+        cloned.resultFormat = resultFormat
+        cloned.resultStepKey = result?.get("stepKey")?.toString()?.takeIf { key -> requireOwnedView(cloned.id, ownerId).steps.any { it.stepKey == key } }
+            ?: requireOwnedView(cloned.id, ownerId).steps.lastOrNull { it.stepType != HarnessStepType.APPROVAL }?.stepKey
         return cloned
     }
 
@@ -152,6 +173,7 @@ class HarnessService(
 
     private fun snapshot(view: HarnessView, descriptors: Map<UUID, AgentDescriptor?>): Map<String, Any> = mapOf(
         "name" to view.harness.name, "description" to (view.harness.description ?: ""),
+        "result" to mapOf("format" to view.harness.resultFormat.name, "stepKey" to (view.harness.resultStepKey ?: "")),
         "agents" to descriptors.values.filterNotNull().map { mapOf(
             "name" to it.name, "role" to it.role, "script" to it.script, "guide" to (it.guide ?: ""),
             "provider" to it.provider.name, "recommendedModel" to it.model, "temperature" to it.temperature,

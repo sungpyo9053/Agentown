@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatusCode
 import org.springframework.stereotype.Component
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.web.client.RestClient
 import org.springframework.web.client.RestClientException
 
@@ -27,8 +28,8 @@ abstract class HttpCredentialVerifier(
 }
 
 @Component
-class OpenAiCredentialVerifier(builder: RestClient.Builder) :
-    HttpCredentialVerifier(LlmProvider.OPENAI, builder.baseUrl("https://api.openai.com").build()) {
+class OpenAiCredentialVerifier(builder: RestClient.Builder, @Value("\${providers.openai.base-url:https://api.openai.com}") baseUrl: String) :
+    HttpCredentialVerifier(LlmProvider.OPENAI, builder.baseUrl(baseUrl).build()) {
     override fun verify(secret: CharArray, providerOptions: Map<String, Any>) = perform { client ->
         client.get().uri("/v1/models")
             .header(HttpHeaders.AUTHORIZATION, "Bearer ${String(secret)}")
@@ -38,8 +39,8 @@ class OpenAiCredentialVerifier(builder: RestClient.Builder) :
 }
 
 @Component
-class AnthropicCredentialVerifier(builder: RestClient.Builder) :
-    HttpCredentialVerifier(LlmProvider.ANTHROPIC, builder.baseUrl("https://api.anthropic.com").build()) {
+class AnthropicCredentialVerifier(builder: RestClient.Builder, @Value("\${providers.anthropic.base-url:https://api.anthropic.com}") baseUrl: String) :
+    HttpCredentialVerifier(LlmProvider.ANTHROPIC, builder.baseUrl(baseUrl).build()) {
     override fun verify(secret: CharArray, providerOptions: Map<String, Any>) = perform { client ->
         client.get().uri("/v1/models")
             .header("x-api-key", String(secret)).header("anthropic-version", "2023-06-01")
@@ -49,8 +50,8 @@ class AnthropicCredentialVerifier(builder: RestClient.Builder) :
 }
 
 @Component
-class GoogleCredentialVerifier(builder: RestClient.Builder) :
-    HttpCredentialVerifier(LlmProvider.GOOGLE, builder.baseUrl("https://generativelanguage.googleapis.com").build()) {
+class GoogleCredentialVerifier(builder: RestClient.Builder, @Value("\${providers.google.base-url:https://generativelanguage.googleapis.com}") baseUrl: String) :
+    HttpCredentialVerifier(LlmProvider.GOOGLE, builder.baseUrl(baseUrl).build()) {
     override fun verify(secret: CharArray, providerOptions: Map<String, Any>) = perform { client ->
         client.get().uri("/v1beta/models").header("x-goog-api-key", String(secret))
             .retrieve().onStatus(HttpStatusCode::isError) { _, response -> throw IllegalStateException("HTTP ${response.statusCode}") }
@@ -63,4 +64,3 @@ class CredentialVerifierConfiguration {
     @Bean
     fun credentialVerifierRegistry(verifiers: List<ProviderCredentialVerifier>) = CredentialVerifierRegistry(verifiers)
 }
-

@@ -22,6 +22,8 @@
 ├── frontend/                Next.js App Router 애플리케이션
 ├── docs/                    구현 및 운영 문서
 ├── docker-compose.yml       Web/API/PostgreSQL 로컬 스택
+├── docker-compose.production.yml  Caddy HTTPS 운영 스택
+├── deploy/                  Caddy, 운영 환경 예시, DB 백업
 └── SPEC.md                  제품 요구사항 단일 기준
 ```
 
@@ -102,6 +104,18 @@
 
 완료 기준: 외부 서버, SMS 계약, KMS 계정 없이 Docker Compose에서 가입부터 설계·실행·공유·복제·후기까지 검증할 수 있다.
 
+### 6. 운영 준비와 회귀 검증
+
+- Provider별 실제 HTTP 계약과 자격증명 검증 계약 테스트
+- 로그인·인증·설계·실행 API별 IP 기반 Rate Limit
+- 실행 성공률·결과·소요 시간 Actuator 메트릭
+- 소유권·HTTPS·SSRF 검증을 통과한 결과 파일 스트리밍 프록시
+- 프로세스 재시작 후 오래된 RUNNING 작업의 PostgreSQL Queue 복구 테스트
+- 회원가입부터 회사 설계·발행·실행·결과 다운로드까지 Playwright E2E
+- Caddy 자동 HTTPS, 비공개 DB/API 네트워크, 운영 비밀 예시와 백업 Runbook
+
+완료 기준: 로컬 전체 테스트와 브라우저 E2E, production Compose 구문 검증, GitHub Actions가 통과한다. 서버 구매 후에만 가능한 DNS·공인 인증서·실제 SMS·외부 백업 복구는 운영 인수 항목으로 명시한다.
+
 ## 아키텍처 결정
 
 - 초기에는 단일 Spring Boot 배포와 PostgreSQL만 사용한다.
@@ -120,6 +134,7 @@
 4. `npm --prefix frontend run build`
 5. `docker compose config`
 6. `docker compose up --build` 후 health API와 브라우저 HTTP 응답 확인
+7. `npm --prefix frontend run test:e2e`
 
 ## 후속 범위
 
