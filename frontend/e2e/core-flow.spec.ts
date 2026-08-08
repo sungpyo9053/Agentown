@@ -22,6 +22,15 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await page.getByRole("button", { name: "인증하고 가입하기" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 
+  await page.goto("/settings/credentials");
+  await expect(page.getByText("Project API Secret Key")).toBeVisible();
+  await expect(page.getByText(/sk-proj-/)).toBeVisible();
+  await page.getByLabel("서비스").selectOption("ANTHROPIC");
+  await expect(page.getByText("Anthropic API Key")).toBeVisible();
+  await expect(page.getByRole("link", { name: /공식 키 발급 화면/ })).toHaveAttribute("href", /console\.anthropic\.com/);
+  await page.getByLabel("서비스").selectOption("GOOGLE");
+  await expect(page.getByText("Gemini API Key")).toBeVisible();
+
   await page.goto("/harnesses/new");
   await page.getByLabel("회사 이름은 무엇인가요?").fill("E2E 블로그 회사");
   await page.getByLabel("이 회사가 해결할 문제는 무엇인가요?").fill("검증 가능한 기술 블로그 글을 작성하고 검수한다.");
