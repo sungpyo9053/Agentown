@@ -5,12 +5,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#2d2926",
-        cream: "#fff9ec",
-        leaf: "#276749",
-        coral: "#f06b54"
+        ink: "#18181b",
+        cream: "#f7f7f6",
+        leaf: "#16a34a",
+        coral: "#4f46e5"
       },
-      boxShadow: { card: "0 18px 50px rgba(73, 55, 38, 0.12)" }
+      boxShadow: { card: "0 1px 2px rgba(15,15,15,.04), 0 8px 24px rgba(15,15,15,.06)" }
     }
   },
   plugins: []
