@@ -16,6 +16,7 @@ type Credential = { id: string; provider: string; maskedSecret: string; status: 
 type Provider = "OPENAI" | "ANTHROPIC" | "GOOGLE";
 type ModelOption = { id: string; displayName: string };
 type Execution = { id:string; status:string; currentStepKey?:string; createdAt:string };
+type Harness = { id: string; name: string; description?: string; status: string; visibility: string };
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -26,6 +27,7 @@ export default function DashboardPage() {
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api<Agent[]>("/agents") });
   const credentials = useQuery({ queryKey: ["credentials"], queryFn: () => api<Credential[]>("/llm-credentials") });
   const executions = useQuery({ queryKey: ["executions"], queryFn: () => api<Execution[]>("/executions") });
+  const harnesses = useQuery({ queryKey: ["harnesses"], queryFn: () => api<Harness[]>("/harnesses") });
 
   if (home.isPending) return <AppShell kicker="MY AI OFFICE" title="회사를 불러오는 중…"><div className="h-96 animate-pulse rounded-[2rem] bg-white shadow-card"/></AppShell>;
   if (home.error instanceof ApiError && home.error.status === 401) return <AppShell kicker="SESSION EXPIRED" title="로그인이 필요해요"><p className="text-stone-500">서버가 재시작되었거나 로그인 세션이 만료되었습니다.</p><Link href="/login" className="mt-6 inline-block rounded-full bg-ink px-6 py-3 text-white">다시 로그인하기</Link></AppShell>;
@@ -33,24 +35,46 @@ export default function DashboardPage() {
   return <AppShell kicker="MY AI OFFICE" title={home.data.title}>
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-stone-500">@{home.data.handle} · 방문 {home.data.visitCount}</p></div>
-      <div className="flex flex-wrap gap-2"><Link href="/harnesses" className="rounded-full border bg-white px-5 py-3 font-bold">AI 팀</Link><Link href="/home/edit" className="rounded-full border bg-white px-5 py-3 font-bold">🏢 회사 꾸미기</Link><button onClick={() => setCredentialOpen(!credentialOpen)} className="rounded-full border bg-white px-5 py-3 font-bold">🔐 API 키</button><button onClick={() => setAgentOpen(!agentOpen)} className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 구성원</button></div>
     </div>
 
-    {credentialOpen && <CredentialForm done={() => { setCredentialOpen(false); client.invalidateQueries({ queryKey: ["credentials"] }); }} />}
-    {agentOpen && <AgentForm credentials={credentials.data ?? []} done={() => { setAgentOpen(false); client.invalidateQueries({ queryKey: ["agents"] }); }} />}
-
-    <section className="mt-8 grid gap-6 lg:grid-cols-[1fr_310px]">
-      <div className="overflow-hidden rounded-[2rem] border-[8px] border-white bg-white shadow-card">
-        <div className="border-b bg-white px-6 py-4"><b>{home.data?.title}</b><p className="text-sm text-stone-500">{home.data?.introduction || "우리 팀이 일하는 디지털 오피스입니다."}</p></div>
-        <OfficeRoom title={home.data?.title ?? "AI OFFICE"} agents={agents.data ?? []} items={home.data?.items ?? []} backgroundKey={home.data?.backgroundKey} onAgentClick={(id)=>router.push(`/agents/${id}/edit`)} />
-        {!agents.isLoading && agents.data?.length === 0 && <button onClick={() => setAgentOpen(true)} className="m-6 w-[calc(100%-3rem)] rounded-3xl border-2 border-dashed border-leaf/30 bg-white p-8 font-bold text-leaf">첫 AI 구성원을 채용하세요 +</button>}
+    <section className="mt-10">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div><p className="text-xs font-bold uppercase tracking-wide text-coral">STEP 1</p><h2 className="mt-1 text-2xl font-black">AI 회사 만들기</h2><p className="mt-1 text-sm text-stone-500">구성원을 채용하고 오피스를 꾸미며 API 키를 연결하세요.</p></div>
+        <div className="flex flex-wrap gap-2"><Link href="/home/edit" className="rounded-full border bg-white px-5 py-3 font-bold">🏢 회사 꾸미기</Link><button onClick={() => setCredentialOpen(!credentialOpen)} className="rounded-full border bg-white px-5 py-3 font-bold">🔐 API 키</button><button onClick={() => setAgentOpen(!agentOpen)} className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 구성원</button></div>
       </div>
-      <aside className="space-y-4">
-        <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-coral">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
-        <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">연결된 모델 키</h2><div className="mt-4 space-y-3">{credentials.data?.map((item) => <div key={item.id} className="rounded-2xl bg-stone-50 p-3 text-sm"><b>{item.provider}</b><br /><span className="text-stone-500">{item.maskedSecret}</span><span className="ml-2 text-xs text-leaf">{item.status}</span></div>)}{credentials.data?.length === 0 && <p className="text-sm text-stone-500">BYOK 키를 연결하면 실제 작업을 시작할 수 있어요.</p>}</div></div>
-        <div className="rounded-3xl border border-stone-200 bg-cream p-6"><h2 className="font-bold">다음 단계</h2><p className="mt-2 text-sm leading-6 text-stone-600">구성원을 만들고 각자의 역할과 스크립트를 설정하세요. API 키는 복제하거나 공유할 때 포함되지 않습니다.</p></div>
-        <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">최근 실행</h2><div className="mt-3 space-y-2">{executions.data?.slice(0,5).map(item=><Link key={item.id} href={`/executions/${item.id}`} className="flex justify-between rounded-xl bg-stone-50 p-3 text-xs"><span>{item.currentStepKey??"실행"}</span><b className="text-leaf">{item.status}</b></Link>)}{executions.data?.length===0&&<p className="text-sm text-stone-500">아직 실행 기록이 없습니다.</p>}</div></div>
-      </aside>
+
+      {credentialOpen && <CredentialForm done={() => { setCredentialOpen(false); client.invalidateQueries({ queryKey: ["credentials"] }); }} />}
+      {agentOpen && <AgentForm credentials={credentials.data ?? []} done={() => { setAgentOpen(false); client.invalidateQueries({ queryKey: ["agents"] }); }} />}
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_310px]">
+        <div className="overflow-hidden rounded-[2rem] border-[8px] border-white bg-white shadow-card">
+          <div className="border-b bg-white px-6 py-4"><b>{home.data?.title}</b><p className="text-sm text-stone-500">{home.data?.introduction || "우리 팀이 일하는 디지털 오피스입니다."}</p></div>
+          <OfficeRoom title={home.data?.title ?? "AI OFFICE"} agents={agents.data ?? []} items={home.data?.items ?? []} backgroundKey={home.data?.backgroundKey} onAgentClick={(id)=>router.push(`/agents/${id}/edit`)} />
+          {!agents.isLoading && agents.data?.length === 0 && <button onClick={() => setAgentOpen(true)} className="m-6 w-[calc(100%-3rem)] rounded-3xl border-2 border-dashed border-leaf/30 bg-white p-8 font-bold text-leaf">첫 AI 구성원을 채용하세요 +</button>}
+        </div>
+        <aside className="space-y-4">
+          <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-coral">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
+          <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">연결된 모델 키</h2><div className="mt-4 space-y-3">{credentials.data?.map((item) => <div key={item.id} className="rounded-2xl bg-stone-50 p-3 text-sm"><b>{item.provider}</b><br /><span className="text-stone-500">{item.maskedSecret}</span><span className="ml-2 text-xs text-leaf">{item.status}</span></div>)}{credentials.data?.length === 0 && <p className="text-sm text-stone-500">BYOK 키를 연결하면 실제 작업을 시작할 수 있어요.</p>}</div></div>
+        </aside>
+      </div>
+    </section>
+
+    <section className="mt-14">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div><p className="text-xs font-bold uppercase tracking-wide text-coral">STEP 2</p><h2 className="mt-1 text-2xl font-black">내 하네스</h2><p className="mt-1 text-sm text-stone-500">구성원들을 순서대로 연결해 실행 가능한 팀으로 만드세요.</p></div>
+        <Link href="/harnesses/new" className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 하네스</Link>
+      </div>
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_310px]">
+        <div className="grid gap-4 md:grid-cols-2">
+          {harnesses.data?.map(item => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="rounded-3xl bg-white p-6 shadow-card transition hover:-translate-y-1"><div className="flex justify-between"><b className="text-xl">{item.name}</b><span className="text-xs font-bold text-leaf">{item.status}</span></div><p className="mt-3 text-stone-500">{item.description || "설명 없음"}</p></Link>)}
+          {harnesses.data?.length === 0 && <div className="rounded-3xl border-2 border-dashed p-10 text-center text-stone-500 md:col-span-2">구성원을 먼저 채용한 뒤, 첫 하네스를 만들어 연결하세요.</div>}
+        </div>
+        <aside className="space-y-4">
+          <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">최근 실행</h2><div className="mt-3 space-y-2">{executions.data?.slice(0,5).map(item=><Link key={item.id} href={`/executions/${item.id}`} className="flex justify-between rounded-xl bg-stone-50 p-3 text-xs"><span>{item.currentStepKey??"실행"}</span><b className="text-leaf">{item.status}</b></Link>)}{executions.data?.length===0&&<p className="text-sm text-stone-500">아직 실행 기록이 없습니다.</p>}</div></div>
+          <div className="rounded-3xl border border-stone-200 bg-cream p-6"><h2 className="font-bold">다음 단계</h2><p className="mt-2 text-sm leading-6 text-stone-600">하네스를 발행하면 구조만 내보내집니다. API 키와 실행 결과는 포함되지 않아요.</p></div>
+        </aside>
+      </div>
     </section>
   </AppShell>;
 }
