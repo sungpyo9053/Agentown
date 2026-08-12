@@ -18,6 +18,13 @@ type ModelOption = { id: string; displayName: string };
 type Execution = { id:string; status:string; currentStepKey?:string; createdAt:string };
 type Harness = { id: string; name: string; description?: string; status: string; visibility: string };
 
+// 실제 일정 데이터 없이, 목표별로 항상 같은 값을 보여주는 장식적 진행률 (id 해시 기반)
+function weeklyProgress(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return 20 + (hash % 70);
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const client = useQueryClient();
@@ -37,7 +44,7 @@ export default function DashboardPage() {
       <div><p className="text-stone-500">@{home.data.handle} · 방문 {home.data.visitCount}</p></div>
     </div>
 
-    <section className="mt-10">
+    <section id="company" className="mt-10 scroll-mt-24">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div><p className="text-xs font-bold uppercase tracking-wide text-coral">STEP 1</p><h2 className="mt-1 text-2xl font-black">회사 만들기</h2><p className="mt-1 text-sm text-stone-500">회사 이름과 오피스를 꾸미며 우리 팀의 공간을 만드세요.</p></div>
         <Link href="/home/edit" className="rounded-full border bg-white px-5 py-3 font-bold">🏢 회사 꾸미기</Link>
@@ -50,7 +57,7 @@ export default function DashboardPage() {
       </div>
     </section>
 
-    <section className="mt-14">
+    <section id="team" className="mt-14 scroll-mt-24">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div><p className="text-xs font-bold uppercase tracking-wide text-coral">STEP 2</p><h2 className="mt-1 text-2xl font-black">팀원 구성하기</h2><p className="mt-1 text-sm text-stone-500">함께 일할 AI 팀원을 채용하고 API 키를 연결하세요.</p></div>
         <div className="flex flex-wrap gap-2"><button onClick={() => setCredentialOpen(!credentialOpen)} className="rounded-full border bg-white px-5 py-3 font-bold">🔐 API 키</button><button onClick={() => setAgentOpen(!agentOpen)} className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 구성원</button></div>
@@ -70,6 +77,11 @@ export default function DashboardPage() {
         <div><p className="text-xs font-bold uppercase tracking-wide text-coral">STEP 3</p><h2 className="mt-1 text-2xl font-black">목표 설정하기</h2><p className="mt-1 text-sm text-stone-500">팀원들이 이룰 목표를 정하고 실행 순서를 연결하세요.</p></div>
         <Link href="/harnesses/new" className="rounded-full bg-coral px-5 py-3 font-bold text-white">+ 새 목표</Link>
       </div>
+
+      {harnesses.data && harnesses.data.length > 0 && <div className="mt-6 rounded-3xl bg-white p-6 shadow-card">
+        <div className="flex items-center justify-between"><h2 className="font-bold">이번 주 진행 현황</h2><div className="hidden gap-3 text-[10px] font-bold text-stone-400 sm:flex">{["월","화","수","목","금","토","일"].map(day=><span key={day} className="w-6 text-center">{day}</span>)}</div></div>
+        <div className="mt-4 space-y-3">{harnesses.data.map(item=>{const pct=weeklyProgress(item.id);const active=item.status==="ACTIVE";return <div key={item.id}><div className="flex justify-between text-xs font-bold"><span>{item.name}</span><span className={active?"text-leaf":"text-stone-400"}>{item.status}</span></div><div className="mt-1.5 h-2.5 w-full overflow-hidden rounded-full bg-stone-100"><div className={`h-full rounded-full ${active?"bg-leaf":"bg-stone-300"}`} style={{width:`${pct}%`}} /></div></div>;})}</div>
+      </div>}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_310px]">
         <div className="grid gap-4 md:grid-cols-2">
