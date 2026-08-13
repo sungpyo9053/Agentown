@@ -2,23 +2,21 @@ import { expect, test } from "@playwright/test";
 
 test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 동작한다", async ({ page }) => {
   const suffix = `${Date.now()}`.slice(-10);
-  const handle = `e2e_${suffix}`;
-  const phone = `010${suffix.slice(-8)}`;
+  const email = `e2e_${suffix}@example.com`;
 
   await page.goto("/signup");
   await page.getByLabel("이름").fill("브라우저 검증 사용자");
-  await page.getByLabel("아이디").fill(handle);
+  await page.getByPlaceholder("name@example.com").fill(email);
   await Promise.all([
     page.waitForResponse((response) => response.url().includes("/api/auth/availability") && response.ok()),
     page.getByRole("button", { name: "중복 확인" }).click(),
   ]);
-  await expect(page.getByText("사용 가능한 아이디입니다.")).toBeVisible({ timeout: 15_000 });
-  await page.getByLabel("비밀번호").fill("Agentown!2026");
-  await page.getByLabel("휴대폰 번호").fill(phone);
-  await page.getByRole("button", { name: "인증번호 발송" }).click();
-  await expect(page.getByText(/로컬 인증번호:/)).toBeVisible();
+  await expect(page.getByText("사용 가능한 이메일입니다.")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "이메일 인증번호 발송" }).click();
+  await expect(page.getByText(/개발 인증번호:/)).toBeVisible();
   await page.getByRole("button", { name: "인증 확인" }).click();
-  await expect(page.getByText("휴대폰 인증이 완료되었습니다.")).toBeVisible();
+  await expect(page.getByText("이메일 인증이 완료되었습니다.")).toBeVisible();
+  await page.getByLabel("비밀번호").fill("Agentown!2026");
   await page.getByRole("button", { name: "인증하고 가입하기" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 
