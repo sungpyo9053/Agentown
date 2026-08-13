@@ -60,6 +60,7 @@ export default function MyPage() {
           <p className="text-sm text-stone-300">@{me.data?.handle}</p>
           <button onClick={() => logout.mutate()} disabled={logout.isPending} className="mt-4 w-full rounded-xl border border-white/20 py-2 text-sm font-bold hover:bg-white/10">로그아웃</button>
         </div>
+        <Link href="/me/billing" className="block rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">🏠 구독 · 오피스 월세</h2><p className="mt-2 text-sm text-stone-500">무료 체험과 요금제를 확인합니다.</p></Link>
         <Link href="/settings/credentials" className="block rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">🔐 AI 연결 관리</h2><p className="mt-2 text-sm text-stone-500">모델 API 키를 등록·확인합니다.</p></Link>
         <Link href="/home/edit" className="block rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">🏢 회사 설정으로</h2><p className="mt-2 text-sm text-stone-500">회사 이름·소개·오피스 테마를 수정합니다.</p></Link>
       </aside>
