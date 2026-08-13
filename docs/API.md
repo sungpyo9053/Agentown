@@ -4,7 +4,7 @@
 
 `/auth/signup`, `/auth/login`, `/auth/me` 응답은 `role`을 반환한다. 값은 `USER` 또는 `ADMIN`이며 공개 가입 요청으로 역할을 지정하거나 관리자 권한을 획득할 수 없다.
 
-`GET /users/{handle}`은 표시 이름, 소개와 아바타만 반환하고 이메일·휴대폰·역할을 노출하지 않는다. `PATCH /users/me`, `PATCH /users/me/password`, `DELETE /users/me`로 프로필, 비밀번호와 탈퇴를 처리한다.
+`GET /users/{handle}`은 표시 이름, 소개와 아바타만 반환하고 이메일·역할을 노출하지 않는다. `PATCH /users/me`, `PATCH /users/me/password`, `DELETE /users/me`로 프로필, 비밀번호와 탈퇴를 처리한다.
 
 `POST /market/products`의 `official=true`는 `ADMIN`만 사용할 수 있다. 관리자는 자신이 소유하고 발행한 하네스 버전만 공식 상품으로 저장할 수 있다.
 

@@ -98,7 +98,7 @@ VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하�
 
 ## MVP 기능
 
-- 세션/CSRF 기반 회원가입·로그인과 미니홈·일촌·차단
+- 세션/CSRF 기반 이메일 인증 회원가입·이메일 로그인과 미니홈·일촌·차단
 - 회사 목표·입력·결과·근거·금지·승인 질문에서 전체 Agent·Guide·Schema·Harness 초안 생성
 - 사용자 OpenAI/Anthropic BYOK 설계와 API 비용 없는 Stub 설계, 서버 검증 후 승인 저장
 - 벽·바닥·책상·회의 공간이 있는 회사형 미니홈, 사람형 캐릭터 5종, 드래그 배치
@@ -118,4 +118,4 @@ VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하�
 
 ## 운영 배포 준비
 
-서버 구매 전까지 필요한 운영 구성이 `docker-compose.production.yml`과 `deploy/`에 포함되어 있습니다. 운영 구성은 Caddy 자동 HTTPS만 공개하고 Backend와 PostgreSQL은 내부 네트워크에 둡니다. 서버·고정 IP·도메인·SMS 계약이 준비되면 [`docs/PRODUCTION_RUNBOOK.md`](docs/PRODUCTION_RUNBOOK.md)의 값 입력과 배포 점검을 수행하세요.
+서버 구매 전까지 필요한 운영 구성이 `docker-compose.production.yml`과 `deploy/`에 포함되어 있습니다. 운영 구성은 Caddy 자동 HTTPS만 공개하고 Backend와 PostgreSQL은 내부 네트워크에 둡니다. 서버·고정 IP·도메인·이메일 발송 서비스가 준비되면 [`docs/PRODUCTION_RUNBOOK.md`](docs/PRODUCTION_RUNBOOK.md)의 값 입력과 배포 점검을 수행하세요.

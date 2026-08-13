@@ -41,11 +41,11 @@ execution:
   stub-enabled: ${EXECUTION_STUB_ENABLED:true}
   poll-interval-ms: ${EXECUTION_POLL_INTERVAL_MS:500}
 auth:
-  sms:
-    provider: ${SMS_PROVIDER:stub}
-    expose-development-values: ${SMS_EXPOSE_DEVELOPMENT_VALUES:false}
-    webhook-url: ${SMS_WEBHOOK_URL:}
-    webhook-token: ${SMS_WEBHOOK_TOKEN:}
+  email:
+    provider: ${EMAIL_PROVIDER:stub}
+    expose-development-values: ${EMAIL_EXPOSE_DEVELOPMENT_VALUES:false}
+    webhook-url: ${EMAIL_WEBHOOK_URL:}
+    webhook-token: ${EMAIL_WEBHOOK_TOKEN:}
 providers:
   openai:
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}

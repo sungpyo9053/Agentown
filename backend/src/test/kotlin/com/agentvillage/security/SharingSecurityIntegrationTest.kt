@@ -40,13 +40,13 @@ class SharingSecurityIntegrationTest : IntegrationTestSupport() {
             .content("""{"currentPassword":"password123","newPassword":"password456"}"""))
             .andExpect(status().isNoContent)
         mvc.perform(post("/api/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
-            .content("""{"loginId":"safe_profile","password":"password456"}"""))
+            .content("""{"email":"private-profile@example.com","password":"password456"}"""))
             .andExpect(status().isOk)
         mvc.perform(delete("/api/users/me").with(user(principal)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
             .content("""{"currentPassword":"password456"}"""))
             .andExpect(status().isNoContent)
         mvc.perform(post("/api/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
-            .content("""{"loginId":"safe_profile","password":"password456"}"""))
+            .content("""{"email":"private-profile@example.com","password":"password456"}"""))
             .andExpect(status().isUnauthorized)
     }
 

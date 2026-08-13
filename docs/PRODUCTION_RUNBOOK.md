@@ -19,7 +19,7 @@ openssl rand -base64 36
 chmod 600 deploy/.env.production
 ```
 
-첫 번째 출력은 `LLM_MASTER_KEYS=v1:<출력>`에, 두 번째 출력은 `POSTGRES_PASSWORD`에 넣는다. 이 파일은 Git에 올리지 않는다. SMS 계약 후 HTTPS 웹훅 URL과 토큰을 입력한다. 사용자 LLM 키는 이 마스터 키로 AES-256-GCM 암호화되며 원문은 조회 API, 로그, 복제본에 포함되지 않는다.
+첫 번째 출력은 `LLM_MASTER_KEYS=v1:<출력>`에, 두 번째 출력은 `POSTGRES_PASSWORD`에 넣는다. 이 파일은 Git에 올리지 않는다. 이메일 발송 서비스 계약 후 HTTPS 웹훅 URL과 토큰을 입력한다. 사용자 LLM 키는 이 마스터 키로 AES-256-GCM 암호화되며 원문은 조회 API, 로그, 복제본에 포함되지 않는다.
 
 ## 배포와 점검
 
@@ -58,4 +58,4 @@ gzip -t /opt/agentown-backups/agentown-TIMESTAMP.sql.gz
 - `/actuator/metrics/agentown.execution.duration`
 - Docker JSON 로그에서 `executionId`, `userId`, `errorCode`를 기준으로 조사한다.
 
-서버 디스크, DB 백업 실패, API 오류율, LLM 공급자 오류율, 일일 비용은 외부 모니터링에 연결한다. 서버 구매 전에는 실제 DNS, 인증서, SMS 발송, 외부 백업 복구를 완료로 판정하지 않는다.
+서버 디스크, DB 백업 실패, API 오류율, LLM 공급자 오류율, 일일 비용은 외부 모니터링에 연결한다. 서버 구매 전에는 실제 DNS, 인증서, 이메일 발송, 외부 백업 복구를 완료로 판정하지 않는다.
