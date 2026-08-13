@@ -10,6 +10,7 @@ class AgentClonePolicy {
         name = snapshot.name,
         role = snapshot.role,
         personality = null,
+        department = null,
         characterKey = "writer",
         systemPrompt = null,
         script = snapshot.script,

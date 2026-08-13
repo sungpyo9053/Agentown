@@ -11,7 +11,7 @@ import { AppShell } from "@/components/AppShell";
 
 type RoomItem = { agentId?: string; itemType: "AGENT" | "ASSET"; positionX: number; positionY: number; width: number; height: number; zIndex: number; rotation: number };
 type Home = { id: string; handle: string; title: string; introduction?: string; backgroundKey?: string; visitCount: number; items: RoomItem[] };
-type Agent = { id: string; name: string; role: string; characterKey: string; modelProvider: string; modelName: string };
+type Agent = { id: string; name: string; role: string; department?: string; characterKey: string; modelProvider: string; modelName: string };
 type Credential = { id: string; provider: string; maskedSecret: string; status: string; lastVerifiedAt?: string };
 type Provider = "OPENAI" | "ANTHROPIC" | "GOOGLE";
 type ModelOption = { id: string; displayName: string };
@@ -70,6 +70,22 @@ export default function DashboardPage() {
         <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-coral">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
         <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">연결된 모델 키</h2><div className="mt-4 space-y-3">{credentials.data?.map((item) => <div key={item.id} className="rounded-2xl bg-stone-50 p-3 text-sm"><b>{item.provider}</b><br /><span className="text-stone-500">{item.maskedSecret}</span><span className="ml-2 text-xs text-leaf">{item.status}</span></div>)}{credentials.data?.length === 0 && <p className="text-sm text-stone-500">BYOK 키를 연결하면 실제 작업을 시작할 수 있어요.</p>}</div></div>
       </div>
+
+      {agents.data && agents.data.length > 0 && <div className="mt-4 rounded-3xl bg-white p-6 shadow-card">
+        <h2 className="font-bold">부서별 팀</h2>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {Object.entries(agents.data.reduce<Record<string, Agent[]>>((groups, agent) => {
+            const key = agent.department?.trim() || "미배정";
+            (groups[key] ??= []).push(agent);
+            return groups;
+          }, {})).map(([department, members]) => (
+            <div key={department} className="rounded-2xl bg-stone-50 p-4">
+              <p className="text-xs font-bold text-coral">{department}</p>
+              <p className="mt-1 text-sm text-stone-600">{members.map((member) => member.name).join(", ")}</p>
+            </div>
+          ))}
+        </div>
+      </div>}
     </section>
 
     <section className="mt-14">
@@ -100,12 +116,12 @@ export default function DashboardPage() {
 function AgentForm({ credentials, done }: { credentials: Credential[]; done: () => void }) {
   const [provider, setProvider] = useState<Provider>("OPENAI");
   const [characterKey, setCharacterKey] = useState("writer");
-  const [draft,setDraft]=useState({name:"",role:"",script:"",guide:""});
+  const [draft,setDraft]=useState({name:"",role:"",department:"",script:"",guide:""});
   const examples=[
-    {key:"writer",label:"✍️ 기술 작가",name:"Writer",role:"기술 콘텐츠 작가",script:"리서치 결과를 바탕으로 독자가 이해하기 쉬운 Markdown 초안을 작성한다.",guide:"근거 없는 수치를 만들지 않고, 한계와 검증 범위를 명시한다."},
-    {key:"reviewer",label:"🔎 검수자",name:"Reviewer",role:"사실·품질 검수자",script:"초안의 사실성, 논리, 출력 형식을 검토하고 승인 또는 수정 요청을 작성한다.",guide:"확인하지 못한 주장은 승인하지 않고 구체적인 수정 이유를 남긴다."},
-    {key:"developer",label:"🧭 리서처",name:"Researcher",role:"기술 리서처",script:"주제에 필요한 근거와 제약사항을 조사해 구조화된 메모로 전달한다.",guide:"출처와 직접 검증 여부를 구분하고 추측은 명확히 표시한다."},
-    {key:"manager",label:"📤 발행 담당",name:"Publisher",role:"최종 발행 담당자",script:"승인된 결과만 지정된 외부 서비스로 전달하고 발행 상태를 기록한다.",guide:"사용자 승인 없이는 외부 게시·전송을 수행하지 않는다."},
+    {key:"writer",label:"✍️ 기술 작가",name:"Writer",role:"기술 콘텐츠 작가",department:"콘텐츠팀",script:"리서치 결과를 바탕으로 독자가 이해하기 쉬운 Markdown 초안을 작성한다.",guide:"근거 없는 수치를 만들지 않고, 한계와 검증 범위를 명시한다."},
+    {key:"reviewer",label:"🔎 검수자",name:"Reviewer",role:"사실·품질 검수자",department:"품질관리팀",script:"초안의 사실성, 논리, 출력 형식을 검토하고 승인 또는 수정 요청을 작성한다.",guide:"확인하지 못한 주장은 승인하지 않고 구체적인 수정 이유를 남긴다."},
+    {key:"developer",label:"🧭 리서처",name:"Researcher",role:"기술 리서처",department:"리서치팀",script:"주제에 필요한 근거와 제약사항을 조사해 구조화된 메모로 전달한다.",guide:"출처와 직접 검증 여부를 구분하고 추측은 명확히 표시한다."},
+    {key:"manager",label:"📤 발행 담당",name:"Publisher",role:"최종 발행 담당자",department:"운영팀",script:"승인된 결과만 지정된 외부 서비스로 전달하고 발행 상태를 기록한다.",guide:"사용자 승인 없이는 외부 게시·전송을 수행하지 않는다."},
   ];
   const models = useQuery({
     queryKey: ["llm-models", provider],
@@ -114,13 +130,14 @@ function AgentForm({ credentials, done }: { credentials: Credential[]; done: () 
   const mutation = useMutation({ mutationFn: (body: unknown) => api("/agents", { method: "POST", body: JSON.stringify(body) }), onSuccess: done });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const data = new FormData(event.currentTarget);
-    mutation.mutate({ name: data.get("name"), role: data.get("role"), characterKey, script: data.get("script"), guide: data.get("guide"), modelProvider: data.get("provider"), modelName: data.get("model"), credentialId: data.get("credentialId") || null, maxOutputTokens: 2048, timeoutSeconds: 60, visibility: "PRIVATE" });
+    mutation.mutate({ name: data.get("name"), role: data.get("role"), department: data.get("department") || null, characterKey, script: data.get("script"), guide: data.get("guide"), modelProvider: data.get("provider"), modelName: data.get("model"), credentialId: data.get("credentialId") || null, maxOutputTokens: 2048, timeoutSeconds: 60, visibility: "PRIVATE" });
   };
   return <form onSubmit={submit} className="mt-7 grid gap-6 rounded-3xl bg-white p-6 shadow-card lg:grid-cols-[1fr_300px]">
     <div className="grid gap-4 md:grid-cols-2">
     <h2 className="text-xl font-black md:col-span-2">새 AI 구성원</h2>
     <div className="md:col-span-2"><p className="text-sm font-bold">역할 예시로 시작하기</p><div className="mt-2 flex flex-wrap gap-2">{examples.map(example=><button type="button" key={example.name} onClick={()=>{setDraft(example);setCharacterKey(example.key)}} className="rounded-full border px-4 py-2 text-xs font-black hover:border-coral">{example.label}</button>)}</div></div>
     <Field label="이름"><input name="name" value={draft.name} onChange={event=>setDraft({...draft,name:event.target.value})} required maxLength={40} /></Field><Field label="역할"><input name="role" value={draft.role} onChange={event=>setDraft({...draft,role:event.target.value})} required maxLength={100} /></Field>
+    <Field label="부서 (선택)"><input name="department" value={draft.department} onChange={event=>setDraft({...draft,department:event.target.value})} maxLength={60} placeholder="예: 콘텐츠팀" /></Field>
     <div className="md:col-span-2"><span className="text-sm font-bold">사람 캐릭터</span><div className="mt-2"><CharacterPicker value={characterKey} onChange={setCharacterKey} /></div></div>
     <Field label="제공자"><select name="provider" value={provider} onChange={(event) => setProvider(event.target.value as Provider)}><option>OPENAI</option><option>ANTHROPIC</option><option>GOOGLE</option></select></Field>
     <Field label="모델"><select name="model" key={provider} required disabled={models.isLoading}><option value="" disabled>{models.isLoading ? "모델 불러오는 중…" : "모델 선택"}</option>{models.data?.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></Field>

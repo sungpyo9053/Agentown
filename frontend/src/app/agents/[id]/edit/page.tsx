@@ -8,7 +8,7 @@ import { AppShell } from "@/components/AppShell";
 import { CharacterPicker } from "@/components/AgentCharacter";
 import { api } from "@/lib/api";
 
-type Agent = { id:string; name:string; role:string; personality?:string; characterKey:string; systemPrompt?:string; script:string; guide?:string; modelProvider:string; modelName:string; credentialId?:string; temperature:number; maxOutputTokens:number; timeoutSeconds:number; providerOptions:Record<string,unknown>; visibility:string; updatedAt:string };
+type Agent = { id:string; name:string; role:string; personality?:string; department?:string; characterKey:string; systemPrompt?:string; script:string; guide?:string; modelProvider:string; modelName:string; credentialId?:string; temperature:number; maxOutputTokens:number; timeoutSeconds:number; providerOptions:Record<string,unknown>; visibility:string; updatedAt:string };
 type Definition = { agentMarkdown:string; guideMarkdown:string; inputSchema:Record<string,unknown>; outputSchema:Record<string,unknown> };
 type Credential = { id:string; provider:string; maskedSecret:string; status:string };
 type Model = { id:string; displayName:string };
@@ -65,7 +65,7 @@ export default function Page({ params }: { params:Promise<{id:string}> }) {
 
   function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
-    save.mutate({ name:form.get("name"), role:form.get("role"), personality:form.get("personality"), characterKey:character, systemPrompt:form.get("systemPrompt"), script:form.get("script"), guide:form.get("guide"), modelProvider:provider, modelName:form.get("modelName"), credentialId:form.get("credentialId") || null, temperature:Number(form.get("temperature")), maxOutputTokens:Number(form.get("maxOutputTokens")), timeoutSeconds:Number(form.get("timeoutSeconds")), providerOptions:{}, visibility:form.get("visibility") });
+    save.mutate({ name:form.get("name"), role:form.get("role"), personality:form.get("personality"), department:form.get("department") || null, characterKey:character, systemPrompt:form.get("systemPrompt"), script:form.get("script"), guide:form.get("guide"), modelProvider:provider, modelName:form.get("modelName"), credentialId:form.get("credentialId") || null, temperature:Number(form.get("temperature")), maxOutputTokens:Number(form.get("maxOutputTokens")), timeoutSeconds:Number(form.get("timeoutSeconds")), providerOptions:{}, visibility:form.get("visibility") });
   }
   function makeDefinition(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -78,7 +78,7 @@ export default function Page({ params }: { params:Promise<{id:string}> }) {
       <form key={current.updatedAt as never} onSubmit={submit} className="space-y-4 rounded-3xl bg-white p-7 shadow-card">
         <CharacterPicker value={character} onChange={setCharacter}/>
         <div className="grid gap-3 sm:grid-cols-2"><Field label="이름"><input name="name" defaultValue={current.name} required/></Field><Field label="역할"><input name="role" defaultValue={current.role} required/></Field></div>
-        <Field label="성격"><input name="personality" defaultValue={current.personality}/></Field>
+        <div className="grid gap-3 sm:grid-cols-2"><Field label="성격"><input name="personality" defaultValue={current.personality}/></Field><Field label="부서 (선택)"><input name="department" defaultValue={current.department} placeholder="예: 콘텐츠팀"/></Field></div>
         <Field label="해야 할 일"><textarea name="script" defaultValue={current.script} rows={5} required/></Field>
         <Field label="가이드"><textarea name="guide" defaultValue={current.guide} rows={4}/></Field>
         <Field label="시스템 지침"><textarea name="systemPrompt" defaultValue={current.systemPrompt} rows={3}/></Field>

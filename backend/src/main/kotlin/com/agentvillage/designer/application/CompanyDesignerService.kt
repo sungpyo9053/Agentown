@@ -131,6 +131,7 @@ class CompanyDesignerService(
                 name = designed.name,
                 role = designed.role,
                 personality = "회사 목표에 맞춰 근거와 완료 조건을 확인하는 AI 구성원",
+                department = null,
                 characterKey = designed.characterKey.takeIf { it in allowedCharacters } ?: "manager",
                 systemPrompt = designed.responsibility,
                 script = designed.taskDescription,

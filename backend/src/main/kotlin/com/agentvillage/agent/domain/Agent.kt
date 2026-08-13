@@ -32,6 +32,9 @@ class Agent(
     @Column(length = 500)
     var personality: String? = null,
 
+    @Column(length = 60)
+    var department: String? = null,
+
     @Column(name = "character_key", nullable = false, length = 60)
     var characterKey: String,
 

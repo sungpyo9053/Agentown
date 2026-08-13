@@ -35,6 +35,7 @@ data class SaveAgentRequest(
     @field:NotBlank @field:Size(max = 40) val name: String,
     @field:NotBlank @field:Size(max = 100) val role: String,
     @field:Size(max = 500) val personality: String? = null,
+    @field:Size(max = 60) val department: String? = null,
     @field:Pattern(regexp = "^(writer|reviewer|designer|developer|manager)$") val characterKey: String,
     @field:Size(max = 20_000) val systemPrompt: String? = null,
     @field:NotBlank @field:Size(max = 20_000) val script: String,
@@ -49,7 +50,7 @@ data class SaveAgentRequest(
     val visibility: Visibility = Visibility.PRIVATE,
 ) {
     fun toCommand() = SaveAgentCommand(
-        name, role, personality, characterKey, systemPrompt, script, guide,
+        name, role, personality, department, characterKey, systemPrompt, script, guide,
         modelProvider, modelName, credentialId, temperature, maxOutputTokens, timeoutSeconds, providerOptions, visibility,
     )
 }
@@ -59,6 +60,7 @@ data class AgentResponse(
     val name: String,
     val role: String,
     val personality: String?,
+    val department: String?,
     val characterKey: String,
     val systemPrompt: String?,
     val script: String,
@@ -76,7 +78,7 @@ data class AgentResponse(
 ) {
     companion object {
         fun from(agent: Agent) = AgentResponse(
-            agent.id, agent.name, agent.role, agent.personality, agent.characterKey,
+            agent.id, agent.name, agent.role, agent.personality, agent.department, agent.characterKey,
             agent.systemPrompt, agent.script, agent.guide, agent.modelProvider, agent.modelName, agent.credentialId,
             agent.temperature, agent.maxOutputTokens, agent.timeoutSeconds, agent.providerOptions,
             agent.visibility, agent.createdAt, agent.updatedAt,

@@ -18,6 +18,7 @@ data class SaveAgentCommand(
     val name: String,
     val role: String,
     val personality: String?,
+    val department: String?,
     val characterKey: String,
     val systemPrompt: String?,
     val script: String,
@@ -48,6 +49,7 @@ class AgentService(
                 name = command.name.trim(),
                 role = command.role.trim(),
                 personality = command.personality?.trim()?.takeIf { it.isNotEmpty() },
+                department = command.department?.trim()?.takeIf { it.isNotEmpty() },
                 characterKey = command.characterKey,
                 systemPrompt = command.systemPrompt?.trim()?.takeIf { it.isNotEmpty() },
                 script = command.script.trim(),
@@ -92,6 +94,7 @@ class AgentService(
         agent.name = command.name.trim()
         agent.role = command.role.trim()
         agent.personality = command.personality?.trim()?.takeIf { it.isNotEmpty() }
+        agent.department = command.department?.trim()?.takeIf { it.isNotEmpty() }
         agent.characterKey = command.characterKey
         agent.systemPrompt = command.systemPrompt?.trim()?.takeIf { it.isNotEmpty() }
         agent.script = command.script.trim()
