@@ -16,9 +16,11 @@
 
 ## AI 회사 설계
 
-- `POST /designer/companies/design`: 회사 목적 질문과 Provider·Model·Credential을 받아 검증 전 초안을 반환한다. `stubMode=true`는 API 키 없이 동일한 초안 계약을 테스트한다.
+- `POST /designer/companies/design`: 회사 목적 질문과 Provider·Model·Credential을 받아 검증 전 초안을 반환한다. `stubMode=true`는 API 키 없이 동일한 초안 계약을 테스트한다. 응답의 `changes`는 `REUSE_AGENT`, `ADD_AGENT`, `REWIRE_STEPS`로 최소 변경 계획을 설명한다.
 - `POST /designer/companies/validate`: 최대 5명, 순차 단계, Agent 참조, 재시도, 지원 모델, ACTIVE Credential과 위험 작업을 검사한다.
 - `POST /designer/companies/apply`: 검증된 초안을 사용자 승인 후 Agent Definition과 Harness로 일괄 저장한다.
+
+하네스 실행은 `POST /harnesses/{id}/validate`를 통과하고 `POST /harnesses/{id}/publish`로 발행된 버전이 있어야 생성된다. 발행 뒤 Draft 변경은 기존 버전 실행에 반영되지 않는다. 발행 응답의 `snapshotJson.validation`에는 Validator 버전, 구조 해시와 검사 결과가 포함되며 Credential과 비밀 값은 포함되지 않는다.
 
 설계 응답이나 저장 스냅샷에는 API 키, `credentialId`, 사용자 입력 원문과 실행 결과를 포함하지 않는다. 실제 설계는 사용자가 소유한 ACTIVE Credential이 없으면 Provider 호출 전에 실패한다.
 

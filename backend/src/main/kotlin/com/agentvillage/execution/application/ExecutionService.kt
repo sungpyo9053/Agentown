@@ -13,6 +13,8 @@ import com.agentvillage.llmcredential.application.CredentialDirectory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
@@ -29,6 +31,7 @@ class ExecutionService(
     private val executions: ExecutionRepository, private val executionSteps: ExecutionStepRepository,
     private val events: ExecutionEventRepository, private val stream: ExecutionEventStream,
     private val harnesses: HarnessDirectory, private val agents: AgentDirectory,
+    private val snapshots: ExecutionSnapshotReader,
     private val preflight: ExecutionPreflightValidator,
     private val metrics: ExecutionMetrics,
     @Value("\${execution.stub-enabled:true}") private val stubEnabled: Boolean,
@@ -38,16 +41,26 @@ class ExecutionService(
         executions.findByOwnerIdAndIdempotencyKey(ownerId, idempotencyKey)?.let { return it }
         val queued = executions.countByOwnerIdAndStatusIn(ownerId, listOf(ExecutionStatus.QUEUED))
         if (queued >= 3) throw ConflictException("EXECUTION_QUEUE_LIMIT", "사용자당 대기 실행은 최대 3개입니다.")
-        val view = harnesses.requireOwnedView(harnessId, ownerId)
+        val published = harnesses.publishedExecutionPlan(harnessId, ownerId)
+        val plan = snapshots.read(published.snapshot)
+        val credentialBindings = if (executionMode == ExecutionMode.CLOUD_API && !stubMode) {
+            plan.agents.values.mapNotNull { snapshot ->
+                val live = agents.describeOwned(snapshot.sourceAgentId, ownerId)
+                if (snapshot.provider != live.provider) throw BadRequestException("HARNESS_CREDENTIAL_REBIND_REQUIRED", "${snapshot.name} 구성원의 Provider가 발행 버전과 달라 새 버전을 발행해야 합니다.")
+                live.credentialId?.let { snapshot.key to it.toString() }
+            }.toMap()
+        } else emptyMap()
         if (stubMode && !stubEnabled) throw ConflictException("STUB_DISABLED", "Stub 실행은 이 환경에서 비활성화되어 있습니다.")
         if (!stubMode && executionMode == ExecutionMode.CLOUD_API) {
-            preflight.validate(ownerId, view.steps.filter { it.stepType == HarnessStepType.LLM }.mapNotNull { it.agentId }.map {
-                agents.describeOwned(it, ownerId).let { a -> AgentExecutionConfig(a.id, a.provider, a.model, a.credentialId) }
+            preflight.validate(ownerId, plan.steps.filter { it.type == HarnessStepType.LLM }.map { step ->
+                val snapshot = plan.agents.getValue(requireNotNull(step.agentKey))
+                AgentExecutionConfig(snapshot.sourceAgentId, snapshot.provider, snapshot.model, credentialBindings[snapshot.key]?.let(UUID::fromString))
             })
         }
-        val execution = executions.save(Execution(harnessId = harnessId, harnessVersionId = view.latestVersion?.id,
+        val execution = executions.save(Execution(harnessId = harnessId, harnessVersionId = published.versionId,
             ownerId = ownerId, idempotencyKey = idempotencyKey, executionMode = executionMode,
-            inputJson = input + ("_stubMode" to stubMode), timeoutAt = Instant.now().plus(30, ChronoUnit.MINUTES)))
+            inputJson = input + ("_stubMode" to stubMode), executionSnapshotJson = published.snapshot,
+            credentialBindingsJson = credentialBindings, timeoutAt = Instant.now().plus(30, ChronoUnit.MINUTES)))
         record(execution.id, "EXECUTION_QUEUED", null, mapOf("status" to "QUEUED", "mode" to executionMode.name))
         metrics.queued()
         return execution
@@ -77,12 +90,19 @@ class ExecutionService(
         val execution = requireOwned(id, ownerId)
         val output = execution.outputJson
             ?: throw BadRequestException("EXECUTION_RESULT_NOT_READY", "아직 다운로드할 실행 결과가 없습니다.")
-        val harness = harnesses.requireOwnedView(execution.harnessId, ownerId).harness
-        return ExecutionResultPayload(output, harness.resultFormat, harness.resultStepKey)
+        val plan = snapshots.read(execution.executionSnapshotJson)
+        return ExecutionResultPayload(output, plan.resultFormat, plan.resultStepKey)
     }
     fun requireOwned(id: UUID, ownerId: UUID) = executions.findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
     fun record(executionId: UUID, type: String, agentId: UUID?, payload: Map<String, Any>): ExecutionEvent {
         val event = events.save(ExecutionEvent(executionId = executionId, sequenceNo = events.countByExecutionId(executionId) + 1, eventType = type, agentId = agentId, payload = payload))
-        stream.publish(event); return event
+        if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() = stream.publish(event)
+            })
+        } else {
+            stream.publish(event)
+        }
+        return event
     }
 }

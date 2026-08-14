@@ -34,6 +34,10 @@ class LocalRunnerIntegrationTest : IntegrationTestSupport() {
         val agentId = mapper.readTree(postUser("/api/agents", """{"name":"Writer","role":"작가","characterKey":"writer","script":"글 작성","guide":"결과만 반환","modelProvider":"OPENAI","modelName":"gpt-5.6-sol","visibility":"PRIVATE"}""").andExpect(status().isCreated).andReturn().response.contentAsString)["id"].asText()
         val harnessId = mapper.readTree(postUser("/api/harnesses", """{"name":"Pro 구독 글쓰기"}""").andExpect(status().isCreated).andReturn().response.contentAsString)["id"].asText()
         postUser("/api/harnesses/$harnessId/connect", """{"agentIds":["$agentId"]}""").andExpect(status().isOk)
+        postUser("/api/harnesses/$harnessId/validate", "{}").andExpect(status().isOk)
+            .andExpect(jsonPath("$.valid").value(true))
+        postUser("/api/harnesses/$harnessId/publish", "{}").andExpect(status().isOk)
+            .andExpect(jsonPath("$.snapshotJson.validation.outcome").value("VALIDATED"))
 
         val pairBody = postUser("/api/local-runners/pair", """{"provider":"CODEX","deviceName":"테스트 Mac"}""").andExpect(status().isOk).andReturn().response.contentAsString
         val pair = mapper.readTree(pairBody); val token = pair["pairingToken"].asText(); val connectionId = UUID.fromString(pair["connection"]["id"].asText())

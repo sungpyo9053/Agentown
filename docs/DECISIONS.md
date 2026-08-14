@@ -6,6 +6,10 @@
 - Kotlin Coroutine: 외부 I/O 대기를 효율적으로 처리한다.
 - PostgreSQL Queue: 새 인프라 없이 재시작 복구와 상태 일관성을 얻는다.
 - Orchestrator 기반 실행: 단계 선택·검증·재시도·승인을 한곳에서 통제한다.
+- 최소 변경 설계: 기존 소유자 Agent가 같은 책임을 충족하면 재사용하고, 단일 책임 업무에는 한 명만 생성한다. 조직 규모 자체를 품질로 간주하지 않는다.
+- 제안과 승인 분리: 설계 LLM의 결과는 독립 Harness Validator가 구조·소유권·종료·결과 계약을 통과시킨 뒤에만 발행한다.
+- 검증된 불변 실행: Execution은 발행된 HarnessVersion의 스냅샷만 실행하며 실행 중 Draft나 Agent 설정 변경을 다시 읽지 않는다.
+- 검증 기록 보존: 발행 버전에 Validator 버전, 구조 해시와 검사 결과를 남겨 설명이 아니라 실행 가능한 근거를 완료 기준으로 삼는다.
 - 구독 계정 Local Runner 우선: ChatGPT Plus/Pro와 Claude Pro/Max 사용자는 자기 컴퓨터의 공식 CLI로 실행한다. Runner는 HTTPS Pull 방식이며 공급자 로그인 토큰은 서버에 보내지 않는다.
 - 구독 모델 선택: Codex는 사용자의 CLI 기본 모델을 우선하고 Claude는 공식 alias를 사용한다. API용 모델 ID를 구독 CLI에 강제로 전달하지 않는다.
 - BYOK API 보조 경로: 컴퓨터가 꺼져 있어도 서버 실행이 필요한 고급 사용자는 자기 API 키를 연결한다.

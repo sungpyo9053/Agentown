@@ -1,12 +1,10 @@
 package com.agentvillage.execution.application
 
-import com.agentvillage.agent.application.AgentDirectory
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.execution.domain.*
 import com.agentvillage.execution.infrastructure.ExecutionRepository
 import com.agentvillage.execution.infrastructure.LocalRunnerConnectionRepository
-import com.agentvillage.harness.application.HarnessDirectory
 import com.agentvillage.harness.domain.HarnessStepType
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -25,8 +23,7 @@ data class RunnerExecutionJob(val executionId: UUID, val harnessName: String, va
 class LocalRunnerService(
     private val connections: LocalRunnerConnectionRepository,
     private val executions: ExecutionRepository,
-    private val harnesses: HarnessDirectory,
-    private val agents: AgentDirectory,
+    private val snapshots: ExecutionSnapshotReader,
     private val executionService: ExecutionService,
 ) {
     @Transactional
@@ -57,16 +54,16 @@ class LocalRunnerService(
         val connection = authenticate(token)
         connection.status = LocalRunnerStatus.ACTIVE; connection.lastSeenAt = Instant.now()
         val execution = executions.findFirstByOwnerIdAndStatusAndExecutionModeOrderByQueuedAt(connection.ownerId, ExecutionStatus.QUEUED, ExecutionMode.LOCAL_CLI) ?: return null
-        val harness = harnesses.requireOwnedView(execution.harnessId, connection.ownerId)
-        val jobs = harness.steps.filter { it.stepType == HarnessStepType.LLM }.map { step ->
-            val agent = agents.describeOwned(requireNotNull(step.agentId), connection.ownerId)
+        val plan = snapshots.read(execution.executionSnapshotJson)
+        val jobs = plan.steps.filter { it.type == HarnessStepType.LLM }.map { step ->
+            val agent = plan.agents.getValue(requireNotNull(step.agentKey))
             val expected = if (connection.provider == LocalRunnerProvider.CODEX) "OPENAI" else "ANTHROPIC"
             if (agent.provider.name != expected) throw BadRequestException("RUNNER_PROVIDER_MISMATCH", "${agent.name} 구성원은 ${agent.provider} 연결이 필요합니다.")
-            RunnerAgentJob(step.stepKey, agent.id, agent.name, agent.role, agent.systemPrompt, agent.script, agent.guide, agent.model, agent.timeoutSeconds)
+            RunnerAgentJob(step.key, agent.sourceAgentId, agent.name, agent.role, agent.systemPrompt, agent.script, agent.guide, agent.model, agent.timeoutSeconds)
         }
         execution.status = ExecutionStatus.RUNNING; execution.runnerConnectionId = connection.id; execution.startedAt = Instant.now(); execution.heartbeatAt = Instant.now()
         executionService.record(execution.id, "EXECUTION_STARTED", null, mapOf("mode" to "LOCAL_CLI", "runner" to connection.deviceName))
-        return RunnerExecutionJob(execution.id, harness.harness.name, execution.inputJson.filterKeys { !it.startsWith("_") }, jobs)
+        return RunnerExecutionJob(execution.id, plan.name, execution.inputJson.filterKeys { !it.startsWith("_") }, jobs)
     }
 
     @Transactional
