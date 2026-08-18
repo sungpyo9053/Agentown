@@ -82,6 +82,11 @@ button, input, textarea, select { font: inherit; }
 .office-room--office-mint{background:#bfe0d6}.office-room--office-mint .office-room__wall{background:linear-gradient(180deg,#f0fbf7,#d7efe6);border-bottom-color:#9cc9bb}.office-room--office-mint .office-room__floor{background-color:#a8cfc2}.office-room--office-mint .office-room__window span{background:linear-gradient(180deg,#9fdcd0 0 66%,#79b7a6 66%)}
 .office-room--office-sakura{background:#f0cdd8}.office-room--office-sakura .office-room__wall{background:linear-gradient(180deg,#fff2f6,#fbdde6);border-bottom-color:#dfa8ba}.office-room--office-sakura .office-room__floor{background-color:#e2b3c1}.office-room--office-sakura .office-room__window span{background:linear-gradient(180deg,#ffc3d6 0 66%,#e59ab2 66%)}
 
+/* 픽셀 오피스 (top-down RPG 뷰) */
+.pixel-office{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:pointer}
+.pixel-office--editable{cursor:grab}
+.pixel-office--editable:active{cursor:grabbing}
+
 /* 배치된 소품 */
 .office-item{position:absolute;padding:0;border:0;background:transparent;transform-origin:bottom center;filter:drop-shadow(0 6px 4px #46331f1f);}
 .office-item svg{width:100%;height:100%;overflow:visible}

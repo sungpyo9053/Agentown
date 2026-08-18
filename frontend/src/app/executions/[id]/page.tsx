@@ -5,7 +5,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { AgentVisualStatus } from "@/components/AgentCharacter";
-import { OfficeAgent, OfficeRoom, OfficeRoomItem, placedAssets, resolveAgentPosition } from "@/components/OfficeRoom";
+import { OfficeAgent, OfficeRoomItem, placedAssets, resolveAgentPosition } from "@/components/OfficeRoom";
+import { PixelOffice } from "@/components/PixelOffice";
 import { api } from "@/lib/api";
 
 type Execution = {id:string;harnessId:string;status:string;currentStepKey?:string;outputJson?:Record<string,unknown>;errorCode?:string;errorMessage?:string;startedAt?:string;finishedAt?:string};
@@ -51,7 +52,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   const resultFormat=resolveResultFormat(harness.data?.harness.resultFormat??"AUTO",result);
 
   return <AppShell kicker="LIVE ORCHESTRATION" title={harness.data?.harness.name??"AI 팀 실행 관제"}>
-    <div className="overflow-hidden rounded-[2rem] border-8 border-white bg-white shadow-card"><OfficeRoom title="ORCHESTRATION FLOOR" agents={workflowAgents} items={home.data?.items??[]} assets={placedAssets(home.data?.items??[])} statuses={scene.statuses} positionOverrides={scene.positions} backgroundKey={home.data?.backgroundKey} /></div>
+    <div className="overflow-hidden border border-hairline bg-white"><PixelOffice agents={workflowAgents} items={placedAssets(home.data?.items??[])} statuses={scene.statuses} backgroundKey={home.data?.backgroundKey} /></div>
     <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px]">
       <section className="rounded-3xl bg-white p-6 shadow-card"><div className="flex items-center justify-between"><h2 className="text-xl font-black">실제 실행 이벤트</h2><span className="rounded-full bg-ink px-4 py-2 text-xs font-black text-white">{status}</span></div>
         <div className="mt-5 max-h-96 space-y-2 overflow-auto">{events.map(event=><div key={event.id} className="flex gap-3 rounded-xl bg-stone-50 p-3 text-sm"><b className="w-7 text-coral">{event.sequenceNo}</b><span className="font-bold">{eventLabel(event.eventType)}</span><span className="ml-auto text-stone-500">{event.agentId?agentMap[event.agentId]?.name:"오케스트레이터"}</span></div>)}{!events.length&&<p className="text-stone-500">Queue 이벤트를 기다리는 중입니다.</p>}</div>

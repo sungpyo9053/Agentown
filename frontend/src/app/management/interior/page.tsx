@@ -2,9 +2,10 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FormEvent, PointerEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { AppShell, Panel } from "@/components/AppShell";
-import { OfficeAgent, OfficeRoom, OfficeRoomItem, PlacedAsset, resolveAgentPosition } from "@/components/OfficeRoom";
+import { OfficeAgent, OfficeRoomItem, PlacedAsset } from "@/components/OfficeRoom";
+import { PixelOffice } from "@/components/PixelOffice";
 import { assetCategories, officeAssets, AssetCategory, assetByKey } from "@/components/OfficeAssets";
 import { api } from "@/lib/api";
 
@@ -25,22 +26,16 @@ const nextId = () => `asset-${Date.now()}-${assetSeq++}`;
 
 export default function Page() {
   const client = useQueryClient();
-  const roomRef = useRef<HTMLDivElement>(null);
-  const dragAgent = useRef<string | null>(null);
-  const dragAsset = useRef<string | null>(null);
   const home = useQuery({ queryKey: ["home"], queryFn: () => api<Home>("/mini-homes/me") });
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api<OfficeAgent[]>("/agents") });
 
-  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [placed, setPlaced] = useState<PlacedAsset[]>([]);
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
   const [category, setCategory] = useState<AssetCategory>("furniture");
   const [theme, setTheme] = useState("office-warm");
 
   useEffect(() => {
     if (!home.data || !agents.data) return;
-    setPositions(Object.fromEntries(agents.data.map((agent, index) => [agent.id, resolveAgentPosition(agent.id, index, home.data.items)])));
     setPlaced(home.data.items.filter((item) => item.itemType === "ASSET" && item.assetKey).map((item) => ({
       id: nextId(), assetKey: item.assetKey!, x: Number(item.positionX), y: Number(item.positionY),
       width: Number(item.width), height: Number(item.height), zIndex: item.zIndex, rotation: Number(item.rotation),
@@ -52,11 +47,6 @@ export default function Page() {
     mutationFn: () => api<Home>("/mini-homes/me/items", {
       method: "PUT",
       body: JSON.stringify([
-        ...(agents.data ?? []).map((agent, index) => ({
-          agentId: agent.id, itemType: "AGENT",
-          positionX: positions[agent.id]?.x ?? .2, positionY: positions[agent.id]?.y ?? .6,
-          width: .13, height: .28, zIndex: 40 + index, rotation: 0,
-        })),
         ...placed.map((asset) => ({
           assetKey: asset.assetKey, itemType: "ASSET",
           positionX: asset.x, positionY: asset.y, width: asset.width, height: asset.height,
@@ -70,23 +60,6 @@ export default function Page() {
     mutationFn: (body: unknown) => api<Home>("/mini-homes/me", { method: "PATCH", body: JSON.stringify(body) }),
     onSuccess: (data) => client.setQueryData(["home"], data),
   });
-
-  function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)); }
-  function pointToRoom(clientX: number, clientY: number) {
-    const rect = roomRef.current!.getBoundingClientRect();
-    return { x: (clientX - rect.left) / rect.width, y: (clientY - rect.top) / rect.height };
-  }
-
-  function moveAgent(event: PointerEvent<HTMLButtonElement>, id: string) {
-    if (dragAgent.current !== id || !roomRef.current) return;
-    const point = pointToRoom(event.clientX, event.clientY);
-    setPositions((current) => ({ ...current, [id]: { x: clamp(point.x, .06, .94), y: clamp(point.y, .48, .91) } }));
-  }
-  function moveAsset(event: PointerEvent<HTMLButtonElement>, id: string) {
-    if (dragAsset.current !== id || !roomRef.current) return;
-    const point = pointToRoom(event.clientX, event.clientY);
-    setPlaced((current) => current.map((asset) => asset.id === id ? { ...asset, x: clamp(point.x, .04, .96), y: clamp(point.y, .42, .98) } : asset));
-  }
 
   function addAsset(key: string) {
     const spec = assetByKey.get(key)!;
@@ -115,19 +88,13 @@ export default function Page() {
   return <AppShell kicker="MANAGEMENT" title="공간 인테리어">
     <div className="grid gap-2 xl:grid-cols-[1fr_340px]">
       <div className="border border-hairline bg-white">
-        <OfficeRoom
-          title={home.data?.title ?? "AI OFFICE"} agents={agents.data ?? []} items={home.data?.items ?? []}
-          positionOverrides={positions} backgroundKey={theme} editable roomRef={roomRef}
-          selectedAgentId={selectedAgent} assets={placed} selectedAssetId={selectedAsset}
-          onAgentPointerDown={(e, id) => { dragAgent.current = id; setSelectedAgent(id); setSelectedAsset(null); e.currentTarget.setPointerCapture(e.pointerId); }}
-          onAgentPointerMove={moveAgent}
-          onAgentPointerUp={(e) => { dragAgent.current = null; if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
-          onAssetPointerDown={(e, id) => { dragAsset.current = id; setSelectedAsset(id); setSelectedAgent(null); e.currentTarget.setPointerCapture(e.pointerId); }}
-          onAssetPointerMove={moveAsset}
-          onAssetPointerUp={(e) => { dragAsset.current = null; if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
+        <PixelOffice
+          agents={agents.data ?? []} items={placed} backgroundKey={theme} editable
+          selectedItemId={selectedAsset} onSelectItem={setSelectedAsset}
+          onMoveItem={(id, x, y) => setPlaced((current) => current.map((asset) => asset.id === id ? { ...asset, x, y } : asset))}
         />
         <div className="flex flex-wrap items-center justify-between gap-4 border-t border-hairline p-4">
-          <p className="text-sm text-mute">소품과 직원을 드래그해 자리를 정하세요. 소품을 누르면 크기·각도를 조절할 수 있어요.</p>
+          <p className="text-sm text-mute">소품을 드래그해 자리를 정하세요. 소품을 누르면 크기를 조절할 수 있어요. 직원은 스스로 돌아다닙니다.</p>
           <button disabled={saveLayout.isPending} onClick={() => saveLayout.mutate()} className="shrink-0 rounded-pill bg-ink px-8 py-4 text-sm font-medium text-white transition active:scale-95 active:opacity-50 disabled:opacity-40">
             {saveLayout.isPending ? "저장 중…" : "배치 저장"}
           </button>
