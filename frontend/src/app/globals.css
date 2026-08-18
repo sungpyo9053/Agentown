@@ -82,6 +82,11 @@ button, input, textarea, select { font: inherit; }
 .office-room--office-mint{background:#bfe0d6}.office-room--office-mint .office-room__wall{background:linear-gradient(180deg,#f0fbf7,#d7efe6);border-bottom-color:#9cc9bb}.office-room--office-mint .office-room__floor{background-color:#a8cfc2}.office-room--office-mint .office-room__window span{background:linear-gradient(180deg,#9fdcd0 0 66%,#79b7a6 66%)}
 .office-room--office-sakura{background:#f0cdd8}.office-room--office-sakura .office-room__wall{background:linear-gradient(180deg,#fff2f6,#fbdde6);border-bottom-color:#dfa8ba}.office-room--office-sakura .office-room__floor{background-color:#e2b3c1}.office-room--office-sakura .office-room__window span{background:linear-gradient(180deg,#ffc3d6 0 66%,#e59ab2 66%)}
 
+/* 랜딩 가로 슬라이드 — 스크롤바 숨김 */
+.landing-track{scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain}
+.landing-track::-webkit-scrollbar{display:none}
+@media (prefers-reduced-motion: reduce){.landing-track{scroll-behavior:auto}}
+
 /* 픽셀 오피스 (top-down RPG 뷰) */
 .pixel-office{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:pointer}
 .pixel-office--editable{cursor:grab}
