@@ -64,7 +64,7 @@ export function LandingCarousel() {
 
       {/* 1 — 기존 히어로. CTA는 오른쪽 열로 빼서 세로 높이를 줄입니다. */}
       <Slide label={slideLabels[0]} index={0} count={count}>
-        <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-end lg:gap-12">
+        <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-start lg:gap-12">
           <div>
             <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Agentown</p>
             <h1 className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(2.75rem,7.5vw,8rem)] text-ink`}>
@@ -73,12 +73,12 @@ export function LandingCarousel() {
             <p className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(1.75rem,3.2vw,3rem)] text-ink`}>Assemble your AI team.</p>
             <Body className="mt-6" sentences={["혼자 다 하지 않아도 됩니다.", "내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요.", "풀고 싶은 문제 하나면 시작할 수 있어요."]} />
           </div>
-          <div className="lg:pb-2">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:flex-col lg:items-start">
+          <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">시작하기</Link>
               <Link href="/pricing" className="text-sm font-medium text-ink underline underline-offset-4 transition hover:opacity-60">요금 보기</Link>
             </div>
-            <p className="mt-4 text-xs font-medium text-mute">첫 1개월 무료 · 신용카드 없이 시작</p>
+            <p className="mt-4 text-xs font-medium text-mute lg:text-right">첫 1개월 무료 · 신용카드 없이 시작</p>
           </div>
         </div>
       </Slide>
@@ -112,7 +112,7 @@ export function LandingCarousel() {
 
       {/* 5 — 시작 */}
       <Slide label={slideLabels[4]} index={4} count={count}>
-        <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-end lg:gap-12">
+        <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-start lg:gap-12">
           <div>
             <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 03</p>
             <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
@@ -120,12 +120,12 @@ export function LandingCarousel() {
             </h2>
             <Body className="mt-7" sentences={["목표를 정해두면 팀이 순서대로 일합니다.", "중요한 순간에만 당신의 승인을 기다려요."]} />
           </div>
-          <div className="lg:pb-2">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:flex-col lg:items-start">
+          <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">무료로 시작하기</Link>
               <Link href="/features" className="text-sm font-medium text-ink underline underline-offset-4 transition hover:opacity-60">기능 보기</Link>
             </div>
-            <p className="mt-4 text-xs font-medium text-mute">첫 1개월 무료 · 신용카드 없이 시작</p>
+            <p className="mt-4 text-xs font-medium text-mute lg:text-right">첫 1개월 무료 · 신용카드 없이 시작</p>
           </div>
         </div>
       </Slide>
