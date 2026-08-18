@@ -20,7 +20,14 @@ body {
   background: #ffffff;
   min-height: 100vh;
   font-family: Inter, "Noto Sans KR", -apple-system, BlinkMacSystemFont, sans-serif;
+  /* 한글이 단어 중간에서 끊기지 않게 어절 단위로 줄바꿈 */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
+
+/* 제목은 줄 길이를 고르게, 본문은 마지막 줄에 한 단어만 남지 않게 */
+h1, h2, h3 { text-wrap: balance; }
+p, li { text-wrap: pretty; }
 button, input, textarea, select { font: inherit; }
 .admin-action { border: 1px solid #e4e4e7; border-radius: 8px; padding: .45rem .75rem; background: white; font-size: .75rem; font-weight: 700; white-space: nowrap; }
 .admin-action:hover { border-color: #4f46e5; }
