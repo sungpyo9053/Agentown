@@ -1,14 +1,6 @@
 import Link from "next/link";
-import { Building2, Users, Target, Rocket } from "lucide-react";
 import { MarketingHeader, MarketingFooter } from "@/components/MarketingShell";
 import { blockFontClassName } from "@/lib/fonts";
-
-const steps = [
-  { icon: Building2, title: "회사를 만들고", sub: "이름과 하는 일을 정해요" },
-  { icon: Users, title: "팀원을 모으고", sub: "부서를 만들어 채용해요" },
-  { icon: Target, title: "목표를 정하고", sub: "실행 순서를 연결해요" },
-  { icon: Rocket, title: "함께 해결해요", sub: "AI 팀이 일을 끝냅니다" },
-];
 
 // 히어로 주변에 떠 있는 팀원 카드 — "팀을 모은다"를 시각적으로
 const teamCards = [
@@ -56,25 +48,6 @@ export default function Home() {
         {/* 모바일·태블릿: 카드 가로 스크롤 */}
         <div className="mt-14 flex gap-4 overflow-x-auto pb-2 lg:hidden">
           {teamCards.map((card) => <TeamCard key={card.initial} {...card} className="shrink-0" />)}
-        </div>
-      </section>
-
-      <section className="mx-auto w-full max-w-6xl px-6 pb-24">
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-ink text-white">
-          <div className="border-b border-white/10 px-6 py-4 md:px-10"><p className="text-xs font-semibold uppercase tracking-wide text-coral">How it works</p></div>
-          <div className="flex items-end divide-x divide-white/10 overflow-x-auto">
-            {steps.map((step, i) => {
-              const Icon = step.icon;
-              const isLast = i === steps.length - 1;
-              const topPad = ["pt-6", "pt-12", "pt-20", "pt-28"][i];
-              return <article key={step.title} className={`min-w-[150px] flex-1 px-5 pb-8 md:px-7 ${topPad} ${isLast ? "bg-coral" : ""}`}>
-                <span className={`${blockFontClassName} ${isLast ? "text-white" : "text-coral"}`}>{String(i + 1).padStart(2, "0")}</span>
-                <Icon className={`mt-3 h-5 w-5 ${isLast ? "text-white" : "text-coral"}`} aria-hidden="true" />
-                <h2 className="mt-3 text-sm font-semibold leading-snug">{step.title}</h2>
-                <p className={`mt-1 text-xs ${isLast ? "text-white/70" : "text-zinc-400"}`}>{step.sub}</p>
-              </article>;
-            })}
-          </div>
         </div>
       </section>
 
