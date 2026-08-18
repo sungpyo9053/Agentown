@@ -3,8 +3,8 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "블록기획",
-  description: "AI 시대, 생각하는 힘을 블록처럼 쌓아보세요.",
+  title: "Agentown",
+  description: "Assemble your AI team. 내 회사를 만들고 AI 팀원과 함께 문제를 해결하세요.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
