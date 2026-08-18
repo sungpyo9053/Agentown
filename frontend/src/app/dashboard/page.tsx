@@ -67,7 +67,7 @@ export default function DashboardPage() {
       {agentOpen && <AgentForm credentials={credentials.data ?? []} done={() => { setAgentOpen(false); client.invalidateQueries({ queryKey: ["agents"] }); }} />}
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-coral">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
+        <div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs font-bold text-stone">TEAM STATUS</p><p className="mt-3 text-4xl font-black">{agents.data?.length ?? 0}</p><p className="text-sm text-stone-300">함께 일하는 AI 구성원</p></div>
         <div className="rounded-3xl bg-white p-6 shadow-card"><h2 className="font-bold">연결된 모델 키</h2><div className="mt-4 space-y-3">{credentials.data?.map((item) => <div key={item.id} className="rounded-2xl bg-stone-50 p-3 text-sm"><b>{item.provider}</b><br /><span className="text-stone-500">{item.maskedSecret}</span><span className="ml-2 text-xs text-leaf">{item.status}</span></div>)}{credentials.data?.length === 0 && <p className="text-sm text-stone-500">BYOK 키를 연결하면 실제 작업을 시작할 수 있어요.</p>}</div></div>
       </div>
 
@@ -145,7 +145,7 @@ function AgentForm({ credentials, done }: { credentials: Credential[]; done: () 
     <Field label="스크립트" wide><textarea name="script" value={draft.script} onChange={event=>setDraft({...draft,script:event.target.value})} required rows={3} placeholder="주어진 주제로 초안을 작성한다." /></Field>
     <Field label="가이드" wide><textarea name="guide" value={draft.guide} onChange={event=>setDraft({...draft,guide:event.target.value})} rows={2} placeholder="확인되지 않은 사실은 추측이라고 표시한다." /></Field>
     {mutation.error && <p className="text-sm text-red-600 md:col-span-2">{mutation.error.message}</p>}<button className="rounded-2xl bg-ink py-3 font-bold text-white md:col-span-2">구성원 추가</button></div>
-    <aside className="rounded-3xl bg-stone-950 p-5 text-stone-100"><p className="text-xs font-black text-coral">생성 예정 표준 구조</p><pre className="mt-4 whitespace-pre-wrap text-xs leading-6">{`내-AI-회사/\n├── AGENTS.md\n├── CLAUDE.md\n├── harness.md\n├── harness.json\n├── agents/\n│   └── ${draft.name||"agent"}.md\n├── guides/\n│   └── ${draft.name||"agent"}-guide.md\n└── schemas/\n    ├── ${draft.name||"agent"}-input.json\n    └── ${draft.name||"agent"}-output.json`}</pre><p className="mt-5 text-xs leading-5 text-stone-400">사용자는 폴더나 MD를 직접 만들 필요가 없습니다. Agentown이 입력 내용을 파일로 자동 생성하며 API 키와 실행 결과는 내보내기에 포함하지 않습니다.</p></aside>
+    <aside className="rounded-3xl bg-stone-950 p-5 text-stone-100"><p className="text-xs font-black text-stone">생성 예정 표준 구조</p><pre className="mt-4 whitespace-pre-wrap text-xs leading-6">{`내-AI-회사/\n├── AGENTS.md\n├── CLAUDE.md\n├── harness.md\n├── harness.json\n├── agents/\n│   └── ${draft.name||"agent"}.md\n├── guides/\n│   └── ${draft.name||"agent"}-guide.md\n└── schemas/\n    ├── ${draft.name||"agent"}-input.json\n    └── ${draft.name||"agent"}-output.json`}</pre><p className="mt-5 text-xs leading-5 text-stone-400">사용자는 폴더나 MD를 직접 만들 필요가 없습니다. Agentown이 입력 내용을 파일로 자동 생성하며 API 키와 실행 결과는 내보내기에 포함하지 않습니다.</p></aside>
   </form>;
 }
 

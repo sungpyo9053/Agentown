@@ -2,52 +2,43 @@ import Link from "next/link";
 import { MarketingHeader, MarketingFooter } from "@/components/MarketingShell";
 import { blockFontClassName } from "@/lib/fonts";
 
-// 히어로 주변에 떠 있는 팀원 카드 — "팀을 모은다"를 시각적으로
+// 팀원 타일 — 제품 카드와 같은 문법: 라디우스 0, 그림자 0, soft-cloud 위에 올림
 const teamCards = [
-  { initial: "R", role: "리서처", dept: "리서치팀", tone: "bg-coral" },
-  { initial: "W", role: "작가", dept: "콘텐츠팀", tone: "bg-leaf" },
-  { initial: "Q", role: "검수자", dept: "품질관리팀", tone: "bg-ink" },
-  { initial: "P", role: "발행 담당", dept: "운영팀", tone: "bg-amber-500" },
+  { initial: "R", role: "리서처", dept: "리서치팀" },
+  { initial: "W", role: "작가", dept: "콘텐츠팀" },
+  { initial: "Q", role: "검수자", dept: "품질관리팀" },
+  { initial: "P", role: "발행 담당", dept: "운영팀" },
 ];
 
 export default function Home() {
   return (
-    <main className="flex min-h-screen flex-col">
+    <main className="flex min-h-screen flex-col bg-white">
       <MarketingHeader />
 
-      <section className="relative mx-auto w-full max-w-6xl px-6 pb-24 pt-16 md:pt-24">
-        {/* 데스크톱: 히어로 좌우에 떠 있는 팀원 카드 */}
-        <div className="pointer-events-none absolute inset-x-0 top-10 hidden justify-between px-6 lg:flex">
-          <div className="space-y-6 pt-6">
-            <TeamCard {...teamCards[0]} className="-rotate-3" />
-            <TeamCard {...teamCards[1]} className="ml-8 rotate-2" />
-          </div>
-          <div className="space-y-6 pt-2">
-            <TeamCard {...teamCards[2]} className="rotate-3" />
-            <TeamCard {...teamCards[3]} className="mr-8 -rotate-2" />
-          </div>
-        </div>
-
-        <div className="relative mx-auto max-w-2xl text-center">
-          <span className="inline-block rounded-full bg-coral/10 px-3 py-1 text-xs font-semibold text-coral">Beta</span>
-          <h1 className={`${blockFontClassName} mt-6 text-4xl leading-tight tracking-tight text-ink md:text-6xl`}>
-            I&apos;m a CEO.<br />
-            <span className="text-coral">Everyone has an AI now.</span>
+      {/* 캠페인 히어로 — 디스플레이 락업을 화면에 그대로 태움 */}
+      <section className="bg-cloud">
+        <div className="mx-auto max-w-[1440px] px-6 py-20 md:px-10 md:py-28">
+          <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Agentown</p>
+          <h1 className={`${blockFontClassName} mt-6 text-[64px] text-ink md:text-[128px]`}>
+            I&apos;m a CEO.<br />Everyone has<br />an AI now.
           </h1>
-          <p className="mt-6 text-lg font-semibold text-ink md:text-xl">Assemble your AI team.</p>
-          <p className="mx-auto mt-4 max-w-xl text-base leading-7 text-zinc-600">
+          <p className={`${blockFontClassName} mt-8 text-3xl text-ink md:text-5xl`}>Assemble your AI team.</p>
+          <p className="mt-6 max-w-xl text-base leading-6 text-charcoal">
             혼자 다 하지 않아도 됩니다. 내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요. 풀고 싶은 문제 하나면 시작할 수 있어요.
           </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <Link href="/signup" className="rounded-lg bg-coral px-6 py-3 font-semibold text-white transition hover:bg-coral/90">무료로 시작하기</Link>
-            <Link href="/pricing" className="rounded-lg border border-zinc-200 bg-white px-6 py-3 font-semibold text-ink hover:border-zinc-300">요금 보기</Link>
+          <div className="mt-10 flex flex-wrap items-center gap-3">
+            <Link href="/signup" className="rounded-pill bg-ink px-8 py-4 text-base font-medium text-white transition active:scale-95 active:opacity-50">시작하기</Link>
+            <Link href="/pricing" className="rounded-pill bg-white px-8 py-4 text-base font-medium text-ink transition active:scale-95 active:opacity-50">요금 보기</Link>
           </div>
-          <p className="mt-6 text-sm text-zinc-400">첫 1개월 무료 · 신용카드 없이 시작</p>
+          <p className="mt-6 text-sm font-medium text-mute">첫 1개월 무료 · 신용카드 없이 시작</p>
         </div>
+      </section>
 
-        {/* 모바일·태블릿: 카드 가로 스크롤 */}
-        <div className="mt-14 flex gap-4 overflow-x-auto pb-2 lg:hidden">
-          {teamCards.map((card) => <TeamCard key={card.initial} {...card} className="shrink-0" />)}
+      {/* 팀원 그리드 — 8px 거터, 무라디우스, 무그림자 */}
+      <section className="mx-auto w-full max-w-[1440px] px-6 py-12 md:px-10">
+        <h2 className={`${blockFontClassName} text-3xl text-ink md:text-4xl`}>Your team</h2>
+        <div className="mt-6 grid grid-cols-2 gap-2 md:grid-cols-4">
+          {teamCards.map((card) => <TeamCard key={card.initial} {...card} />)}
         </div>
       </section>
 
@@ -56,14 +47,12 @@ export default function Home() {
   );
 }
 
-function TeamCard({ initial, role, dept, tone, className = "" }: { initial: string; role: string; dept: string; tone: string; className?: string }) {
-  return <div className={`w-52 rounded-xl border border-zinc-200 bg-white p-4 shadow-[0_16px_32px_-18px_rgba(24,24,27,.35)] ${className}`}>
-    <div className="flex items-center gap-3">
-      <span className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold text-white ${tone}`}>{initial}</span>
-      <span>
-        <b className="block text-sm text-ink">{role}</b>
-        <small className="text-xs text-zinc-500">{dept}</small>
-      </span>
+function TeamCard({ initial, role, dept }: { initial: string; role: string; dept: string }) {
+  return <article className="bg-white">
+    <div className="flex aspect-square items-center justify-center bg-cloud">
+      <span className={`${blockFontClassName} text-6xl text-ink md:text-8xl`}>{initial}</span>
     </div>
-  </div>;
+    <b className="mt-2 block text-base font-medium text-ink">{role}</b>
+    <small className="text-sm font-medium text-mute">{dept}</small>
+  </article>;
 }

@@ -13,7 +13,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&display=swap" />
+        {/* Nike display tier substitute: Bebas Neue (see DESIGN-nike.md "Note on Font Substitutes").
+            Inter carries UI/body; Noto Sans KR covers Korean, which Bebas/Inter lack. */}
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" />
       </head>
       <body>
         <Providers>{children}</Providers>

@@ -4,12 +4,22 @@
 
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
-.font-block { font-family: "Black Han Sans", ui-monospace, monospace; }
+
+/* Display tier — reserved for campaign/hero lockups only (uppercase, tight leading). */
+.font-block {
+  font-family: "Bebas Neue", "Noto Sans KR", Inter, sans-serif;
+  font-weight: 400;
+  line-height: 0.9;
+  letter-spacing: -0.005em;
+  text-transform: uppercase;
+}
+
 body {
   margin: 0;
-  color: #18181b;
-  background: #f7f7f6;
+  color: #111111;
+  background: #ffffff;
   min-height: 100vh;
+  font-family: Inter, "Noto Sans KR", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 button, input, textarea, select { font: inherit; }
 .admin-action { border: 1px solid #e4e4e7; border-radius: 8px; padding: .45rem .75rem; background: white; font-size: .75rem; font-weight: 700; white-space: nowrap; }

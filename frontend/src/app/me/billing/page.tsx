@@ -40,7 +40,7 @@ export default function BillingPage() {
 
       <aside className="space-y-4">
         <div className="rounded-3xl bg-ink p-6 text-white">
-          <p className="text-xs font-bold text-coral">TRIAL</p>
+          <p className="text-xs font-bold text-stone">TRIAL</p>
           <p className="mt-2 text-lg font-black">무료 체험 중</p>
           <p className="mt-1 text-sm text-stone-300">가입 후 1개월간 모든 기능을 무료로 사용하실 수 있어요.</p>
         </div>

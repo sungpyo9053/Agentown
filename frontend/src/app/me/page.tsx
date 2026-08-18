@@ -55,7 +55,7 @@ export default function MyPage() {
 
       <aside className="space-y-4">
         <div className="rounded-3xl bg-ink p-6 text-white">
-          <p className="text-xs font-bold text-coral">ACCOUNT</p>
+          <p className="text-xs font-bold text-stone">ACCOUNT</p>
           <p className="mt-2 text-lg font-black">{me.data?.displayName}</p>
           <p className="text-sm text-stone-300">@{me.data?.handle}</p>
           <button onClick={() => logout.mutate()} disabled={logout.isPending} className="mt-4 w-full rounded-xl border border-white/20 py-2 text-sm font-bold hover:bg-white/10">로그아웃</button>
