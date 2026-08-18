@@ -17,9 +17,12 @@ const teamCards = [
 
 const slideLabels = ["Intro", "혼자", "회사", "팀원", "시작"];
 
+const AUTOPLAY_MS = 6000;
+
 export function LandingCarousel() {
   const trackRef = useRef<HTMLDivElement>(null);
   const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
   const count = slideLabels.length;
 
   // 현재 보이는 슬라이드 추적
@@ -30,6 +33,22 @@ export function LandingCarousel() {
     track.addEventListener("scroll", onScroll, { passive: true });
     return () => track.removeEventListener("scroll", onScroll);
   }, []);
+
+  // 자동 재생 — 마지막 장 다음에는 처음으로 돌아옵니다.
+  useEffect(() => {
+    if (paused) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) return;
+    const timer = window.setInterval(() => {
+      const track = trackRef.current;
+      if (!track) return;
+      if (document.hidden) return;                      // 다른 탭이면 멈춤
+      const current = Math.round(track.scrollLeft / track.clientWidth);
+      const next = (current + 1) % count;
+      track.scrollTo({ left: next * track.clientWidth, behavior: "smooth" });
+    }, AUTOPLAY_MS);
+    return () => window.clearInterval(timer);
+  }, [paused, count]);
 
   function goTo(next: number) {
     const track = trackRef.current;
@@ -43,7 +62,11 @@ export function LandingCarousel() {
     if (event.key === "ArrowLeft") { event.preventDefault(); goTo(index - 1); }
   }
 
-  return <section className="relative bg-cloud" aria-roledescription="carousel" aria-label="Agentown 소개">
+  return <section
+    className="relative bg-cloud" aria-roledescription="carousel" aria-label="Agentown 소개"
+    onPointerEnter={() => setPaused(true)} onPointerLeave={() => setPaused(false)}
+    onFocusCapture={() => setPaused(true)} onBlurCapture={() => setPaused(false)}
+  >
     <div ref={trackRef} onKeyDown={onKeyDown} tabIndex={0} className="landing-track flex snap-x snap-mandatory overflow-x-auto outline-none">
 
       {/* 1 — 기존 히어로 */}
@@ -127,7 +150,10 @@ export function LandingCarousel() {
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-6 px-6 md:px-10">
         <div className="pointer-events-auto flex items-center gap-2">
           {slideLabels.map((label, i) => <button key={label} type="button" onClick={() => goTo(i)} aria-label={`${i + 1}번째 슬라이드: ${label}`} aria-current={index === i}
-            className={`h-1.5 rounded-pill transition-all ${index === i ? "w-10 bg-ink" : "w-4 bg-hairline hover:bg-mute"}`} />)}
+            className={`h-1.5 overflow-hidden rounded-pill transition-all ${index === i ? "w-10 bg-hairline" : "w-4 bg-hairline hover:bg-mute"}`}>
+            {/* 현재 슬라이드에는 남은 시간을 바로 표시 */}
+            {index === i && <span key={`${i}-${paused}`} className={`block h-full rounded-pill bg-ink ${paused ? "w-full" : "landing-progress"}`} style={{ animationDuration: `${AUTOPLAY_MS}ms` }} />}
+          </button>)}
         </div>
         <div className="pointer-events-auto flex items-center gap-2">
           <span className={`${blockFontClassName} mr-2 hidden text-2xl text-mute sm:block`}>{String(index + 1).padStart(2, "0")} / {String(count).padStart(2, "0")}</span>

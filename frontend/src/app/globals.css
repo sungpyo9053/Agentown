@@ -85,7 +85,9 @@ button, input, textarea, select { font: inherit; }
 /* 랜딩 가로 슬라이드 — 스크롤바 숨김 */
 .landing-track{scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain}
 .landing-track::-webkit-scrollbar{display:none}
-@media (prefers-reduced-motion: reduce){.landing-track{scroll-behavior:auto}}
+.landing-progress{animation:landing-progress linear forwards}
+@keyframes landing-progress{from{width:0}to{width:100%}}
+@media (prefers-reduced-motion: reduce){.landing-track{scroll-behavior:auto}.landing-progress{animation:none;width:100%}}
 
 /* 픽셀 오피스 (top-down RPG 뷰) */
 .pixel-office{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:pointer}
