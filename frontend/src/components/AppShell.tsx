@@ -14,21 +14,25 @@ type HomeSummary = { title?: string };
 const groups = [
   { key: "board", icon: LayoutDashboard, label: "회사 보드", href: "/dashboard", items: [] as { href: string; label: string }[] },
   // Management = 오피스 관리, Assemble = 사람(직원)과 그들의 일하는 방식(하네스·가이드) 관리
-  { key: "management", icon: Building2, label: "Management", href: "/management", items: [
-    { href: "/home/edit", label: "공간 인테리어" },
-    { href: "/management#departments", label: "부서 관리" },
-    { href: "/management#agenda", label: "아젠다 관리" },
+  // 하위 메뉴는 각각 독립 페이지 — 선택한 메뉴의 내용만 보입니다.
+  { key: "management", icon: Building2, label: "Management", href: "/management/interior", items: [
+    { href: "/management/interior", label: "공간 인테리어" },
+    { href: "/management/departments", label: "부서 관리" },
+    { href: "/management/agenda", label: "아젠다 관리" },
   ] },
-  { key: "assemble", icon: Users, label: "Assemble", href: "/assemble", items: [
-    { href: "/assemble#hire", label: "직원 뽑기" },
-    { href: "/assemble#guides", label: "가이드 관리" },
-    { href: "/assemble#harness", label: "하네스 구성" },
+  { key: "assemble", icon: Users, label: "Assemble", href: "/assemble/hire", items: [
+    { href: "/assemble/hire", label: "직원 뽑기" },
+    { href: "/assemble/guides", label: "가이드 관리" },
+    { href: "/assemble/harness", label: "하네스 구성" },
   ] },
-  { key: "settings", icon: Settings, label: "Setting", href: "/settings", items: [
-    { href: "/settings#subscription", label: "구독 관리" },
-    { href: "/settings#preferences", label: "환경 설정" },
+  { key: "settings", icon: Settings, label: "Setting", href: "/settings/subscription", items: [
+    { href: "/settings/subscription", label: "구독 관리" },
+    { href: "/settings/preferences", label: "환경 설정" },
+    { href: "/settings/credentials", label: "AI 연결" },
   ] },
 ];
+
+const groupPrefix: Record<string, string> = { board: "/dashboard", management: "/management", assemble: "/assemble", settings: "/settings" };
 
 export function AppShell({ title, kicker, children }: { title: string; kicker: string; children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
@@ -45,15 +49,17 @@ export function AppShell({ title, kicker, children }: { title: string; kicker: s
       <nav className="mt-10 flex-1 space-y-6">
         {groups.map((group) => {
           const Icon = group.icon;
-          const active = pathname === group.href || (group.key !== "board" && pathname.startsWith(group.href));
+          const inGroup = pathname.startsWith(groupPrefix[group.key]);
           const label = group.key === "board" ? companyName : group.label;
           return <div key={group.key}>
-            <Link href={group.href} className={`flex items-center gap-3 rounded-pill px-3 py-2.5 text-sm font-medium transition ${active ? "bg-white text-ink" : "text-stone hover:text-white"}`}>
+            <Link href={group.href} className={`flex items-center gap-3 rounded-pill px-3 py-2.5 text-sm font-medium transition ${inGroup ? "bg-white text-ink" : "text-stone hover:text-white"}`}>
               <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span className="truncate">{label}</span>
             </Link>
-            {group.items.length > 0 && <div className="mt-1 space-y-0.5 pl-10">
-              {group.items.map((item) => <Link key={item.href} href={item.href} className="block py-1.5 text-sm text-stone transition hover:text-white">{item.label}</Link>)}
+            {/* 하위 메뉴는 해당 그룹에 들어와 있을 때만 펼칩니다 */}
+            {inGroup && group.items.length > 0 && <div className="mt-1 space-y-0.5 pl-10">
+              {group.items.map((item) => <Link key={item.href} href={item.href}
+                className={`block py-1.5 text-sm transition ${pathname === item.href ? "font-medium text-white" : "text-stone hover:text-white"}`}>{item.label}</Link>)}
             </div>}
           </div>;
         })}

@@ -43,17 +43,17 @@ export default function DashboardPage() {
           <b className="text-base font-medium text-ink">{home.data.title}</b>
           <p className="text-sm text-mute">{home.data.introduction || "우리 팀이 일하는 디지털 오피스입니다."}</p>
         </div>
-        <Link href="/home/edit" className="rounded-pill bg-cloud px-6 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">공간 인테리어</Link>
+        <Link href="/management/interior" className="rounded-pill bg-cloud px-6 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">공간 인테리어</Link>
       </div>
       <OfficeRoom title={home.data.title} agents={agents.data ?? []} items={home.data.items ?? []} assets={placedAssets(home.data.items)} backgroundKey={home.data.backgroundKey} onAgentClick={(id) => router.push(`/agents/${id}/edit`)} />
       {!agents.isLoading && agents.data?.length === 0 && <div className="border-t border-hairline p-8 text-center">
         <p className="text-sm text-mute">아직 구성원이 없습니다.</p>
-        <Link href="/assemble#hire" className="mt-4 inline-block rounded-pill bg-ink px-8 py-4 text-sm font-medium text-white transition active:scale-95 active:opacity-50">직원 뽑기</Link>
+        <Link href="/assemble/hire" className="mt-4 inline-block rounded-pill bg-ink px-8 py-4 text-sm font-medium text-white transition active:scale-95 active:opacity-50">직원 뽑기</Link>
       </div>}
     </div>
 
     <div className="mt-2 grid gap-2 lg:grid-cols-2">
-      <Panel title="진행 중인 목표" action={<Link href="/assemble#harness" className="text-sm font-medium text-ink underline">전체 보기</Link>}>
+      <Panel title="진행 중인 목표" action={<Link href="/assemble/harness" className="text-sm font-medium text-ink underline">전체 보기</Link>}>
         <div className="divide-y divide-hairline">
           {harnesses.data?.slice(0, 5).map((item) => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="flex items-center justify-between py-4">
             <span className="text-base font-medium text-ink">{item.name}</span>
