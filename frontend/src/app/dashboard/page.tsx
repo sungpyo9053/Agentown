@@ -4,11 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
-import { OfficeRoom } from "@/components/OfficeRoom";
+import { OfficeRoom, placedAssets } from "@/components/OfficeRoom";
 import { AppShell, Panel } from "@/components/AppShell";
 import { blockFontClassName } from "@/lib/fonts";
 
-type RoomItem = { agentId?: string; itemType: "AGENT" | "ASSET"; positionX: number; positionY: number; width: number; height: number; zIndex: number; rotation: number };
+type RoomItem = { agentId?: string; assetKey?: string; itemType: "AGENT" | "ASSET"; positionX: number; positionY: number; width: number; height: number; zIndex: number; rotation: number };
 type Home = { id: string; handle: string; title: string; introduction?: string; backgroundKey?: string; visitCount: number; items: RoomItem[] };
 type Agent = { id: string; name: string; role: string; department?: string; characterKey: string; modelProvider: string; modelName: string };
 type Execution = { id: string; status: string; currentStepKey?: string; createdAt: string };
@@ -45,7 +45,7 @@ export default function DashboardPage() {
         </div>
         <Link href="/home/edit" className="rounded-pill bg-cloud px-6 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">공간 인테리어</Link>
       </div>
-      <OfficeRoom title={home.data.title} agents={agents.data ?? []} items={home.data.items ?? []} backgroundKey={home.data.backgroundKey} onAgentClick={(id) => router.push(`/agents/${id}/edit`)} />
+      <OfficeRoom title={home.data.title} agents={agents.data ?? []} items={home.data.items ?? []} assets={placedAssets(home.data.items)} backgroundKey={home.data.backgroundKey} onAgentClick={(id) => router.push(`/agents/${id}/edit`)} />
       {!agents.isLoading && agents.data?.length === 0 && <div className="border-t border-hairline p-8 text-center">
         <p className="text-sm text-mute">아직 구성원이 없습니다.</p>
         <Link href="/assemble#hire" className="mt-4 inline-block rounded-pill bg-ink px-8 py-4 text-sm font-medium text-white transition active:scale-95 active:opacity-50">직원 뽑기</Link>

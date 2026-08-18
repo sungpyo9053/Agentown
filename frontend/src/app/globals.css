@@ -76,5 +76,17 @@ button, input, textarea, select { font: inherit; }
 .office-agent--draggable { cursor:grab; touch-action:none; }.office-agent--draggable:active{cursor:grabbing}.office-agent--selected .office-agent__name{border-color:#f27b62;box-shadow:0 0 0 4px #f27b6230}
 .office-room--office-green .office-room__wall{background:linear-gradient(180deg,#eef5ed,#d7e5d4)}.office-room--office-green .office-room__floor{background-color:#b99b72}
 .office-room--office-night .office-room__wall{background:linear-gradient(180deg,#344554,#263642)}.office-room--office-night .office-room__floor{background-color:#80684e}.office-room--office-night .office-room__brand{background:#eef2f3}.office-room--office-night .office-room__window span{background:linear-gradient(180deg,#203f62 0 66%,#3c5a51 66%)}
+/* 추가 스킨 */
+.office-room--office-mono{background:#e5e5e5}.office-room--office-mono .office-room__wall{background:linear-gradient(180deg,#fafafa,#ececec);border-bottom-color:#cacacb}.office-room--office-mono .office-room__wall::after{background:repeating-linear-gradient(90deg,#d5d5d5 0 55px,#e8e8e8 55px 58px)}.office-room--office-mono .office-room__floor{background-color:#d8d8d8;background-image:linear-gradient(90deg,rgba(0,0,0,.07) 1px,transparent 1px),linear-gradient(rgba(255,255,255,.5) 1px,transparent 1px)}.office-room--office-mono .office-room__window span{background:linear-gradient(180deg,#dcdcdc 0 66%,#c9c9c9 66%)}
+.office-room--office-sunset{background:#e7b98f}.office-room--office-sunset .office-room__wall{background:linear-gradient(180deg,#ffe7d0,#f7c9a6);border-bottom-color:#c98f6a}.office-room--office-sunset .office-room__floor{background-color:#c98f6a}.office-room--office-sunset .office-room__window span{background:linear-gradient(180deg,#ffb27a 0 66%,#e0876a 66%)}
+.office-room--office-mint{background:#bfe0d6}.office-room--office-mint .office-room__wall{background:linear-gradient(180deg,#f0fbf7,#d7efe6);border-bottom-color:#9cc9bb}.office-room--office-mint .office-room__floor{background-color:#a8cfc2}.office-room--office-mint .office-room__window span{background:linear-gradient(180deg,#9fdcd0 0 66%,#79b7a6 66%)}
+.office-room--office-sakura{background:#f0cdd8}.office-room--office-sakura .office-room__wall{background:linear-gradient(180deg,#fff2f6,#fbdde6);border-bottom-color:#dfa8ba}.office-room--office-sakura .office-room__floor{background-color:#e2b3c1}.office-room--office-sakura .office-room__window span{background:linear-gradient(180deg,#ffc3d6 0 66%,#e59ab2 66%)}
+
+/* 배치된 소품 */
+.office-item{position:absolute;padding:0;border:0;background:transparent;transform-origin:bottom center;filter:drop-shadow(0 6px 4px #46331f1f);}
+.office-item svg{width:100%;height:100%;overflow:visible}
+.office-item--draggable{cursor:grab;touch-action:none}.office-item--draggable:active{cursor:grabbing}
+.office-item--selected{outline:3px solid #111;outline-offset:4px}
+.office-item:disabled{cursor:default}
 @media (prefers-reduced-motion: reduce){.office-agent{transition:none}}
 @media (max-width:640px){.office-room{min-height:510px}.office-room__desk{transform:scale(.75)}.office-room__desk--right{right:-2%}.office-room__meeting{transform:translate(-50%,-50%) scale(.75)}.office-agent{width:88px}.office-agent__character{width:76px;height:105px}.office-room__brand{left:42%;max-width:45%}.office-room__shelf{display:none}}
