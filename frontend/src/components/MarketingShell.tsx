@@ -34,17 +34,8 @@ export function MarketingHeader() {
 export function MarketingFooter() {
   return <footer className="border-t border-zinc-200 bg-white">
     <div className="mx-auto max-w-6xl px-6 py-12">
-      <div className="flex flex-wrap items-start justify-between gap-8">
-        <div>
-          <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight"><AgentownLogo />Agentown</Link>
-          <p className="mt-3 max-w-sm text-sm leading-6 text-zinc-500">Assemble your AI team. 문제를 풀고 싶은 사람이 회사를 차리고, 팀원을 뽑아 함께 해결합니다.</p>
-        </div>
-        <nav className="flex flex-wrap gap-x-8 gap-y-3 text-sm font-medium text-zinc-500">
-          {marketingNav.map((item) => <Link key={item.href} href={item.href} className="hover:text-ink">{item.label}</Link>)}
-          <Link href="/login" className="hover:text-ink">로그인</Link>
-          <Link href="/signup" className="hover:text-ink">회원가입</Link>
-        </nav>
-      </div>
+      <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight"><AgentownLogo />Agentown</Link>
+      <p className="mt-3 max-w-sm text-sm leading-6 text-zinc-500">Assemble your AI team. 문제를 풀고 싶은 사람이 회사를 차리고, 팀원을 뽑아 함께 해결합니다.</p>
       <p className="mt-10 border-t border-zinc-100 pt-6 text-xs text-zinc-400">© {new Date().getFullYear()} Agentown. All rights reserved.</p>
     </div>
   </footer>;
