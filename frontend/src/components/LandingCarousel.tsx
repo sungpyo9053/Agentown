@@ -72,13 +72,11 @@ export function LandingCarousel() {
       {/* 1 — 기존 히어로 */}
       <Slide label={slideLabels[0]} index={0} count={count}>
         <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Agentown</p>
-        <h1 className={`${blockFontClassName} mt-6 text-[clamp(2.75rem,7.5vw,8rem)] text-ink`}>
+        <h1 className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(2.75rem,7.5vw,8rem)] text-ink`}>
           I&apos;m a CEO.<br />Everyone has<br />an AI now.
         </h1>
-        <p className={`${blockFontClassName} mt-6 text-[clamp(1.75rem,3.2vw,3rem)] text-ink`}>Assemble your AI team.</p>
-        <p className="mt-6 max-w-xl text-base leading-6 text-charcoal">
-          혼자 다 하지 않아도 됩니다. 내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요. 풀고 싶은 문제 하나면 시작할 수 있어요.
-        </p>
+        <p className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(1.75rem,3.2vw,3rem)] text-ink`}>Assemble your AI team.</p>
+        <Body className="mt-6" sentences={["혼자 다 하지 않아도 됩니다.", "내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요.", "풀고 싶은 문제 하나면 시작할 수 있어요."]} />
         <div className="mt-10 flex flex-wrap items-center gap-3">
           <Link href="/signup" className="rounded-pill bg-ink px-8 py-4 text-base font-medium text-white transition active:scale-95 active:opacity-50">시작하기</Link>
           <Link href="/pricing" className="rounded-pill bg-white px-8 py-4 text-base font-medium text-ink transition active:scale-95 active:opacity-50">요금 보기</Link>
@@ -89,34 +87,28 @@ export function LandingCarousel() {
       {/* 2 — 문제 제기 */}
       <Slide label={slideLabels[1]} index={1} count={count}>
         <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">The problem</p>
-        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] leading-[0.92] text-ink`}>
+        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
           혼자 다 하려니까<br /><span className="text-mute">아무것도</span><br />끝나지 않는다.
         </h2>
-        <p className="mt-7 max-w-xl text-base leading-6 text-charcoal">
-          기획도, 조사도, 검수도, 발행도 전부 한 사람 몫이었죠. AI를 써봐도 매번 처음부터 다시 설명해야 했고요.
-        </p>
+        <Body className="mt-7" sentences={["기획도, 조사도, 검수도, 발행도 전부 한 사람 몫이었죠.", "AI를 써봐도 매번 처음부터 다시 설명해야 했고요."]} />
       </Slide>
 
       {/* 3 — 회사를 만든다 */}
       <Slide label={slideLabels[2]} index={2} count={count}>
         <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 01</p>
-        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] leading-[0.92] text-ink`}>
+        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
           그래서<br />회사를<br />차렸습니다.
         </h2>
-        <p className="mt-7 max-w-xl text-base leading-6 text-charcoal">
-          이름을 정하고, 무슨 일을 하는 곳인지 적고, 사무실을 꾸밉니다. 문제 하나면 회사 하나가 시작돼요.
-        </p>
+        <Body className="mt-7" sentences={["이름을 정하고, 무슨 일을 하는 곳인지 적고, 사무실을 꾸밉니다.", "문제 하나면 회사 하나가 시작돼요."]} />
       </Slide>
 
       {/* 4 — 팀원을 모은다 */}
       <Slide label={slideLabels[3]} index={3} count={count}>
         <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 02</p>
-        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] leading-[0.92] text-ink`}>
+        <h2 className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
           Assemble<br />your<br />AI team.
         </h2>
-        <p className="mt-7 max-w-xl text-base leading-6 text-charcoal">
-          리서처, 작가, 검수자, 발행 담당. 필요한 역할을 뽑고 각자의 일하는 기준을 정해주면 팀이 완성됩니다.
-        </p>
+        <Body className="mt-7" sentences={["리서처, 작가, 검수자, 발행 담당.", "필요한 역할을 뽑고 각자의 일하는 기준을 정해주면 팀이 완성됩니다."]} />
         <div className="mt-8 grid w-full max-w-2xl grid-cols-2 gap-2 md:grid-cols-4">
           {teamCards.map((card) => <article key={card.initial} className="bg-white">
             <div className="flex aspect-square items-center justify-center bg-cloud">
@@ -131,12 +123,10 @@ export function LandingCarousel() {
       {/* 5 — 시작 */}
       <Slide label={slideLabels[4]} index={4} count={count}>
         <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 03</p>
-        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] leading-[0.92] text-ink`}>
+        <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
           이제<br />맡기고<br />퇴근하세요.
         </h2>
-        <p className="mt-7 max-w-xl text-base leading-6 text-charcoal">
-          목표를 정해두면 팀이 순서대로 일합니다. 중요한 순간에만 당신의 승인을 기다려요.
-        </p>
+        <Body className="mt-7" sentences={["목표를 정해두면 팀이 순서대로 일합니다.", "중요한 순간에만 당신의 승인을 기다려요."]} />
         <div className="mt-10 flex flex-wrap items-center gap-3">
           <Link href="/signup" className="rounded-pill bg-ink px-8 py-4 text-base font-medium text-white transition active:scale-95 active:opacity-50">무료로 시작하기</Link>
           <Link href="/features" className="rounded-pill bg-white px-8 py-4 text-base font-medium text-ink transition active:scale-95 active:opacity-50">기능 보기</Link>
@@ -165,6 +155,13 @@ export function LandingCarousel() {
       </div>
     </div>
   </section>;
+}
+
+/** 본문은 문장(마침표) 단위로 줄을 나눕니다. */
+function Body({ sentences, className = "" }: { sentences: string[]; className?: string }) {
+  return <p className={`max-w-2xl text-base leading-6 text-charcoal ${className}`}>
+    {sentences.map((sentence) => <span key={sentence} className="block">{sentence}</span>)}
+  </p>;
 }
 
 function Slide({ children, label, index, count }: { children: React.ReactNode; label: string; index: number; count: number }) {

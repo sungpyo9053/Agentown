@@ -43,7 +43,11 @@ export function MarketingFooter() {
   return <footer className="border-t border-hairline bg-white">
     <div className="mx-auto max-w-[1440px] px-6 py-12 md:px-10">
       <Link href="/"><AgentownWordmark /></Link>
-      <p className="mt-4 max-w-md text-sm leading-6 text-mute">Assemble your AI team. 문제를 풀고 싶은 사람이 회사를 차리고, 팀원을 뽑아 함께 해결합니다.</p>
+      {/* 문장(마침표) 단위로 줄바꿈 */}
+      <p className="mt-4 max-w-md text-sm leading-6 text-mute">
+        <span className="block">Assemble your AI team.</span>
+        <span className="block">문제를 풀고 싶은 사람이 회사를 차리고, 팀원을 뽑아 함께 해결합니다.</span>
+      </p>
       <p className="mt-12 text-[9px] leading-relaxed text-mute">© {new Date().getFullYear()} Agentown. All rights reserved.</p>
     </div>
   </footer>;
