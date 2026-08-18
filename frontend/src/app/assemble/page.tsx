@@ -22,22 +22,6 @@ export default function AssemblePage() {
 
   return <AppShell kicker="ASSEMBLE" title="직원 관리">
     <div className="space-y-2">
-      <section id="work" className="scroll-mt-24">
-        <Panel title="회사 업무 관리" action={<Link href="/harnesses/new" className="rounded-pill bg-ink px-6 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">새 목표</Link>}>
-          <p className="mb-5 text-sm leading-6 text-charcoal">구성원을 순서대로 연결해 실행 가능한 업무로 만듭니다.</p>
-          <div className="divide-y divide-hairline">
-            {harnesses.data?.map((item) => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="flex items-center justify-between gap-4 py-4">
-              <span>
-                <b className="block text-base font-medium text-ink">{item.name}</b>
-                <small className="text-sm text-mute">{item.description || "설명 없음"}</small>
-              </span>
-              <span className="shrink-0 text-sm font-medium text-mute">{item.status}</span>
-            </Link>)}
-            {harnesses.data?.length === 0 && <p className="py-8 text-center text-sm text-mute">구성원을 먼저 뽑은 뒤, 첫 업무를 만들어 연결하세요.</p>}
-          </div>
-        </Panel>
-      </section>
-
       <section id="hire" className="scroll-mt-24">
         <Panel
           title="직원 뽑기"
@@ -53,6 +37,40 @@ export default function AssemblePage() {
               <span className="shrink-0 text-sm font-medium text-mute">{agent.modelProvider}</span>
             </Link>)}
             {agents.data?.length === 0 && !hireOpen && <p className="py-8 text-center text-sm text-mute">아직 구성원이 없습니다.</p>}
+          </div>
+        </Panel>
+      </section>
+
+      {/* 가이드 = 각 직원이 일하는 기준(agent.md · guide.md). 이 서비스의 핵심 산출물. */}
+      <section id="guides" className="scroll-mt-24">
+        <Panel title="가이드 관리">
+          <p className="mb-5 text-sm leading-6 text-charcoal">직원마다 무엇을 어떤 순서로 하고, 무엇을 하면 안 되며, 언제 완료로 볼지를 정합니다. 질문에 답하면 agent.md · guide.md가 자동으로 만들어집니다.</p>
+          <div className="divide-y divide-hairline">
+            {agents.data?.map((agent) => <Link key={agent.id} href={`/agents/${agent.id}/edit`} className="flex items-center justify-between gap-4 py-4">
+              <span>
+                <b className="block text-base font-medium text-ink">{agent.name}</b>
+                <small className="text-sm text-mute">{agent.department || "미배정"} · {agent.role}</small>
+              </span>
+              <span className="shrink-0 text-sm font-medium text-ink underline">가이드 편집</span>
+            </Link>)}
+            {agents.data?.length === 0 && <p className="py-8 text-center text-sm text-mute">직원을 먼저 뽑으면 가이드를 만들 수 있어요.</p>}
+          </div>
+        </Panel>
+      </section>
+
+      {/* 하네스 = 직원들을 순서대로 엮어 하나의 목표를 끝내는 실행 구조 */}
+      <section id="harness" className="scroll-mt-24">
+        <Panel title="하네스 구성" action={<Link href="/harnesses/new" className="rounded-pill bg-ink px-6 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">새 하네스</Link>}>
+          <p className="mb-5 text-sm leading-6 text-charcoal">직원들을 순서대로 연결하고 사람이 승인할 지점을 정해, 하나의 목표를 끝까지 처리하는 실행 구조를 만듭니다.</p>
+          <div className="divide-y divide-hairline">
+            {harnesses.data?.map((item) => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="flex items-center justify-between gap-4 py-4">
+              <span>
+                <b className="block text-base font-medium text-ink">{item.name}</b>
+                <small className="text-sm text-mute">{item.description || "설명 없음"}</small>
+              </span>
+              <span className="shrink-0 text-sm font-medium text-mute">{item.status}</span>
+            </Link>)}
+            {harnesses.data?.length === 0 && <p className="py-8 text-center text-sm text-mute">직원을 먼저 뽑은 뒤, 첫 하네스를 만들어 연결하세요.</p>}
           </div>
         </Panel>
       </section>

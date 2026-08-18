@@ -13,14 +13,16 @@ type HomeSummary = { title?: string };
 // 사이드바 4개 그룹. 첫 그룹의 라벨은 회사명으로 대체됩니다.
 const groups = [
   { key: "board", icon: LayoutDashboard, label: "회사 보드", href: "/dashboard", items: [] as { href: string; label: string }[] },
+  // Management = 오피스 관리, Assemble = 사람(직원)과 그들의 일하는 방식(하네스·가이드) 관리
   { key: "management", icon: Building2, label: "Management", href: "/management", items: [
     { href: "/home/edit", label: "공간 인테리어" },
-    { href: "/management#departments", label: "부서 업무 관리" },
+    { href: "/management#departments", label: "부서 관리" },
     { href: "/management#agenda", label: "아젠다 관리" },
   ] },
   { key: "assemble", icon: Users, label: "Assemble", href: "/assemble", items: [
-    { href: "/assemble#work", label: "회사 업무 관리" },
     { href: "/assemble#hire", label: "직원 뽑기" },
+    { href: "/assemble#guides", label: "가이드 관리" },
+    { href: "/assemble#harness", label: "하네스 구성" },
   ] },
   { key: "settings", icon: Settings, label: "Setting", href: "/settings", items: [
     { href: "/settings#subscription", label: "구독 관리" },

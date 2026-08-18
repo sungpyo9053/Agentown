@@ -42,7 +42,7 @@ export default function ManagementPage() {
       </Panel>
 
       <section id="departments" className="scroll-mt-24">
-        <Panel title="부서 업무 관리" action={<Link href="/assemble#hire" className="text-sm font-medium text-ink underline">직원 뽑기</Link>}>
+        <Panel title="부서 관리" action={<Link href="/assemble#hire" className="text-sm font-medium text-ink underline">직원 뽑기</Link>}>
           {departments.length === 0 && <p className="py-8 text-center text-sm text-mute">아직 구성원이 없어 부서가 없습니다.</p>}
           <div className="grid gap-2 sm:grid-cols-2">
             {departments.map(([department, members]) => <div key={department} className="border border-hairline p-5">

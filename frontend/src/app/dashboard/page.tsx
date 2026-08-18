@@ -53,7 +53,7 @@ export default function DashboardPage() {
     </div>
 
     <div className="mt-2 grid gap-2 lg:grid-cols-2">
-      <Panel title="진행 중인 목표" action={<Link href="/assemble#work" className="text-sm font-medium text-ink underline">전체 보기</Link>}>
+      <Panel title="진행 중인 목표" action={<Link href="/assemble#harness" className="text-sm font-medium text-ink underline">전체 보기</Link>}>
         <div className="divide-y divide-hairline">
           {harnesses.data?.slice(0, 5).map((item) => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="flex items-center justify-between py-4">
             <span className="text-base font-medium text-ink">{item.name}</span>
