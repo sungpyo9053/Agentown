@@ -74,11 +74,10 @@ export function LandingCarousel() {
             <Body className="mt-6" sentences={["혼자 다 하지 않아도 됩니다.", "내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요.", "풀고 싶은 문제 하나면 시작할 수 있어요."]} />
           </div>
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:justify-end">
+            <div className="flex flex-wrap items-center gap-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">시작하기</Link>
-              <Link href="/pricing" className="text-sm font-medium text-ink underline underline-offset-4 transition hover:opacity-60">요금 보기</Link>
+              <Link href="/pricing" className="rounded-pill bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">요금 보기</Link>
             </div>
-            <p className="mt-4 text-xs font-medium text-mute lg:text-right">첫 1개월 무료 · 신용카드 없이 시작</p>
           </div>
         </div>
       </Slide>
@@ -121,11 +120,10 @@ export function LandingCarousel() {
             <Body className="mt-7" sentences={["목표를 정해두면 팀이 순서대로 일합니다.", "중요한 순간에만 당신의 승인을 기다려요."]} />
           </div>
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-3 lg:justify-end">
+            <div className="flex flex-wrap items-center gap-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">무료로 시작하기</Link>
-              <Link href="/features" className="text-sm font-medium text-ink underline underline-offset-4 transition hover:opacity-60">기능 보기</Link>
+              <Link href="/features" className="rounded-pill bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">기능 보기</Link>
             </div>
-            <p className="mt-4 text-xs font-medium text-mute lg:text-right">첫 1개월 무료 · 신용카드 없이 시작</p>
           </div>
         </div>
       </Slide>
