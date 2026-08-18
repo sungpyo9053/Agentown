@@ -8,13 +8,6 @@ import { blockFontClassName } from "@/lib/fonts";
 /* 가로로 넘어가는 히어로. 첫 장은 기존 랜딩 그대로 두고
    뒤로 메시지 장을 이어 붙여 슬로건을 단계적으로 강조합니다. */
 
-const teamCards = [
-  { initial: "R", role: "리서처", dept: "리서치팀" },
-  { initial: "W", role: "작가", dept: "콘텐츠팀" },
-  { initial: "Q", role: "검수자", dept: "품질관리팀" },
-  { initial: "P", role: "발행 담당", dept: "운영팀" },
-];
-
 const slideLabels = ["Intro", "혼자", "회사", "팀원", "시작"];
 
 const AUTOPLAY_MS = 6000;
@@ -109,15 +102,6 @@ export function LandingCarousel() {
           Assemble<br />your<br />AI team.
         </h2>
         <Body className="mt-7" sentences={["리서처, 작가, 검수자, 발행 담당.", "필요한 역할을 뽑고 각자의 일하는 기준을 정해주면 팀이 완성됩니다."]} />
-        <div className="mt-8 grid w-full max-w-2xl grid-cols-2 gap-2 md:grid-cols-4">
-          {teamCards.map((card) => <article key={card.initial} className="bg-white">
-            <div className="flex aspect-square items-center justify-center bg-cloud">
-              <span className={`${blockFontClassName} text-[clamp(1.75rem,4vw,3.5rem)] text-ink`}>{card.initial}</span>
-            </div>
-            <b className="mt-2 block text-sm font-medium text-ink">{card.role}</b>
-            <small className="text-xs font-medium text-mute">{card.dept}</small>
-          </article>)}
-        </div>
       </Slide>
 
       {/* 5 — 시작 */}
