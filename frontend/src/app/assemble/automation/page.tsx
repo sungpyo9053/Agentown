@@ -4,7 +4,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, MiniMap, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react";
-import { AlertTriangle, Bot, Check, ChevronRight, CirclePlay, FileText, GitBranch, MessageSquare, Pause, Play, Rocket, Send, ShieldCheck, Sparkles, Workflow } from "lucide-react";
+import { AlertTriangle, Bot, Check, ChevronRight, CirclePlay, FileText, GitBranch, MessageSquare, Pause, Play, Rocket, Send, ShieldCheck, Sparkles, Square, Workflow } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { api } from "@/lib/api";
 
@@ -26,7 +26,7 @@ type Snapshot = {
 };
 type Run = { id: string; status: string; currentNodeId?: string; output?: Record<string, unknown>; requirementMatched?: boolean; pendingApprovalId?: string; steps: Array<{ nodeId: string; nodeType: string; sequenceNo: number; status: string; input: Record<string, unknown>; output?: Record<string, unknown>; errorMessage?: string }> };
 type Tab = "design" | "canvas" | "simulation";
-type GenerationJob = { id: string; conversationId: string; workflowId: string; status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED"; stage: string; estimatedSeconds: number; elapsedSeconds: number; remainingSeconds: number; errorCode?: string; errorMessage?: string };
+type GenerationJob = { id: string; conversationId: string; workflowId: string; status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; stage: string; estimatedSeconds: number; elapsedSeconds: number; remainingSeconds: number; errorCode?: string; errorMessage?: string };
 type ConversationSummary = { conversationId: string; workflowId: string; title: string; status: string; currentVersionNo?: number; updatedAt: string };
 
 const storageKey = "agentown.builder.conversation.v1";
@@ -48,7 +48,7 @@ export default function AutomationBuilderPage() {
   const snapshotQuery = useQuery({ queryKey: ["builder", conversationId], queryFn: () => api<Snapshot>(`/builder/conversations/${conversationId}`), enabled: Boolean(conversationId) });
   const snapshot = snapshotQuery.data;
   const history = useQuery({ queryKey: ["builder-conversations"], queryFn: () => api<ConversationSummary[]>("/builder/conversations") });
-  const generation = useQuery({ queryKey: ["builder-generation", generationJobId], queryFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}`), enabled: Boolean(generationJobId), refetchInterval: query => query.state.data?.status === "SUCCEEDED" || query.state.data?.status === "FAILED" ? false : 1500 });
+  const generation = useQuery({ queryKey: ["builder-generation", generationJobId], queryFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}`), enabled: Boolean(generationJobId), refetchInterval: query => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(query.state.data?.status ?? "") ? false : 1500 });
   function store(next: Snapshot) {
     window.localStorage.setItem(storageKey, next.conversationId); setConversationId(next.conversationId);
     queryClient.setQueryData(["builder", next.conversationId], next);
@@ -74,6 +74,8 @@ export default function AutomationBuilderPage() {
   const simulate = useMutation({ mutationFn: () => api<Run>(`/builder/workflows/${snapshot!.workflowId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("simulation") }, body: JSON.stringify({ input: { message: simulationInput } }) }), onSuccess: (next) => { setRun(next); setTab("simulation"); } });
   const approveRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/builder/simulations/${run!.id}/approval`, { method: "POST", headers: { "Idempotency-Key": key("execution-approval") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
   const activate = useMutation({ mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/activate`, { method: "POST", headers: { "Idempotency-Key": key("activation") }, body: "{}" }), onSuccess: store });
+  const cancelGeneration = useMutation({ mutationFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}/cancel`, { method: "POST", headers: { "Idempotency-Key": key("cancel-generation") }, body: "{}" }), onSuccess: next => queryClient.setQueryData(["builder-generation", next.id], next) });
+  const stopWorkflow = useMutation({ mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/stop`, { method: "POST", headers: { "Idempotency-Key": key("stop-workflow") }, body: "{}" }), onSuccess: store });
 
   function submit(event: FormEvent) {
     event.preventDefault(); if (!message.trim()) return;
@@ -86,31 +88,32 @@ export default function AutomationBuilderPage() {
   })) ?? [], [snapshot?.graph]);
   const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map((edge) => ({ ...edge, animated: true, style: { stroke: "#ea725c", strokeWidth: 2 } })) ?? [], [snapshot?.graph]);
   const onNodeClick: NodeMouseHandler = (_, node) => setSelectedNode(snapshot?.graph?.nodes.find((item) => item.id === node.id));
-  const generationPending = Boolean(generationJobId) && generation.data?.status !== "SUCCEEDED" && generation.data?.status !== "FAILED";
-  const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending;
-  const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || snapshotQuery.error;
+  const generationPending = Boolean(generationJobId) && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(generation.data?.status ?? "");
+  const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending || stopWorkflow.isPending;
+  const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || stopWorkflow.error || cancelGeneration.error || snapshotQuery.error;
   const generationProgress = generation.data ? Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100)) : 0;
 
   return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
-      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">BUILDER MVP · MOCK CONNECTORS</p><p className="mt-1 text-sm text-mute">자연어 설계와 캔버스가 동일한 서버 Workflow Version을 사용합니다.</p></div>
-      <div className="flex items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} /><button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
+      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">ACTUAL CODEX DESIGN · SLACK/NOTION MOCK</p><p className="mt-1 text-sm text-mute">실제 Codex가 설계하고, 외부 쓰기 없이 Mock Connector로 안전하게 시뮬레이션합니다.</p></div>
+      <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
     </div>
 
     {generation.data && generation.data.status !== "SUCCEEDED" && (
-      <div className={`mb-5 border p-5 ${generation.data.status === "FAILED" ? "border-red-200 bg-red-50" : "border-coral/30 bg-orange-50"}`}>
+      <div className={`mb-5 border p-5 ${generation.data.status === "FAILED" ? "border-red-200 bg-red-50" : generation.data.status === "CANCELLED" ? "border-hairline bg-cloud" : "border-coral/30 bg-orange-50"}`}>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium">{generation.data.status === "FAILED" ? "Codex 설계를 시작하지 못했습니다" : "실제 Codex 메타 에이전트 팀이 설계 중입니다"}</p>
-            <p className="mt-1 text-xs text-mute">{generation.data.status === "FAILED" ? generation.data.errorMessage : `${stageLabel(generation.data.stage)} · 경과 ${generation.data.elapsedSeconds}초 · 예상 남은 시간 약 ${generation.data.remainingSeconds}초`}</p>
+            <p className="text-sm font-medium">{generation.data.status === "FAILED" ? "Codex 설계를 시작하지 못했습니다" : generation.data.status === "CANCELLED" ? "Codex 설계를 중지했습니다" : "실제 Codex 메타 에이전트 팀이 설계 중입니다"}</p>
+            <p className="mt-1 text-xs text-mute">{["FAILED", "CANCELLED"].includes(generation.data.status) ? generation.data.errorMessage : `${stageLabel(generation.data.stage)} · 경과 ${generation.data.elapsedSeconds}초 · 예상 남은 시간 약 ${generation.data.remainingSeconds}초`}</p>
           </div>
           <StatusBadge status={generation.data.status} />
         </div>
         {generation.data.status === "FAILED" ? (
           <a href="/settings/credentials" className="mt-4 inline-block rounded-pill bg-ink px-5 py-2.5 text-xs font-medium text-white">AI 연결 확인</a>
-        ) : (
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-coral transition-all" style={{ width: `${generationProgress}%` }} /></div>
+        ) : generation.data.status === "CANCELLED" ? null : (
+          <button type="button" onClick={() => cancelGeneration.mutate()} disabled={cancelGeneration.isPending} className="mt-4 flex items-center gap-2 rounded-pill border border-red-200 bg-white px-5 py-2.5 text-xs font-medium text-red-700"><Square className="h-3.5 w-3.5" />{cancelGeneration.isPending ? "중지 요청 중…" : "실행 중지"}</button>
         )}
+        {generationPending && <div className="mt-3 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-coral transition-all" style={{ width: `${generationProgress}%` }} /></div>}
       </div>
     )}
 
@@ -122,7 +125,8 @@ export default function AutomationBuilderPage() {
 
     {error && <div role="alert" className="mb-5 flex gap-2 border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="h-5 w-5 shrink-0" />{error.message}</div>}
 
-    {tab === "design" && <DesignTab snapshot={snapshot} message={message} setMessage={setMessage} submit={submit} pending={pending} decide={(approve) => decideDesign.mutate(approve)} />}
+    {snapshot?.status === "STOPPED" && <div className="mb-5 border border-hairline bg-cloud p-5 text-sm text-charcoal"><b>중지된 자동화입니다.</b><p className="mt-1 text-xs text-mute">Version과 로그는 조회할 수 있지만 수정·시뮬레이션·회사 배치는 차단됩니다.</p></div>}
+    {tab === "design" && <DesignTab snapshot={snapshot} message={message} setMessage={setMessage} submit={submit} pending={pending || snapshot?.status === "STOPPED"} decide={(approve) => decideDesign.mutate(approve)} />}
     {tab === "canvas" && snapshot?.graph && <section data-testid="builder-canvas" className="relative h-[680px] overflow-hidden border border-hairline bg-[#f6f6f3]">
       <ReactFlow nodes={flowNodes} edges={flowEdges} onNodeClick={onNodeClick} fitView fitViewOptions={{ padding: .2 }} minZoom={.35} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false}>
         <Background gap={20} color="#d4d4d0" /><Controls /><MiniMap pannable zoomable nodeColor={(node) => node.id.includes("approval") ? "#ea725c" : "#111"} />
@@ -149,7 +153,7 @@ function DesignTab({ snapshot, message, setMessage, submit, pending, decide }: {
       {snapshot?.clarificationQuestions.map((question) => <article key={question.id} className="border border-amber-200 bg-amber-50 p-5"><p className="text-xs font-semibold text-amber-800">추가 정보 필요</p><p className="mt-2 text-sm">{question.question}</p></article>)}
       {snapshot?.requirement && <Card title="업무 분석" icon={GitBranch}><p className="text-sm leading-6">{snapshot.requirement.objective}</p><FlowPills items={snapshot.requirement.steps} /></Card>}
       {snapshot?.proposal && <Card title="자동화 설계안" icon={Workflow}><p className="text-sm leading-6 text-charcoal">{snapshot.proposal.summary}</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{snapshot.proposal.capabilities.map((item) => <span key={item} className="border border-hairline bg-cloud px-3 py-2 text-xs">{item}</span>)}</div><p className="mt-4 text-xs text-mute">승인 지점: {snapshot.proposal.approvalPoints.join(", ")}</p></Card>}
-      {snapshot?.agentDefinitions.length ? <Card title={`AI Agent ${snapshot.agentDefinitions.length}`} icon={Bot}>{snapshot.agentDefinitions.map((agent) => <div key={agent.key} className="border-l-2 border-coral pl-3"><p className="text-sm font-medium">{agent.name}</p><p className="mt-1 text-xs leading-5 text-mute">{agent.role}</p></div>)}</Card> : null}
+      {snapshot?.agentDefinitions.length ? <Card title={`업무 자동화 팀 · AI 팀원 ${snapshot.agentDefinitions.length}명`} icon={Bot}>{snapshot.agentDefinitions.map((agent) => <div key={agent.key} className="border-l-2 border-coral pl-3"><p className="text-sm font-medium">{agent.name}</p><p className="mt-1 text-xs leading-5 text-mute">{agent.role}</p></div>)}</Card> : null}
       {snapshot?.guideDefinitions.length ? <Card title={`설정 Guide ${snapshot.guideDefinitions.length}`} icon={FileText}>{snapshot.guideDefinitions.map((guide) => <div key={guide.key}><p className="text-sm font-medium">{guide.title}</p><p className="mt-1 text-xs text-mute">{guide.fields.map((field) => field.label).join(" · ")}</p></div>)}</Card> : null}
       {snapshot?.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2"><button onClick={() => decide(false)} disabled={pending} className="rounded-pill border border-hairline px-5 py-3 text-sm">수정 요청</button><button data-testid="approve-design" onClick={() => decide(true)} disabled={pending} className="rounded-pill bg-ink px-5 py-3 text-sm text-white">설계 승인</button></div>}
     </section>

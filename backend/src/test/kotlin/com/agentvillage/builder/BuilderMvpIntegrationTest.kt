@@ -5,11 +5,14 @@ import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.common.exception.NotFoundException
+import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
 import java.util.UUID
 
@@ -29,6 +32,9 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.requirement?.steps).hasSize(5)
         assertThat(snapshot.proposal).isNotNull
         assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("faq-searcher", "faq-answer-writer")
+        assertThat(snapshot.agentDefinitions).hasSize(2)
+        assertThat(snapshot.agentDefinitions.joinToString(" ") { "${it.name} ${it.role}" })
+            .doesNotContain("승인 라우팅", "게시 에이전트", "문의 분류")
         assertThat(snapshot.guideDefinitions.map { it.key }).containsExactly("slack-mock", "notion-mock")
         assertThat(snapshot.graph).isNull()
 
@@ -83,5 +89,58 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("inbound", "knowledgeSource", "approvalPolicy", "destination")
         assertThat(snapshot.proposal).isNull()
         assertThat(snapshot.graph).isNull()
+    }
+
+    @ParameterizedTest(name = "모호한 요청은 설계하지 않고 질문한다 - {0}")
+    @ValueSource(strings = [
+        "글쓰기를 자동화하고 싶어요.",
+        "고객 문의 답변하는 일을 자동화하고 싶어요.",
+        "매일 하는 보고 업무를 줄이고 싶어요.",
+        "회의 정리를 자동으로 해주세요.",
+        "마케팅 업무를 자동화하고 싶습니다.",
+        "신규 입사자 안내를 자동화해줘.",
+        "영업 후속 작업을 자동으로 처리하고 싶어요.",
+        "자료 조사와 요약을 알아서 해주세요.",
+        "반복되는 백오피스 업무를 없애고 싶어요.",
+        "콘텐츠 발행 과정을 자동화하고 싶습니다.",
+    ])
+    fun `ten vague requests ask four required questions before design`(instruction: String) {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("vague-$suffix@example.com", "password123", "vague_$suffix", "모호한 요청 검증"))
+        var snapshot = service.createConversation(owner.id, "vague-conversation-$suffix")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, instruction, "vague-message-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
+        assertThat(snapshot.clarificationQuestions.map { it.field })
+            .containsExactly("inbound", "knowledgeSource", "approvalPolicy", "destination")
+        assertThat(snapshot.proposal).isNull()
+        assertThat(snapshot.agentDefinitions).isEmpty()
+        assertThat(snapshot.graph).isNull()
+    }
+
+    @Test
+    fun `stopped workflow preserves versions and blocks simulation patch and approval resume`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("stop-$suffix@example.com", "password123", "stop_$suffix", "중지 검증"))
+        var snapshot = service.createConversation(owner.id, "stop-conversation-$suffix")
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다.", "stop-message-$suffix")
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "stop-design-$suffix")
+        val versionId = snapshot.currentVersionId!!
+        val versionCount = snapshot.versions.size
+        val run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "환불은 언제 처리되나요?"), "stop-run-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
+
+        snapshot = service.stop(owner.id, snapshot.workflowId, "stop-workflow-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.STOPPED)
+        assertThat(snapshot.currentVersionId).isEqualTo(versionId)
+        assertThat(snapshot.versions).hasSize(versionCount)
+        assertThatThrownBy { service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "재실행"), "stop-run-again-$suffix") }
+            .isInstanceOf(ConflictException::class.java)
+        assertThatThrownBy { service.applyPatch(owner.id, snapshot.workflowId, "Slack 답변 전 담당자 승인을 추가해줘.", versionId, snapshot.validation!!.graphHash, "stop-patch-$suffix") }
+            .isInstanceOf(ConflictException::class.java)
+        assertThatThrownBy { service.decideExecution(owner.id, run.id, true, "stop-approval-$suffix") }
+            .isInstanceOf(ConflictException::class.java)
     }
 }

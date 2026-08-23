@@ -35,6 +35,9 @@ class BuilderController(private val service: BuilderService, private val generat
     @GetMapping("/generation-jobs/{jobId}")
     fun generationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID) = generation.get(user.userId, jobId)
 
+    @PostMapping("/generation-jobs/{jobId}/cancel")
+    fun cancelGeneration(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID, @RequestHeader("Idempotency-Key") key: String) = generation.cancel(user.userId, jobId, key)
+
     @GetMapping("/conversations/{conversationId}/requirement")
     fun requirement(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).requirement
 
@@ -77,6 +80,9 @@ class BuilderController(private val service: BuilderService, private val generat
 
     @PostMapping("/workflows/{workflowId}/activate")
     fun activate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String) = service.activate(user.userId, workflowId, key)
+
+    @PostMapping("/workflows/{workflowId}/stop")
+    fun stop(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String) = service.stop(user.userId, workflowId, key)
 
     @GetMapping("/active-automation-teams")
     fun activeTeams(@AuthenticationPrincipal user: AuthenticatedUser) = service.activeAutomationTeams(user.userId)

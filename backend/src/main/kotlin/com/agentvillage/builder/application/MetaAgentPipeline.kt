@@ -90,7 +90,7 @@ class StructuredMetaAgentPipeline(
         return try {
             val raw = model.generate(context, "builder_design_bundle", input)
             progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
-            val bundle = mapper.readValue(raw, MetaAgentDesignBundle::class.java)
+            val bundle = normalize(mapper.readValue(raw, MetaAgentDesignBundle::class.java), instruction)
             validate(bundle)
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
             val counts = listOf(1, bundle.clarificationQuestions.size, 1, bundle.agentDefinitions.size, bundle.guideDefinitions.size)
@@ -101,7 +101,8 @@ class StructuredMetaAgentPipeline(
         } catch (exception: Exception) {
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
             val failure = failure(exception, durationMs)
-            designStages.forEach { stage -> audit.record(context, stage, "FAILED", summary(input), failure = failure) }
+            val auditStatus = if (failure.errorCode == "BUILDER_GENERATION_CANCELLED") "CANCELLED" else "FAILED"
+            designStages.forEach { stage -> audit.record(context, stage, auditStatus, summary(input), failure = failure) }
             when (exception) {
                 is ApiException -> throw exception
                 is MetaAgentExecutionException -> throw BadRequestException(exception.errorCode, exception.message ?: "Codex 메타 에이전트 실행에 실패했습니다.")
@@ -118,9 +119,32 @@ class StructuredMetaAgentPipeline(
         if (bundle.requirement.objective.isBlank() || bundle.requirement.steps.isEmpty()) invalid()
         if (bundle.clarificationQuestions.map { it.field }.distinct().size != bundle.clarificationQuestions.size) invalid()
         if (bundle.proposal.name.isBlank() || bundle.proposal.capabilities.isEmpty()) invalid()
-        if (bundle.agentDefinitions.isEmpty() || bundle.agentDefinitions.size > 5 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
+        if (bundle.agentDefinitions.size != 2 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
         if (bundle.guideDefinitions.isEmpty() || bundle.guideDefinitions.size > 5 || bundle.guideDefinitions.map { it.key }.distinct().size != bundle.guideDefinitions.size) invalid()
         if (bundle.agentDefinitions.any { it.behaviorRules.isEmpty() || it.forbiddenRules.isEmpty() || it.evidenceRequirements.isEmpty() }) invalid()
+    }
+
+    private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val questions = buildList {
+            val hasInbound = instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
+            val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("문서") || instruction.contains("데이터베이스")
+            val hasApproval = instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내")
+            val hasDestination = instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
+                ((instruction.contains("Slack", true) || instruction.contains("슬랙")) && instruction.contains("답변"))
+            if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
+            if (!hasKnowledge) add(ClarificationQuestion("knowledge-source", "knowledgeSource", "결과를 만들 때 참고할 자료는 어느 서비스나 데이터베이스에 있나요?"))
+            if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
+            if (!hasDestination) add(ClarificationQuestion("destination", "destination", "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
+        }
+        val eligibleAgents = bundle.agentDefinitions.filter { agent ->
+            val text = "${agent.key} ${agent.name} ${agent.role}"
+            val excluded = listOf("승인", "라우팅", "게시", "전송", "분류").any(text::contains)
+            !excluded && (text.contains("검색") || text.contains("FAQ", true) || text.contains("답변") || text.contains("초안"))
+        }
+        val search = eligibleAgents.firstOrNull { "${it.name} ${it.role}".contains("검색") || "${it.name} ${it.role}".contains("FAQ", true) }
+        val answer = eligibleAgents.firstOrNull { it != search && ("${it.name} ${it.role}".contains("답변") || "${it.name} ${it.role}".contains("초안")) }
+        val agents = listOfNotNull(search, answer)
+        return bundle.copy(clarificationQuestions = questions, agentDefinitions = agents)
     }
 
     private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")

@@ -72,6 +72,7 @@ class BuilderService(
     fun sendMessage(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String, jobId: UUID? = null): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = context(ownerId, conversationId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 수정하거나 실행할 수 없습니다. 새 자동화를 만들어 주세요.")
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
@@ -133,6 +134,7 @@ class BuilderService(
     fun decideDesign(ownerId: UUID, workflowId: UUID, approve: Boolean, idempotencyKey: String): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화입니다.")
         approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
         if (context.workflow.status != WorkflowStatus.WAITING_DESIGN_APPROVAL) throw ConflictException("INVALID_WORKFLOW_STATE", "설계 승인 대기 상태에서만 처리할 수 있습니다.")
         val approval = BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.DESIGN, idempotencyKey = idempotencyKey, status = if (approve) ApprovalStatus.APPROVED else ApprovalStatus.REJECTED, decidedBy = ownerId, decidedAt = Instant.now())
@@ -161,6 +163,7 @@ class BuilderService(
     fun applyPatch(ownerId: UUID, workflowId: UUID, instruction: String, baseVersionId: UUID, expectedHash: String, idempotencyKey: String): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 수정할 수 없습니다.")
         messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
         val current = currentVersion(context.workflow)
         if (current.id != baseVersionId || current.graphHash != expectedHash) throw ConflictException("WORKFLOW_VERSION_CONFLICT", "캔버스가 최신 버전이 아닙니다. 새 버전을 불러와 다시 적용해 주세요.")
@@ -211,6 +214,7 @@ class BuilderService(
     fun restoreVersion(ownerId: UUID, workflowId: UUID, versionId: UUID, idempotencyKey: String): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 복원할 수 없습니다.")
         messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
         val target = versions.findByIdAndWorkflowId(versionId, workflowId) ?: throw NotFoundException("WORKFLOW_VERSION_NOT_FOUND", "버전을 찾을 수 없습니다.")
         val restored = saveVersion(context.workflow, graph(target), "버전 ${target.versionNo} 복원", approved = false)
@@ -246,13 +250,15 @@ class BuilderService(
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
         val run = runs.findByIdAndWorkspaceId(runId, workspace.id) ?: throw NotFoundException("RUN_NOT_FOUND", "실행을 찾을 수 없습니다.")
         approvals.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let { return runView(run) }
+        val context = workflowContext(ownerId, run.workflowId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 승인 후 재개할 수 없습니다.")
         if (run.status != BuilderRunStatus.WAITING_APPROVAL) throw ConflictException("RUN_NOT_WAITING_APPROVAL", "승인 대기 실행이 아닙니다.")
         val approval = approvals.findByRunIdAndStatus(runId, ApprovalStatus.PENDING) ?: throw NotFoundException("APPROVAL_NOT_FOUND", "승인 요청을 찾을 수 없습니다.")
         approval.idempotencyKey = idempotencyKey; approval.status = if (approve) ApprovalStatus.APPROVED else ApprovalStatus.REJECTED; approval.decidedBy = ownerId; approval.decidedAt = Instant.now()
         val waiting = stepRuns.findAllByRunIdOrderBySequenceNo(runId).last { it.status == BuilderStepStatus.WAITING_APPROVAL }
         if (!approve) { waiting.status = BuilderStepStatus.FAILED; waiting.errorMessage = "사용자가 실행을 거절했습니다."; run.status = BuilderRunStatus.FAILED; workflowContext(ownerId, run.workflowId).workflow.status = WorkflowStatus.SIMULATION_FAILED; return runView(run) }
         waiting.status = BuilderStepStatus.SUCCEEDED; waiting.outputJson = waiting.inputJson + ("approved" to true)
-        val context = workflowContext(ownerId, run.workflowId); val graph = graph(versions.findById(run.workflowVersionId).orElseThrow())
+        val graph = graph(versions.findById(run.workflowVersionId).orElseThrow())
         val next = graph.edges.firstOrNull { it.source == waiting.nodeId }?.target ?: finishRun(context, run, waiting.outputJson.orEmpty())
         if (next is String) executeFrom(context, run, graph, next, waiting.outputJson.orEmpty())
         return runView(run)
@@ -329,6 +335,18 @@ class BuilderService(
         approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.ACTIVATION, idempotencyKey = idempotencyKey, status = ApprovalStatus.APPROVED, decidedBy = ownerId, decidedAt = Instant.now()))
         transition(context.workflow, WorkflowStatus.ACTIVE)
         messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "Workflow Version ${version.versionNo}을 우리 회사의 업무 자동화 팀으로 배치했습니다.", workflowVersionId = version.id))
+        return snapshot(ownerId, context.conversation.id)
+    }
+
+    @Transactional
+    fun stop(ownerId: UUID, workflowId: UUID, idempotencyKey: String): BuilderSnapshot {
+        requireIdempotency(idempotencyKey)
+        val context = workflowContext(ownerId, workflowId)
+        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
+        if (context.workflow.status == WorkflowStatus.STOPPED) return snapshot(ownerId, context.conversation.id)
+        approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.STOP, idempotencyKey = idempotencyKey, status = ApprovalStatus.APPROVED, decidedBy = ownerId, decidedAt = Instant.now()))
+        context.workflow.status = WorkflowStatus.STOPPED
+        messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "자동화를 중지했습니다. Version과 실행 로그는 기록으로 보존됩니다.", workflowVersionId = context.workflow.currentVersionId))
         return snapshot(ownerId, context.conversation.id)
     }
 
@@ -416,6 +434,7 @@ class BuilderService(
             WorkflowStatus.SIMULATION_FAILED to setOf(WorkflowStatus.READY_TO_SIMULATE),
             WorkflowStatus.READY_TO_ACTIVATE to setOf(WorkflowStatus.SIMULATING, WorkflowStatus.ACTIVE),
             WorkflowStatus.ACTIVE to emptySet(), WorkflowStatus.FAILED to setOf(WorkflowStatus.DRAFT),
+            WorkflowStatus.STOPPED to emptySet(),
         )
     }
 }

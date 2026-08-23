@@ -43,6 +43,7 @@ class BuilderGenerationService(
     private val workflows: BuilderWorkflowRepository,
     private val jobs: BuilderGenerationJobRepository,
     private val publisher: ApplicationEventPublisher,
+    private val runner: CodexCliRunner,
 ) {
     @Transactional
     fun enqueue(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String): BuilderGenerationJobView {
@@ -60,6 +61,22 @@ class BuilderGenerationService(
     fun get(ownerId: UUID, jobId: UUID): BuilderGenerationJobView {
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
         return view(jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다."))
+    }
+
+    @Transactional
+    fun cancel(ownerId: UUID, jobId: UUID, idempotencyKey: String): BuilderGenerationJobView {
+        if (idempotencyKey.isBlank() || idempotencyKey.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.")
+        val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
+        val job = jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다.")
+        if (job.status !in setOf(BuilderGenerationStatus.SUCCEEDED, BuilderGenerationStatus.FAILED, BuilderGenerationStatus.CANCELLED)) {
+            job.status = BuilderGenerationStatus.CANCELLED
+            job.stage = BuilderGenerationStage.CANCELLED
+            job.errorCode = "BUILDER_GENERATION_CANCELLED"
+            job.errorMessage = "사용자가 Codex 설계를 중지했습니다."
+            job.finishedAt = Instant.now()
+            runner.cancel(job.id)
+        }
+        return view(job)
     }
 
     private fun view(job: BuilderGenerationJob): BuilderGenerationJobView {
@@ -80,7 +97,8 @@ class BuilderGenerationWorker(private val builder: BuilderService, private val p
             progress.complete(event.jobId)
         } catch (exception: Exception) {
             val code = (exception as? ApiException)?.code ?: "BUILDER_GENERATION_FAILED"
-            progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+            if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
+            else progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
         }
     }
 

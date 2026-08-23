@@ -106,6 +106,7 @@ class BuilderJobProgressService(private val jobs: BuilderGenerationJobRepository
     fun complete(jobId: UUID?) {
         if (jobId == null) return
         val job = jobs.findById(jobId).orElse(null) ?: return
+        if (job.status == BuilderGenerationStatus.CANCELLED) return
         job.status = BuilderGenerationStatus.SUCCEEDED
         job.stage = BuilderGenerationStage.COMPLETED
         job.finishedAt = Instant.now()
@@ -115,10 +116,23 @@ class BuilderJobProgressService(private val jobs: BuilderGenerationJobRepository
     fun fail(jobId: UUID?, code: String, message: String) {
         if (jobId == null) return
         val job = jobs.findById(jobId).orElse(null) ?: return
+        if (job.status == BuilderGenerationStatus.CANCELLED) return
         job.status = BuilderGenerationStatus.FAILED
         job.stage = BuilderGenerationStage.FAILED
         job.errorCode = code.take(80)
         job.errorMessage = sanitize(message)
+        job.finishedAt = Instant.now()
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun cancel(jobId: UUID?) {
+        if (jobId == null) return
+        val job = jobs.findById(jobId).orElse(null) ?: return
+        if (job.status in setOf(BuilderGenerationStatus.SUCCEEDED, BuilderGenerationStatus.FAILED, BuilderGenerationStatus.CANCELLED)) return
+        job.status = BuilderGenerationStatus.CANCELLED
+        job.stage = BuilderGenerationStage.CANCELLED
+        job.errorCode = "BUILDER_GENERATION_CANCELLED"
+        job.errorMessage = "사용자가 Codex 설계를 중지했습니다."
         job.finishedAt = Instant.now()
     }
 

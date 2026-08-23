@@ -133,8 +133,8 @@ class MetaAgentRun(
     @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
 )
 
-enum class BuilderGenerationStatus { QUEUED, RUNNING, SUCCEEDED, FAILED }
-enum class BuilderGenerationStage { REQUEST_ACCEPTED, CODEX_ANALYZING, STRUCTURE_VALIDATING, DESIGN_SAVING, COMPLETED, FAILED }
+enum class BuilderGenerationStatus { QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED }
+enum class BuilderGenerationStage { REQUEST_ACCEPTED, CODEX_ANALYZING, STRUCTURE_VALIDATING, DESIGN_SAVING, COMPLETED, FAILED, CANCELLED }
 
 @Entity @Table(name = "builder_generation_jobs")
 class BuilderGenerationJob(

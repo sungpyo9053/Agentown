@@ -12,6 +12,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Comparator
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -44,11 +45,11 @@ class CodexCliMetaAgentModel(
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
         val credential = credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI)
         if (credential == null && usageLimiter.isUnlimited(context.ownerId)) {
-            return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)))
+            return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)), context.jobId)
         }
         credential ?: throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
         return credentials.withDecrypted(credential.id, context.ownerId, LlmProvider.OPENAI) { secret, _ ->
-            runner.execute(secret, modelName, prompt(mapper.writeValueAsString(input)))
+            runner.execute(secret, modelName, prompt(mapper.writeValueAsString(input)), context.jobId)
         }
     }
 
@@ -58,7 +59,7 @@ class CodexCliMetaAgentModel(
         1. Business Process Analyst: 목적, 현재 단계, 입출력, 판단, 예외를 추출한다.
         2. Requirement Clarifier: 자동화에 반드시 필요하지만 누락된 정보만 질문한다.
         3. Automation Architect: 자동화 범위, 사람 승인 지점, Mock 연동, 실패 처리를 설계한다.
-        4. Agent Designer: 자연어 판단 단계의 구조화된 Agent Definition을 최대 5개 만든다.
+        4. Agent Designer: 자연어 판단 단계인 FAQ 검색과 답변 초안 작성에 대해서만 Agent Definition을 정확히 2개 만든다. 트리거, 승인, 게시, 라우팅, 분류를 AI Agent로 만들지 않는다.
         5. Guide Designer: 채널, 데이터베이스, 승인자 설정 가이드를 만든다.
 
         허용된 MVP 시나리오는 Slack 문의 수신 -> Notion FAQ 검색 -> AI 답변 초안 -> 사람 승인 -> Slack 스레드 답변이다.
@@ -81,28 +82,37 @@ class CodexCliRunner(
     @Value("\${builder.meta-agent.timeout-seconds:120}") private val timeoutSeconds: Long,
     @Value("\${builder.meta-agent.shared-codex-home:/var/lib/agentown-codex}") private val sharedCodexHome: String,
 ) {
+    private val processes = ConcurrentHashMap<UUID, Process>()
+    private val cancelled = ConcurrentHashMap.newKeySet<UUID>()
+
     fun hasSharedAuth(): Boolean = Files.isRegularFile(Path.of(sharedCodexHome).resolve("auth.json"))
 
-    fun execute(apiKey: CharArray, model: String, prompt: String): String {
+    fun execute(apiKey: CharArray, model: String, prompt: String, jobId: UUID? = null): String {
         val isolatedHome = Files.createTempDirectory("agentown-codex-home-")
         return try {
-            execute(apiKey, isolatedHome, model, prompt)
+            execute(apiKey, isolatedHome, model, prompt, jobId)
         } finally {
             deleteTemporary(isolatedHome)
         }
     }
 
-    fun executeWithSharedAuth(model: String, prompt: String): String {
+    fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID? = null): String {
         val home = Path.of(sharedCodexHome)
         if (!hasSharedAuth()) {
             throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
         }
-        return execute(null, home, model, prompt)
+        return execute(null, home, model, prompt, jobId)
     }
 
-    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String): String {
+    fun cancel(jobId: UUID) {
+        cancelled += jobId
+        processes[jobId]?.destroyForcibly()
+    }
+
+    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String, jobId: UUID?) : String {
         val root = Files.createTempDirectory("agentown-codex-meta-")
         return try {
+            if (jobId != null && jobId in cancelled) cancelled()
             val schema = root.resolve("schema.json")
             javaClass.getResourceAsStream("/builder/meta-agent-design-bundle.schema.json")?.use { input -> Files.copy(input, schema) }
                 ?: throw MetaAgentExecutionException("BUILDER_SCHEMA_MISSING", "Configuration", false, safeMessage = "메타 에이전트 출력 스키마를 찾을 수 없습니다.")
@@ -123,6 +133,10 @@ class CodexCliRunner(
                 put("LANG", "C.UTF-8")
             }
             val process = processBuilder.start()
+            if (jobId != null) {
+                processes[jobId] = process
+                if (jobId in cancelled) process.destroyForcibly()
+            }
             var stdout = ""
             var stderr = ""
             val outThread = thread(name = "codex-meta-stdout", isDaemon = true) { stdout = process.inputStream.bufferedReader().use { it.readText().take(MAX_OUTPUT_CHARS) } }
@@ -133,6 +147,7 @@ class CodexCliRunner(
                 throw MetaAgentExecutionException("BUILDER_CODEX_TIMEOUT", "Timeout", true, safeMessage = "Codex 분석 제한 시간을 초과했습니다.")
             }
             outThread.join(); errThread.join()
+            if (jobId != null && jobId in cancelled) cancelled()
             if (process.exitValue() != 0) {
                 val safe = sanitize(stderr)
                 val auth = safe.contains("401") || safe.contains("unauthorized", true) || safe.contains("authentication", true)
@@ -143,11 +158,18 @@ class CodexCliRunner(
         } catch (exception: MetaAgentExecutionException) {
             throw exception
         } catch (exception: Exception) {
+            if (jobId != null && jobId in cancelled) cancelled()
             throw MetaAgentExecutionException("BUILDER_CODEX_START_FAILED", "ProcessStart", true, safeMessage = sanitize(exception.message.orEmpty()))
         } finally {
+            if (jobId != null) {
+                processes.remove(jobId)
+                cancelled.remove(jobId)
+            }
             deleteTemporary(root)
         }
     }
+
+    private fun cancelled(): Nothing = throw BadRequestException("BUILDER_GENERATION_CANCELLED", "사용자가 Codex 설계를 중지했습니다.")
 
     private fun sanitize(value: String) = value
         .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S+"), "$1=***")
