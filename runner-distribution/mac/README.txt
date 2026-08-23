@@ -11,8 +11,14 @@ Agentown 개발팀이 제공하며, Agentown의 'AI 연결' 화면에서 내려�
 
 처음 한 번
 1. Agentown 웹의 AI 연결 화면에서 Runner 연결 토큰을 만듭니다.
-2. 'Agentown Runner 연결.command'를 더블클릭합니다.
-3. 토큰을 붙여 넣고 Codex 또는 Claude 계정 로그인을 완료합니다.
+2. 'Agentown Runner 연결.command'를 control-클릭하고 '열기'를 선택합니다.
+3. 확인 창에서 다시 '열기'를 누릅니다. 이 승인은 처음 한 번만 필요합니다.
+4. 토큰을 붙여 넣고 Codex 또는 Claude 계정 로그인을 완료합니다.
+
+macOS 보안 안내
+- 현재 설치 파일은 Apple 공증 전 개발 버전입니다.
+- '확인되지 않은 개발자' 경고가 나오면 위의 control-클릭 > 열기 절차를 사용하세요.
+- 터미널에서 보안 기능을 끄거나 시스템 전체 Gatekeeper를 해제하지 마세요.
 
 평소 사용
 - 켜기: Agentown Runner 시작.command

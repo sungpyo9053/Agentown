@@ -3,6 +3,9 @@ set -euo pipefail
 
 runner_dir=${0:A:h}
 cd "$runner_dir"
+# Finder에서 이 파일을 control-클릭 > 열기로 한 번 승인한 경우,
+# 같은 배포 폴더의 시작/종료 파일에 남은 다운로드 격리 표시를 함께 정리합니다.
+xattr -dr com.apple.quarantine "$runner_dir" 2>/dev/null || true
 chmod +x "Agentown Runner 시작.command" "Agentown Runner 종료.command"
 
 if ! command -v node >/dev/null 2>&1; then

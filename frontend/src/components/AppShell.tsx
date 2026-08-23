@@ -43,6 +43,7 @@ const groups = [
     { href: "/assemble/hire", label: "직원 뽑기" },
     { href: "/assemble/guides", label: "가이드 관리" },
     { href: "/assemble/harness", label: "하네스 구성" },
+    { href: "/assemble/automation", label: "업무 자동화" },
   ] },
   { key: "settings", icon: Settings, label: "Setting", href: "/settings/subscription", items: [
     { href: "/settings/subscription", label: "구독 관리" },
