@@ -117,6 +117,8 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.proposal).isNull()
         assertThat(snapshot.agentDefinitions).isEmpty()
         assertThat(snapshot.graph).isNull()
+        assertThat(snapshot.messages.last().content).isEqualTo("설계를 진행하려면 아래 4가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요.")
+        assertThat(snapshot.messages.last().content).doesNotContain(snapshot.clarificationQuestions.first().question)
     }
 
     @Test

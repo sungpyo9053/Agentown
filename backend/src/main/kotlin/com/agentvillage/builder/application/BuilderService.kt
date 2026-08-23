@@ -110,7 +110,7 @@ class BuilderService(
             ?: requirements.save(BuilderRequirementEntity(conversationId = context.conversation.id, structuredJson = map))
         if (questions.isNotEmpty()) {
             if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
-            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = questions.joinToString("\n") { it.question }))
+            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계를 진행하려면 아래 ${questions.size}가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요."))
         } else saveDesign(context, bundle, jobId)
     }
 
