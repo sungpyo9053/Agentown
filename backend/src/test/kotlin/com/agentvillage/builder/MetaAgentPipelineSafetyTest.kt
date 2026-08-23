@@ -44,6 +44,33 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
+    fun `detailed result normalizes model role wording into two safe agents`() {
+        val mapper = jacksonObjectMapper()
+        val deterministic = DeterministicMockMetaAgentModel(mapper)
+        val model = mock<MetaAgentModel>()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(model.executorName).thenReturn("normalization-test")
+        whenever(model.modelName).thenReturn("mock")
+        whenever(model.generate(any(), any(), any())).thenAnswer { invocation ->
+            val raw = deterministic.generate(invocation.arguments[0] as PipelineContext, invocation.arguments[1] as String, invocation.arguments[2] as Map<String, Any?>)
+            mapper.readTree(raw).also { root ->
+                val agents = (root as com.fasterxml.jackson.databind.node.ObjectNode).putArray("agentDefinitions")
+                agents.add(mapper.readTree(raw)["agentDefinitions"][0].deepCopy<com.fasterxml.jackson.databind.JsonNode>().also { node ->
+                    (node as com.fasterxml.jackson.databind.node.ObjectNode).put("key", "classifier").put("name", "문의 분류 에이전트").put("role", "문의 의도를 분류한다")
+                })
+            }.toString()
+        }
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        val result = pipeline.generateDesign(context, "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다")
+
+        assertThat(result.clarificationQuestions).isEmpty()
+        assertThat(result.agentDefinitions.map { it.key }).containsExactly("faq-searcher", "faq-answer-writer")
+    }
+
+    @Test
     fun `invalid model json is rejected before becoming a domain object`() {
         val model = mock<MetaAgentModel>()
         val runs = mock<MetaAgentRunRepository>()

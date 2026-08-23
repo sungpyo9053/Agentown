@@ -137,16 +137,38 @@ class StructuredMetaAgentPipeline(
             if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
             if (!hasDestination) add(ClarificationQuestion("destination", "destination", "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
         }
-        val eligibleAgents = bundle.agentDefinitions.filter { agent ->
-            val text = "${agent.key} ${agent.name} ${agent.role}"
-            val excluded = listOf("승인", "라우팅", "게시", "전송", "분류").any(text::contains)
-            !excluded && (text.contains("검색") || text.contains("FAQ", true) || text.contains("답변") || text.contains("초안"))
+        val safeAgents = bundle.agentDefinitions.filterNot { agent ->
+            val text = "${agent.key} ${agent.name} ${agent.role}".lowercase()
+            listOf("승인", "라우팅", "게시", "전송", "분류", "approval", "routing", "posting", "publisher", "classification", "classifier", "triage").any(text::contains)
         }
-        val search = eligibleAgents.firstOrNull { "${it.name} ${it.role}".contains("검색") || "${it.name} ${it.role}".contains("FAQ", true) }
-        val answer = eligibleAgents.firstOrNull { it != search && ("${it.name} ${it.role}".contains("답변") || "${it.name} ${it.role}".contains("초안")) }
-        val agents = if (questions.isNotEmpty()) emptyList() else listOfNotNull(search, answer)
+        val search = safeAgents.firstOrNull { agent ->
+            val text = "${agent.key} ${agent.name} ${agent.role}".lowercase()
+            listOf("검색", "faq", "search", "retrieve", "retrieval", "knowledge").any(text::contains)
+        } ?: canonicalSearchAgent()
+        val answer = safeAgents.firstOrNull { agent ->
+            agent !== search && listOf("답변", "초안", "answer", "draft", "writer", "response", "generate").any("${agent.key} ${agent.name} ${agent.role}".lowercase()::contains)
+        } ?: canonicalAnswerAgent()
+        val agents = if (questions.isNotEmpty()) emptyList() else listOf(search.copy(key = "faq-searcher"), answer.copy(key = "faq-answer-writer"))
         return bundle.copy(clarificationQuestions = questions, agentDefinitions = agents)
     }
+
+    private fun canonicalSearchAgent() = AgentDefinition(
+        "faq-searcher", "FAQ 검색 에이전트", "문의에서 검색어를 정리하고 Notion FAQ 근거를 선택한다.",
+        listOf(FieldDefinition("message", "string", true, "고객 문의")),
+        listOf(FieldDefinition("notionResult", "string", true, "관련 FAQ 근거")),
+        listOf("문의 의도를 보존한다", "관련성이 높은 FAQ를 선택한다"),
+        listOf("FAQ 내용을 변경하지 않는다", "검색 결과를 만들지 않는다"),
+        listOf("선택한 FAQ 제목과 근거 문장"),
+    )
+
+    private fun canonicalAnswerAgent() = AgentDefinition(
+        "faq-answer-writer", "답변 초안 작성 에이전트", "문의와 Notion FAQ 근거만 사용해 답변 초안을 작성한다.",
+        listOf(FieldDefinition("message", "string", true, "고객 문의"), FieldDefinition("notionResult", "string", true, "FAQ 검색 결과")),
+        listOf(FieldDefinition("draft", "string", true, "답변 초안")),
+        listOf("FAQ 근거를 우선한다", "불확실한 내용은 명시한다"),
+        listOf("근거 없는 정책을 만들지 않는다", "외부 전송을 수행하지 않는다"),
+        listOf("사용한 FAQ 근거 문장"),
+    )
 
     private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
     private fun summary(input: Map<String, Any?>) = mapOf("fieldCount" to input.size, "instructionChars" to input["instruction"]?.toString()?.length)

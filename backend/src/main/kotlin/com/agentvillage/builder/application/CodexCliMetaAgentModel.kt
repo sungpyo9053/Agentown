@@ -59,7 +59,7 @@ class CodexCliMetaAgentModel(
         1. Business Process Analyst: 목적, 현재 단계, 입출력, 판단, 예외를 추출한다.
         2. Requirement Clarifier: 자동화에 반드시 필요하지만 누락된 정보만 질문한다.
         3. Automation Architect: 자동화 범위, 사람 승인 지점, Mock 연동, 실패 처리를 설계한다.
-        4. Agent Designer: 자연어 판단 단계인 FAQ 검색과 답변 초안 작성에 대해서만 Agent Definition을 정확히 2개 만든다. 트리거, 승인, 게시, 라우팅, 분류를 AI Agent로 만들지 않는다.
+        4. Agent Designer: 자연어 판단 단계인 FAQ 검색과 답변 초안 작성에 대해서만 Agent Definition을 정확히 2개 만든다. key는 각각 faq-searcher, faq-answer-writer를 사용한다. 트리거, 승인, 게시, 라우팅, 분류를 AI Agent로 만들지 않는다.
         5. Guide Designer: 채널, 데이터베이스, 승인자 설정 가이드를 만든다.
 
         허용된 MVP 시나리오는 Slack 문의 수신 -> Notion FAQ 검색 -> AI 답변 초안 -> 사람 승인 -> Slack 스레드 답변이다.
