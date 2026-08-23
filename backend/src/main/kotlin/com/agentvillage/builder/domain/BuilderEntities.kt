@@ -1,0 +1,133 @@
+package com.agentvillage.builder.domain
+
+import com.agentvillage.common.domain.AuditedEntity
+import jakarta.persistence.*
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
+import java.time.Instant
+import java.util.UUID
+
+@Entity @Table(name = "builder_workspaces")
+class BuilderWorkspace(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "owner_id", nullable = false) val ownerId: UUID,
+    @Column(nullable = false, length = 120) var name: String = "내 워크스페이스",
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_conversations")
+class BuilderConversation(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(nullable = false, length = 160) var title: String = "새 업무 자동화",
+    @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_messages")
+class BuilderMessage(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "conversation_id", nullable = false) val conversationId: UUID,
+    @Column(nullable = false, length = 20) val role: String,
+    @Column(nullable = false, columnDefinition = "text") val content: String,
+    @Column(name = "workflow_version_id") val workflowVersionId: UUID? = null,
+    @Column(name = "idempotency_key", length = 120) val idempotencyKey: String? = null,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)
+
+@Entity @Table(name = "builder_requirements")
+class BuilderRequirementEntity(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "conversation_id", nullable = false, unique = true) val conversationId: UUID,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "structured_json", nullable = false, columnDefinition = "jsonb")
+    var structuredJson: Map<String, Any?>,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_proposals")
+class BuilderProposalEntity(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "conversation_id", nullable = false, unique = true) val conversationId: UUID,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "proposal_json", nullable = false, columnDefinition = "jsonb") var proposalJson: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "agent_definitions_json", nullable = false, columnDefinition = "jsonb") var agentDefinitionsJson: List<Map<String, Any?>>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "guide_definitions_json", nullable = false, columnDefinition = "jsonb") var guideDefinitionsJson: List<Map<String, Any?>>,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_workflows")
+class BuilderWorkflow(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "conversation_id", nullable = false, unique = true) val conversationId: UUID,
+    @Column(nullable = false, length = 160) var name: String,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) var status: WorkflowStatus = WorkflowStatus.DRAFT,
+    @Column(name = "current_version_id") var currentVersionId: UUID? = null,
+    @Column(name = "approved_version_id") var approvedVersionId: UUID? = null,
+    @Version @Column(name = "lock_version", nullable = false) var lockVersion: Long = 0,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_workflow_versions")
+class BuilderWorkflowVersion(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "version_no", nullable = false) val versionNo: Int,
+    @Column(name = "parent_version_id") val parentVersionId: UUID? = null,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "graph_json", nullable = false, columnDefinition = "jsonb") val graphJson: Map<String, Any?>,
+    @Column(name = "graph_hash", nullable = false, length = 64) val graphHash: String,
+    @Column(name = "change_summary", nullable = false, length = 500) val changeSummary: String,
+    @Column(nullable = false) var approved: Boolean = false,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)
+
+@Entity @Table(name = "builder_approvals")
+class BuilderApproval(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "run_id") val runId: UUID? = null,
+    @Enumerated(EnumType.STRING) @Column(name = "approval_type", nullable = false, length = 30) val approvalType: ApprovalType,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 20) var status: ApprovalStatus = ApprovalStatus.PENDING,
+    @Column(name = "idempotency_key", nullable = false, length = 120) var idempotencyKey: String,
+    @Column(name = "decided_by") var decidedBy: UUID? = null,
+    @Column(name = "decided_at") var decidedAt: Instant? = null,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)
+
+@Entity @Table(name = "builder_runs")
+class BuilderRun(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "workflow_version_id", nullable = false) val workflowVersionId: UUID,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) var status: BuilderRunStatus = BuilderRunStatus.RUNNING,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_json", nullable = false, columnDefinition = "jsonb") val inputJson: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_json", columnDefinition = "jsonb") var outputJson: Map<String, Any?>? = null,
+    @Column(name = "current_node_id", length = 100) var currentNodeId: String? = null,
+    @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
+    @Column(name = "requirement_matched") var requirementMatched: Boolean? = null,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_step_runs")
+class BuilderStepRun(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "run_id", nullable = false) val runId: UUID,
+    @Column(name = "node_id", nullable = false, length = 100) val nodeId: String,
+    @Column(name = "node_type", nullable = false, length = 80) val nodeType: String,
+    @Column(name = "sequence_no", nullable = false) val sequenceNo: Int,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) var status: BuilderStepStatus,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_json", nullable = false, columnDefinition = "jsonb") val inputJson: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_json", columnDefinition = "jsonb") var outputJson: Map<String, Any?>? = null,
+    @Column(name = "error_message", length = 1000) var errorMessage: String? = null,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_meta_agent_runs")
+class MetaAgentRun(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "trace_id", nullable = false) val traceId: UUID,
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "conversation_id", nullable = false) val conversationId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(nullable = false, length = 60) val stage: String,
+    @Column(nullable = false, length = 20) val status: String,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_summary", nullable = false, columnDefinition = "jsonb") val inputSummary: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_summary", columnDefinition = "jsonb") val outputSummary: Map<String, Any?>? = null,
+    @Column(name = "error_code", length = 80) val errorCode: String? = null,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)

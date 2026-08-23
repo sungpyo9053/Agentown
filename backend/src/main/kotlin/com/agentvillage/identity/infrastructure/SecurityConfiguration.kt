@@ -109,7 +109,7 @@ class SecurityConfiguration {
         val configuration = CorsConfiguration().apply {
             this.allowedOrigins = allowedOrigins.split(',').map(String::trim).filter(String::isNotBlank)
             allowedMethods = listOf("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
-            allowedHeaders = listOf("Content-Type", "X-XSRF-TOKEN")
+            allowedHeaders = listOf("Content-Type", "X-XSRF-TOKEN", "Idempotency-Key")
             allowCredentials = true
         }
         return UrlBasedCorsConfigurationSource().also { it.registerCorsConfiguration("/**", configuration) }

@@ -1,340 +1,144 @@
 "use client";
-/* eslint-disable react-hooks/set-state-in-effect */
+/* eslint-disable react-hooks/set-state-in-effect -- hydrate the server-owned Builder conversation id from browser storage once */
 
-import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, BrainCircuit, Cable, Check, ChevronRight, CirclePlay, FileText, GripVertical, Hash, MessageSquare, Plus, Save, Send, Sparkles, Trash2, Unplug, Workflow } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ReactFlow, Background, Controls, MiniMap, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react";
+import { AlertTriangle, Bot, Check, ChevronRight, CirclePlay, FileText, GitBranch, MessageSquare, Pause, Play, Send, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { api } from "@/lib/api";
 
-type NodeKind = "MANUAL_TRIGGER" | "SLACK_TRIGGER" | "HARNESS" | "NOTION_ACTION" | "SLACK_ACTION";
-type Harness = { id: string; name: string; description?: string; status: string; resultFormat?: string };
-type AutomationNode = {
-  id: string;
-  kind: NodeKind;
-  x: number;
-  y: number;
-  config: { harnessId?: string; sampleInput?: string; channel?: string; database?: string; contentSource?: string };
+type FieldDefinition = { name: string; type: string; required: boolean; description: string };
+type AgentDefinition = { key: string; name: string; role: string; inputSchema: FieldDefinition[]; outputSchema: FieldDefinition[]; behaviorRules: string[]; forbiddenRules: string[]; evidenceRequirements: string[] };
+type GuideDefinition = { key: string; title: string; description: string; fields: Array<{ key: string; label: string; type: string; required: boolean; help: string }> };
+type WorkflowNode = { id: string; nodeType: string; label: string; position: { x: number; y: number }; config: Record<string, unknown> };
+type WorkflowGraph = { schemaVersion: string; workflowId: string; entryNodeId: string; nodes: WorkflowNode[]; edges: Array<{ id: string; source: string; target: string }> };
+type Snapshot = {
+  workspaceId: string; conversationId: string; workflowId: string; status: string;
+  requirement?: { objective: string; trigger: string; inputs: string[]; outputs: string[]; steps: string[]; decisions: string[]; exceptions: string[] };
+  clarificationQuestions: Array<{ id: string; field: string; question: string }>;
+  proposal?: { name: string; summary: string; capabilities: string[]; integrations: string[]; approvalPoints: string[]; failurePolicy: string };
+  agentDefinitions: AgentDefinition[]; agentMarkdown: string[]; guideDefinitions: GuideDefinition[]; guideMarkdown: string[];
+  graph?: WorkflowGraph; validation?: { valid: boolean; graphHash: string; validatorVersion: string; issues: Array<{ code: string; message: string; nodeId?: string }> };
+  currentVersionId?: string; approvedVersionId?: string;
+  messages: Array<{ id: string; role: string; content: string; workflowVersionId?: string; createdAt: string }>;
+  versions: Array<{ id: string; versionNo: number; graphHash: string; changeSummary: string; approved: boolean; createdAt: string }>;
 };
-type AutomationEdge = { id: string; source: string; target: string };
-type Draft = { name: string; nodes: AutomationNode[]; edges: AutomationEdge[] };
-type AutomationDesignProposal = {
-  name: string;
-  reply: string;
-  handledBy: Array<{ key: string; name: string; responsibility: string }>;
-  analysis: Array<{ agentKey: string; agentName: string; summary: string; findings: string[] }>;
-  matchedHarnessId?: string;
-  matchedHarnessName?: string;
-  nodes: Array<{ key: string; kind: NodeKind; label: string; config: Record<string, string> }>;
-  edges: Array<{ source: string; target: string }>;
-  warnings: string[];
-};
+type Run = { id: string; status: string; currentNodeId?: string; output?: Record<string, unknown>; requirementMatched?: boolean; pendingApprovalId?: string; steps: Array<{ nodeId: string; nodeType: string; sequenceNo: number; status: string; input: Record<string, unknown>; output?: Record<string, unknown>; errorMessage?: string }> };
+type Tab = "design" | "canvas" | "simulation";
 
-const STORAGE_KEY = "agentown.automation.draft.v1";
-const NODE_WIDTH = 224;
-const NODE_HEIGHT = 132;
-const CANVAS_WIDTH = 1040;
-const CANVAS_HEIGHT = 640;
+const storageKey = "agentown.builder.conversation.v1";
+const sampleRequest = "저는 회사에서 고객 문의를 담당하고 있습니다. Slack의 #customer-support 채널에 문의가 올라오면, Notion의 고객 FAQ 데이터베이스에서 관련 내용을 찾아 답변 초안을 만들고 있습니다. 답변은 바로 보내지 말고 제가 검토하고 승인한 경우에만 해당 Slack 메시지의 스레드로 전송되게 자동화하고 싶습니다.";
 
-const nodeCatalog: Array<{ kind: NodeKind; label: string; detail: string }> = [
-  { kind: "MANUAL_TRIGGER", label: "수동 시작", detail: "버튼으로 자동화를 시작합니다." },
-  { kind: "SLACK_TRIGGER", label: "Slack 메시지 수신", detail: "채널의 새 메시지를 입력으로 받습니다." },
-  { kind: "HARNESS", label: "내 하네스 실행", detail: "발행한 하네스를 실제 업무 엔진으로 사용합니다." },
-  { kind: "NOTION_ACTION", label: "Notion 페이지 생성", detail: "하네스 결과를 Notion에 전달합니다." },
-  { kind: "SLACK_ACTION", label: "Slack 메시지 전송", detail: "결과나 승인 요청을 채널에 전송합니다." },
-];
+function key(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 
-const kindMeta: Record<NodeKind, { eyebrow: string; title: string; tone: string; icon: typeof CirclePlay }> = {
-  MANUAL_TRIGGER: { eyebrow: "TRIGGER", title: "수동 시작", tone: "bg-blue-50 text-blue-700", icon: CirclePlay },
-  SLACK_TRIGGER: { eyebrow: "SLACK · TRIGGER", title: "메시지 수신", tone: "bg-violet-50 text-violet-700", icon: Hash },
-  HARNESS: { eyebrow: "AGENTOWN", title: "내 하네스 실행", tone: "bg-orange-50 text-coral", icon: Bot },
-  NOTION_ACTION: { eyebrow: "NOTION · ACTION", title: "페이지 생성", tone: "bg-stone-100 text-stone-700", icon: FileText },
-  SLACK_ACTION: { eyebrow: "SLACK · ACTION", title: "메시지 전송", tone: "bg-violet-50 text-violet-700", icon: MessageSquare },
-};
+export default function AutomationBuilderPage() {
+  const queryClient = useQueryClient();
+  const [conversationId, setConversationId] = useState<string>();
+  const [tab, setTab] = useState<Tab>("design");
+  const [message, setMessage] = useState(sampleRequest);
+  const [simulationInput, setSimulationInput] = useState("환불은 언제 처리되나요?");
+  const [run, setRun] = useState<Run>();
+  const [selectedNode, setSelectedNode] = useState<WorkflowNode>();
 
-const emptyDraft: Draft = { name: "새 업무 자동화", nodes: [], edges: [] };
-
-export default function AutomationPage() {
-  const harnesses = useQuery({ queryKey: ["harnesses"], queryFn: () => api<Harness[]>("/harnesses") });
-  const architect = useMutation({ mutationFn: (instruction: string) => api<AutomationDesignProposal>("/automations/design", { method: "POST", body: JSON.stringify({ instruction }) }) });
-  const publishedHarnesses = useMemo(() => harnesses.data?.filter((item) => item.status === "PUBLISHED") ?? [], [harnesses.data]);
-  const [instruction, setInstruction] = useState("");
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [selectedNodeId, setSelectedNodeId] = useState<string>();
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
-  const [pendingSource, setPendingSource] = useState<string>();
-  const [dragging, setDragging] = useState<{ id: string; offsetX: number; offsetY: number; pointerId: number }>();
-  const [notice, setNotice] = useState("노드를 추가하고 출력 포트에서 다음 노드의 입력 포트로 연결하세요.");
-  const canvasRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (!stored) return;
-    try {
-      const parsed = JSON.parse(stored) as Draft;
-      if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) setDraft(parsed);
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
-  }, []);
-
-  const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId);
-  const selectedEdge = draft.edges.find((edge) => edge.id === selectedEdgeId);
-
-  function addNode(kind: NodeKind) {
-    const index = draft.nodes.length;
-    const node: AutomationNode = {
-      id: crypto.randomUUID(), kind,
-      x: 40 + (index % 4) * 245,
-      y: 55 + Math.floor(index / 4) * 175,
-      config: {},
-    };
-    setDraft((current) => ({ ...current, nodes: [...current.nodes, node] }));
-    setSelectedNodeId(node.id);
-    setSelectedEdgeId(undefined);
-    setNotice(`${kindMeta[kind].title} 노드를 추가했습니다.`);
+  useEffect(() => { setConversationId(window.localStorage.getItem(storageKey) ?? undefined); }, []);
+  const snapshotQuery = useQuery({ queryKey: ["builder", conversationId], queryFn: () => api<Snapshot>(`/builder/conversations/${conversationId}`), enabled: Boolean(conversationId) });
+  const snapshot = snapshotQuery.data;
+  function store(next: Snapshot) {
+    window.localStorage.setItem(storageKey, next.conversationId); setConversationId(next.conversationId);
+    queryClient.setQueryData(["builder", next.conversationId], next);
   }
 
-  function updateNode(config: Partial<AutomationNode["config"]>) {
-    if (!selectedNodeId) return;
-    setDraft((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === selectedNodeId ? { ...node, config: { ...node.config, ...config } } : node) }));
+  const create = useMutation({ mutationFn: () => api<Snapshot>("/builder/conversations", { method: "POST", headers: { "Idempotency-Key": key("conversation") }, body: "{}" }), onSuccess: store });
+  const send = useMutation({
+    mutationFn: async (content: string) => {
+      let current = snapshot;
+      if (!current) current = await api<Snapshot>("/builder/conversations", { method: "POST", headers: { "Idempotency-Key": key("conversation") }, body: "{}" });
+      return api<Snapshot>(`/builder/conversations/${current.conversationId}/messages`, { method: "POST", headers: { "Idempotency-Key": key("message") }, body: JSON.stringify({ content }) });
+    },
+    onSuccess: (next) => { store(next); setMessage(""); if (next.graph) setTab("canvas"); },
+  });
+  const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("design") }, body: JSON.stringify({ approve }) }), onSuccess: (next) => { store(next); if (next.graph) setTab("canvas"); } });
+  const patch = useMutation({ mutationFn: (instruction: string) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/patches`, { method: "POST", headers: { "Idempotency-Key": key("patch") }, body: JSON.stringify({ instruction, baseVersionId: snapshot!.currentVersionId, expectedGraphHash: snapshot!.validation!.graphHash }) }), onSuccess: (next) => { store(next); setMessage(""); setTab("canvas"); } });
+  const simulate = useMutation({ mutationFn: () => api<Run>(`/builder/workflows/${snapshot!.workflowId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("simulation") }, body: JSON.stringify({ input: { message: simulationInput } }) }), onSuccess: (next) => { setRun(next); setTab("simulation"); } });
+  const approveRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/builder/simulations/${run!.id}/approval`, { method: "POST", headers: { "Idempotency-Key": key("execution-approval") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
+
+  function submit(event: FormEvent) {
+    event.preventDefault(); if (!message.trim()) return;
+    if (snapshot?.graph && snapshot.currentVersionId) patch.mutate(message); else send.mutate(message);
   }
 
-  function removeSelection() {
-    if (selectedNodeId) {
-      setDraft((current) => ({ ...current, nodes: current.nodes.filter((node) => node.id !== selectedNodeId), edges: current.edges.filter((edge) => edge.source !== selectedNodeId && edge.target !== selectedNodeId) }));
-      setSelectedNodeId(undefined);
-      setPendingSource(undefined);
-      setNotice("노드와 연결된 엣지를 삭제했습니다.");
-      return;
-    }
-    if (selectedEdgeId) {
-      setDraft((current) => ({ ...current, edges: current.edges.filter((edge) => edge.id !== selectedEdgeId) }));
-      setSelectedEdgeId(undefined);
-      setNotice("엣지를 삭제했습니다.");
-    }
-  }
+  const flowNodes = useMemo<Node[]>(() => snapshot?.graph?.nodes.map((node) => ({
+    id: node.id, position: node.position, data: { label: <NodeCard node={node} /> },
+    style: { width: 210, border: node.nodeType === "human.approval" ? "2px solid #ea725c" : "1px solid #d4d4d0", borderRadius: 12, background: "white", padding: 0, boxShadow: "0 8px 24px rgba(17,17,17,.06)" },
+  })) ?? [], [snapshot?.graph]);
+  const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map((edge) => ({ ...edge, animated: true, style: { stroke: "#ea725c", strokeWidth: 2 } })) ?? [], [snapshot?.graph]);
+  const onNodeClick: NodeMouseHandler = (_, node) => setSelectedNode(snapshot?.graph?.nodes.find((item) => item.id === node.id));
+  const pending = create.isPending || send.isPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending;
+  const error = create.error || send.error || decideDesign.error || patch.error || simulate.error || approveRun.error || snapshotQuery.error;
 
-  function connect(target: string) {
-    if (!pendingSource || pendingSource === target) return;
-    const duplicate = draft.edges.some((edge) => edge.source === pendingSource && edge.target === target);
-    if (duplicate) {
-      setNotice("이미 연결된 노드입니다.");
-      setPendingSource(undefined);
-      return;
-    }
-    if (createsCycle(draft.edges, pendingSource, target)) {
-      setNotice("순환 연결은 만들 수 없습니다.");
-      setPendingSource(undefined);
-      return;
-    }
-    setDraft((current) => ({ ...current, edges: [...current.edges, { id: crypto.randomUUID(), source: pendingSource, target }] }));
-    setPendingSource(undefined);
-    setNotice("노드를 엣지로 연결했습니다. 엣지를 선택하면 연결을 삭제할 수 있습니다.");
-  }
+  return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
+      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">BUILDER MVP · MOCK CONNECTORS</p><p className="mt-1 text-sm text-mute">자연어 설계와 캔버스가 동일한 서버 Workflow Version을 사용합니다.</p></div>
+      <div className="flex items-center gap-2"><StatusBadge status={snapshot?.status ?? "NEW"} /><button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
+    </div>
 
-  function validate() {
-    const errors: string[] = [];
-    const triggers = draft.nodes.filter((node) => node.kind === "MANUAL_TRIGGER" || node.kind === "SLACK_TRIGGER");
-    if (triggers.length !== 1) errors.push("시작 노드는 정확히 1개여야 합니다.");
-    if (!draft.nodes.some((node) => node.kind === "HARNESS")) errors.push("내 하네스 실행 노드가 필요합니다.");
-    for (const node of draft.nodes) {
-      const incoming = draft.edges.some((edge) => edge.target === node.id);
-      const outgoing = draft.edges.some((edge) => edge.source === node.id);
-      const trigger = node.kind === "MANUAL_TRIGGER" || node.kind === "SLACK_TRIGGER";
-      if (!trigger && !incoming) errors.push(`${kindMeta[node.kind].title}: 입력 연결이 없습니다.`);
-      if (trigger && !outgoing) errors.push(`${kindMeta[node.kind].title}: 출력 연결이 없습니다.`);
-      if (node.kind === "HARNESS" && !node.config.harnessId) errors.push("하네스 실행 노드에서 발행 버전을 선택하세요.");
-    }
-    setNotice(errors.length ? errors.join(" ") : "검증 통과: 실행 순서와 필수 설정이 모두 연결되었습니다.");
-  }
+    <nav aria-label="Builder 화면" className="mb-5 grid grid-cols-3 border border-hairline bg-white p-1">
+      <TabButton active={tab === "design"} onClick={() => setTab("design")} icon={MessageSquare} label="설계 · 대화" />
+      <TabButton active={tab === "canvas"} onClick={() => setTab("canvas")} icon={Workflow} label="전체 캔버스" disabled={!snapshot?.graph} />
+      <TabButton active={tab === "simulation"} onClick={() => setTab("simulation")} icon={CirclePlay} label="시뮬레이션" disabled={!snapshot?.graph} />
+    </nav>
 
-  function applyProposal(proposal: AutomationDesignProposal) {
-    const idByKey = new Map<string, string>();
-    const nodes = proposal.nodes.map((proposed, index) => {
-      const id = crypto.randomUUID();
-      idByKey.set(proposed.key, id);
-      return {
-        id,
-        kind: proposed.kind,
-        x: 40 + (index % 4) * 245,
-        y: 55 + Math.floor(index / 4) * 175,
-        config: {
-          harnessId: proposed.config.harnessId,
-          sampleInput: proposed.config.sampleInput,
-          channel: proposed.config.channel,
-          database: proposed.config.database,
-          contentSource: proposed.config.contentSource,
-        },
-      } satisfies AutomationNode;
-    });
-    const edges = proposal.edges.flatMap((edge) => {
-      const source = idByKey.get(edge.source); const target = idByKey.get(edge.target);
-      return source && target ? [{ id: crypto.randomUUID(), source, target }] : [];
-    });
-    setDraft({ name: proposal.name, nodes, edges });
-    setSelectedNodeId(nodes.find((node) => node.kind === "HARNESS")?.id);
-    setSelectedEdgeId(undefined);
-    setPendingSource(undefined);
-    setNotice("분석 에이전트의 제안을 캔버스에 적용했습니다. 외부 앱 설정을 확인한 뒤 연결 검증을 실행하세요.");
-  }
+    {error && <div role="alert" className="mb-5 flex gap-2 border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="h-5 w-5 shrink-0" />{error.message}</div>}
 
-  function save() {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
-    setNotice("이 브라우저에 자동화 초안을 저장했습니다. 서버 저장과 실제 Slack·Notion 실행은 다음 개발 단계입니다.");
-  }
-
-  function startDrag(event: PointerEvent<HTMLButtonElement>, node: AutomationNode) {
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    canvasRef.current?.setPointerCapture(event.pointerId);
-    setDragging({ id: node.id, offsetX: event.clientX - bounds.left - node.x, offsetY: event.clientY - bounds.top - node.y, pointerId: event.pointerId });
-    setSelectedNodeId(node.id);
-    setSelectedEdgeId(undefined);
-  }
-
-  function moveDrag(event: PointerEvent<HTMLDivElement>) {
-    if (!dragging) return;
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const x = clamp(event.clientX - bounds.left - dragging.offsetX, 12, CANVAS_WIDTH - NODE_WIDTH - 12);
-    const y = clamp(event.clientY - bounds.top - dragging.offsetY, 12, CANVAS_HEIGHT - NODE_HEIGHT - 12);
-    setDraft((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === dragging.id ? { ...node, x, y } : node) }));
-  }
-
-  function stopDrag(event: PointerEvent<HTMLDivElement>) {
-    if (!dragging) return;
-    if (canvasRef.current?.hasPointerCapture(dragging.pointerId)) canvasRef.current.releasePointerCapture(dragging.pointerId);
-    setDragging(undefined);
-    event.preventDefault();
-  }
-
-  return <AppShell kicker="ASSEMBLE · AUTOMATION" title="업무 자동화">
-    <section className="mb-5 border border-hairline bg-ink p-6 text-white">
-      <div className="flex items-start gap-3"><span className="rounded-full bg-coral p-2"><BrainCircuit className="h-5 w-5" /></span><div><p className="text-xs font-semibold tracking-[.14em] text-coral">AGENTOWN ANALYSIS TEAM</p><h2 className="mt-1 text-xl font-medium">하고 싶은 업무를 자연어로 말해 주세요</h2><p className="mt-2 text-sm leading-6 text-stone-300">내장 분석 에이전트들이 요청을 나눠 보고, 발행된 내 하네스와 연결 노드로 구현안을 제안합니다.</p></div></div>
-      <form className="mt-5 flex flex-col gap-3 lg:flex-row" onSubmit={(event) => { event.preventDefault(); if (instruction.trim()) architect.mutate(instruction); }}>
-        <textarea aria-label="자동화 요청" value={instruction} onChange={(event) => setInstruction(event.target.value)} maxLength={2000} rows={3} placeholder="예: 슬랙에 고객 문의가 오면 내 고객응대 하네스로 답변을 만들고 Notion에 기록해줘" className="min-h-24 flex-1 resize-none border border-stone-600 bg-white px-4 py-3 text-sm leading-6 text-ink outline-none placeholder:text-stone-400 focus:border-coral" />
-        <button type="submit" disabled={!instruction.trim() || architect.isPending} className="flex min-w-40 items-center justify-center gap-2 rounded-pill bg-coral px-6 py-3 font-medium text-white disabled:opacity-50"><Send className="h-4 w-4" />{architect.isPending ? "분석 중…" : "분석 요청"}</button>
-      </form>
-      {architect.error && <p className="mt-3 bg-red-950/50 p-3 text-sm text-red-200">{architect.error.message}</p>}
-    </section>
-
-    {architect.data && <section data-testid="automation-analysis" className="mb-5 border border-hairline bg-white p-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div><div className="flex items-center gap-2 text-coral"><Sparkles className="h-4 w-4" /><span className="text-xs font-semibold tracking-[.12em]">분석 에이전트 팀 응답</span></div><p className="mt-3 max-w-4xl text-base leading-7 text-ink">{architect.data.reply}</p></div><button type="button" onClick={() => applyProposal(architect.data)} className="shrink-0 rounded-pill bg-ink px-6 py-3 text-sm font-medium text-white">캔버스에 적용</button></div>
-      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{architect.data.analysis.map((item) => <article key={item.agentKey} className="border border-hairline bg-cloud p-4"><p className="text-sm font-medium text-ink">{item.agentName}</p><p className="mt-2 text-xs leading-5 text-charcoal">{item.summary}</p><ul className="mt-3 space-y-1 text-xs text-mute">{item.findings.map((finding) => <li key={finding}>· {finding}</li>)}</ul></article>)}</div>
-      <div className="mt-4 flex flex-wrap items-center gap-2 text-xs"><span className="font-medium text-ink">제안 흐름</span>{architect.data.nodes.map((node, index) => <span key={node.key} className="flex items-center gap-2"><span className="border border-hairline px-3 py-2">{node.label}</span>{index < architect.data.nodes.length - 1 && <ChevronRight className="h-4 w-4 text-mute" />}</span>)}</div>
-      {architect.data.warnings.length > 0 && <div className="mt-4 border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><b>실행 전 확인</b>{architect.data.warnings.map((warning) => <p key={warning}>· {warning}</p>)}</div>}
+    {tab === "design" && <DesignTab snapshot={snapshot} message={message} setMessage={setMessage} submit={submit} pending={pending} decide={(approve) => decideDesign.mutate(approve)} />}
+    {tab === "canvas" && snapshot?.graph && <section data-testid="builder-canvas" className="relative h-[680px] overflow-hidden border border-hairline bg-[#f6f6f3]">
+      <ReactFlow nodes={flowNodes} edges={flowEdges} onNodeClick={onNodeClick} fitView fitViewOptions={{ padding: .2 }} minZoom={.35} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false}>
+        <Background gap={20} color="#d4d4d0" /><Controls /><MiniMap pannable zoomable nodeColor={(node) => node.id.includes("approval") ? "#ea725c" : "#111"} />
+      </ReactFlow>
+      <div className="absolute left-5 top-5 z-10 rounded-lg border border-hairline bg-white/95 px-4 py-3 shadow-sm"><p className="text-xs font-semibold text-ink">Workflow Version {snapshot.versions[0]?.versionNo}</p><p className="mt-1 text-[11px] text-mute">{snapshot.versions[0]?.changeSummary} · {snapshot.validation?.validatorVersion}</p></div>
+      {selectedNode && <aside className="absolute bottom-4 right-4 top-4 z-10 w-80 overflow-auto rounded-xl border border-hairline bg-white p-5 shadow-xl">
+        <button className="float-right text-xs text-mute" onClick={() => setSelectedNode(undefined)}>닫기</button><p className="text-xs font-semibold tracking-[.12em] text-coral">NODE SETTINGS</p><h3 className="mt-2 text-lg font-medium">{selectedNode.label}</h3><p className="mt-1 font-mono text-xs text-mute">{selectedNode.nodeType}</p>
+        <div className="mt-5 space-y-3">{Object.entries(selectedNode.config).length ? Object.entries(selectedNode.config).map(([name, value]) => <label key={name} className="block text-xs font-medium">{name}<input readOnly value={String(value)} className="mt-1 w-full border border-hairline bg-cloud px-3 py-2 font-normal" /></label>) : <p className="text-sm text-mute">Mock 단계라 별도 연결 계정이 필요하지 않습니다.</p>}</div>
+        <div className="mt-5 border-t border-hairline pt-4 text-xs leading-5 text-mute"><ShieldCheck className="mb-2 h-5 w-5 text-green-700" />토큰은 Graph에 저장되지 않습니다. 실제 OAuth는 후속 단계입니다.</div>
+      </aside>}
     </section>}
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-4 border border-hairline bg-white px-5 py-4">
-      <div>
-        <input aria-label="자동화 이름" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} className="w-full max-w-md border-0 bg-transparent text-lg font-medium text-ink outline-none" />
-        <p className="mt-1 text-sm text-mute">내 하네스를 Slack·Notion과 엣지로 연결하는 캔버스 MVP</p>
-      </div>
-      <div className="flex gap-2">
-        <button type="button" onClick={validate} className="flex items-center gap-2 rounded-pill border border-hairline px-5 py-2.5 text-sm font-medium"><Check className="h-4 w-4" />연결 검증</button>
-        <button type="button" onClick={save} className="flex items-center gap-2 rounded-pill bg-ink px-5 py-2.5 text-sm font-medium text-white"><Save className="h-4 w-4" />초안 저장</button>
-      </div>
-    </div>
-
-    <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_300px]">
-      <aside className="border border-hairline bg-white p-4">
-        <div className="mb-4 flex items-center gap-2"><Plus className="h-4 w-4" /><h2 className="text-sm font-medium">노드 추가</h2></div>
-        <div className="space-y-2">
-          {nodeCatalog.map((item) => <button type="button" key={item.kind} data-testid={`add-${item.kind.toLowerCase()}`} onClick={() => addNode(item.kind)} className="w-full border border-hairline p-3 text-left transition hover:border-ink">
-            <span className="block text-sm font-medium text-ink">{item.label}</span>
-            <span className="mt-1 block text-xs leading-5 text-mute">{item.detail}</span>
-          </button>)}
-        </div>
-        <div className="mt-5 border-t border-hairline pt-4 text-xs leading-5 text-mute">
-          <p className="font-medium text-ink">연결 방법</p>
-          <p className="mt-1">노드 오른쪽 ●을 누르고 다음 노드 왼쪽 ●을 누르세요.</p>
-        </div>
-      </aside>
-
-      <div className="min-w-0 overflow-auto border border-hairline bg-[#f6f6f3]">
-        <div ref={canvasRef} aria-label="업무 자동화 캔버스" onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}
-          className="relative touch-none overflow-hidden" style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT, backgroundImage: "radial-gradient(#d4d4d0 1px, transparent 1px)", backgroundSize: "20px 20px" }}>
-          <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
-            {draft.edges.map((edge) => {
-              const source = draft.nodes.find((node) => node.id === edge.source);
-              const target = draft.nodes.find((node) => node.id === edge.target);
-              if (!source || !target) return null;
-              const startX = source.x + NODE_WIDTH; const startY = source.y + 66;
-              const endX = target.x; const endY = target.y + 66;
-              const curve = Math.max(70, Math.abs(endX - startX) * .45);
-              return <path key={edge.id} d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`} fill="none" stroke={selectedEdgeId === edge.id ? "#ff5c35" : "#202020"} strokeWidth={selectedEdgeId === edge.id ? 4 : 2} />;
-            })}
-          </svg>
-          {draft.edges.map((edge) => {
-            const source = draft.nodes.find((node) => node.id === edge.source);
-            const target = draft.nodes.find((node) => node.id === edge.target);
-            if (!source || !target) return null;
-            return <button type="button" aria-label={`${kindMeta[source.kind].title}에서 ${kindMeta[target.kind].title} 연결 선택`} key={`${edge.id}-hit`} onClick={() => { setSelectedEdgeId(edge.id); setSelectedNodeId(undefined); }}
-              className="absolute z-10 h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border border-hairline bg-white text-xs" style={{ left: (source.x + NODE_WIDTH + target.x) / 2, top: (source.y + target.y) / 2 + 66 }}><ChevronRight className="mx-auto h-4 w-4" /></button>;
-          })}
-          {draft.nodes.map((node) => <CanvasNode key={node.id} node={node} selected={selectedNodeId === node.id} pending={pendingSource === node.id} harness={publishedHarnesses.find((item) => item.id === node.config.harnessId)}
-            onSelect={() => { setSelectedNodeId(node.id); setSelectedEdgeId(undefined); }} onStartDrag={(event) => startDrag(event, node)} onOutput={() => { setPendingSource(node.id); setSelectedNodeId(node.id); setNotice("연결할 다음 노드의 왼쪽 입력 포트를 누르세요."); }} onInput={() => connect(node.id)} />)}
-          {draft.nodes.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-center"><div><Workflow className="mx-auto h-10 w-10 text-mute" /><p className="mt-4 font-medium text-ink">왼쪽에서 시작 노드를 추가하세요.</p><p className="mt-2 text-sm text-mute">하네스와 외부 앱을 연결해 업무 흐름을 만듭니다.</p></div></div>}
-        </div>
-      </div>
-
-      <aside className="border border-hairline bg-white p-5">
-        <div className="flex items-center justify-between"><h2 className="text-sm font-medium">설정</h2>{(selectedNode || selectedEdge) && <button type="button" onClick={removeSelection} aria-label="선택 삭제" className="p-2 text-sale"><Trash2 className="h-4 w-4" /></button>}</div>
-        {!selectedNode && !selectedEdge && <div className="mt-8 text-center text-sm leading-6 text-mute"><Cable className="mx-auto mb-3 h-7 w-7" />노드나 엣지를 선택하면<br />세부 설정이 표시됩니다.</div>}
-        {selectedEdge && <div className="mt-6"><p className="text-sm font-medium text-ink">데이터 전달 엣지</p><p className="mt-2 text-sm leading-6 text-mute">앞 노드의 전체 출력을 다음 노드 입력으로 전달합니다. 필드별 매핑은 다음 단계에서 지원합니다.</p></div>}
-        {selectedNode && <NodeSettings node={selectedNode} harnesses={publishedHarnesses} update={updateNode} />}
-      </aside>
-    </div>
-
-    <div role="status" className={`mt-4 border px-5 py-4 text-sm ${notice.startsWith("검증 통과") ? "border-leaf bg-green-50 text-green-800" : "border-hairline bg-white text-charcoal"}`}>
-      <span className="font-medium">캔버스 상태</span><span className="mx-2 text-mute">·</span>{notice}
-    </div>
+    {tab === "simulation" && snapshot?.graph && <SimulationTab input={simulationInput} setInput={setSimulationInput} run={run} pending={pending} start={() => simulate.mutate()} decide={(approve) => approveRun.mutate(approve)} />}
   </AppShell>;
 }
 
-function CanvasNode({ node, selected, pending, harness, onSelect, onStartDrag, onOutput, onInput }: { node: AutomationNode; selected: boolean; pending: boolean; harness?: Harness; onSelect: () => void; onStartDrag: (event: PointerEvent<HTMLButtonElement>) => void; onOutput: () => void; onInput: () => void }) {
-  const meta = kindMeta[node.kind]; const Icon = meta.icon;
-  const detail = node.kind === "HARNESS" ? (harness?.name ?? "발행 하네스 선택 필요") : node.kind.includes("SLACK") ? (node.config.channel || "Slack 연결 설정 필요") : node.kind === "NOTION_ACTION" ? (node.config.database || "Notion DB 설정 필요") : (node.config.sampleInput || "실행 시 입력") ;
-  return <article data-testid={`node-${node.kind.toLowerCase()}`} onClick={onSelect} className={`absolute z-20 border bg-white shadow-sm ${selected ? "border-coral ring-2 ring-coral/20" : "border-hairline"}`} style={{ left: node.x, top: node.y, width: NODE_WIDTH, height: NODE_HEIGHT }}>
-    <button type="button" onPointerDown={onStartDrag} aria-label={`${meta.title} 노드 이동`} className="flex w-full cursor-grab items-center justify-between border-b border-hairline px-3 py-2 active:cursor-grabbing"><span className="flex items-center gap-2"><GripVertical className="h-4 w-4 text-mute" /><span className="text-[10px] font-semibold tracking-[.14em] text-mute">{meta.eyebrow}</span></span><span className={`rounded-pill px-2 py-1 text-[10px] ${meta.tone}`}>{pending ? "연결 중" : "준비"}</span></button>
-    <div className="flex items-start gap-3 px-4 py-3"><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${meta.tone}`}><Icon className="h-4 w-4" /></span><span className="min-w-0"><b className="block text-sm font-medium text-ink">{meta.title}</b><small className="mt-1 block truncate text-xs text-mute">{detail}</small></span></div>
-    <button type="button" aria-label={`${meta.title} 입력 포트`} onClick={(event) => { event.stopPropagation(); onInput(); }} className="absolute -left-2 top-[58px] h-4 w-4 rounded-full border-2 border-white bg-ink" />
-    <button type="button" aria-label={`${meta.title} 출력 포트`} onClick={(event) => { event.stopPropagation(); onOutput(); }} className="absolute -right-2 top-[58px] h-4 w-4 rounded-full border-2 border-white bg-coral" />
-  </article>;
-}
-
-function NodeSettings({ node, harnesses, update }: { node: AutomationNode; harnesses: Harness[]; update: (config: Partial<AutomationNode["config"]>) => void }) {
-  const meta = kindMeta[node.kind];
-  return <div className="mt-5 space-y-5">
-    <div><p className="text-[10px] font-semibold tracking-[.14em] text-mute">{meta.eyebrow}</p><p className="mt-1 text-lg font-medium text-ink">{meta.title}</p></div>
-    {node.kind === "HARNESS" && <><Field label="발행된 내 하네스"><select aria-label="발행된 내 하네스" value={node.config.harnessId ?? ""} onChange={(event) => update({ harnessId: event.target.value })}><option value="">하네스 선택</option>{harnesses.map((harness) => <option key={harness.id} value={harness.id}>{harness.name}</option>)}</select></Field>{harnesses.length === 0 && <small className="block text-sale">먼저 하네스를 검증하고 발행해 주세요.</small>}</>}
-    {node.kind === "MANUAL_TRIGGER" && <Field label="테스트 입력"><textarea aria-label="테스트 입력" rows={4} value={node.config.sampleInput ?? ""} onChange={(event) => update({ sampleInput: event.target.value })} placeholder="예: 이번 주 제품 업데이트를 요약해 줘" /></Field>}
-    {(node.kind === "SLACK_TRIGGER" || node.kind === "SLACK_ACTION") && <><ConnectionNotice service="Slack" /><Field label="채널"><input aria-label="Slack 채널" value={node.config.channel ?? ""} onChange={(event) => update({ channel: event.target.value })} placeholder="#content-team" /></Field></>}
-    {node.kind === "NOTION_ACTION" && <><ConnectionNotice service="Notion" /><Field label="데이터베이스"><input aria-label="Notion 데이터베이스" value={node.config.database ?? ""} onChange={(event) => update({ database: event.target.value })} placeholder="콘텐츠 운영 DB" /></Field><Field label="페이지 내용"><select aria-label="Notion 페이지 내용" value={node.config.contentSource ?? "previous.output"} onChange={(event) => update({ contentSource: event.target.value })}><option value="previous.output">이전 노드 전체 출력</option><option value="harness.result">하네스 최종 결과</option></select></Field></>}
+function DesignTab({ snapshot, message, setMessage, submit, pending, decide }: { snapshot?: Snapshot; message: string; setMessage: (value: string) => void; submit: (event: FormEvent) => void; pending: boolean; decide: (approve: boolean) => void }) {
+  return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(340px,.75fr)]">
+    <section className="border border-hairline bg-white">
+      <div className="border-b border-hairline bg-ink p-5 text-white"><div className="flex items-center gap-3"><Sparkles className="h-5 w-5 text-coral" /><div><h2 className="font-medium">업무를 자연어로 설명하세요</h2><p className="mt-1 text-xs text-stone-300">고정 메타 에이전트가 구조화된 계약으로 분석합니다.</p></div></div></div>
+      <div data-testid="builder-conversation" className="max-h-[430px] min-h-60 space-y-3 overflow-auto p-5">{snapshot?.messages.length ? snapshot.messages.map((item) => <div key={item.id} className={`max-w-[88%] rounded-xl px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "ml-auto bg-ink text-white" : "bg-cloud text-ink"}`}><p className="text-[10px] font-semibold tracking-wider opacity-60">{item.role === "USER" ? "나" : "BUILDER"}</p>{item.content}{item.workflowVersionId && <p className="mt-1 text-[10px] opacity-60">Version {item.workflowVersionId.slice(0, 8)}</p>}</div>) : <div className="py-14 text-center text-sm text-mute"><Bot className="mx-auto mb-3 h-9 w-9 text-coral" />예시 문장을 그대로 보내도 됩니다.</div>}</div>
+      <form onSubmit={submit} className="border-t border-hairline p-4"><textarea aria-label="업무 설명 또는 수정 요청" value={message} onChange={(event) => setMessage(event.target.value)} rows={4} maxLength={4000} className="w-full resize-none border border-hairline p-3 text-sm leading-6 outline-none focus:border-coral" placeholder={snapshot?.graph ? "예: Slack 답변 전 담당자 승인을 추가해줘." : "자동화할 업무를 설명해 주세요."} /><button disabled={pending || !message.trim()} className="mt-3 flex w-full items-center justify-center gap-2 rounded-pill bg-coral px-5 py-3 text-sm font-medium text-white disabled:opacity-50"><Send className="h-4 w-4" />{pending ? "처리 중…" : snapshot?.graph ? "Graph Patch 요청" : "분석 시작"}</button></form>
+    </section>
+    <section className="space-y-4">
+      {snapshot?.clarificationQuestions.map((question) => <article key={question.id} className="border border-amber-200 bg-amber-50 p-5"><p className="text-xs font-semibold text-amber-800">추가 정보 필요</p><p className="mt-2 text-sm">{question.question}</p></article>)}
+      {snapshot?.requirement && <Card title="업무 분석" icon={GitBranch}><p className="text-sm leading-6">{snapshot.requirement.objective}</p><FlowPills items={snapshot.requirement.steps} /></Card>}
+      {snapshot?.proposal && <Card title="자동화 설계안" icon={Workflow}><p className="text-sm leading-6 text-charcoal">{snapshot.proposal.summary}</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{snapshot.proposal.capabilities.map((item) => <span key={item} className="border border-hairline bg-cloud px-3 py-2 text-xs">{item}</span>)}</div><p className="mt-4 text-xs text-mute">승인 지점: {snapshot.proposal.approvalPoints.join(", ")}</p></Card>}
+      {snapshot?.agentDefinitions.length ? <Card title={`AI Agent ${snapshot.agentDefinitions.length}`} icon={Bot}>{snapshot.agentDefinitions.map((agent) => <div key={agent.key} className="border-l-2 border-coral pl-3"><p className="text-sm font-medium">{agent.name}</p><p className="mt-1 text-xs leading-5 text-mute">{agent.role}</p></div>)}</Card> : null}
+      {snapshot?.guideDefinitions.length ? <Card title={`설정 Guide ${snapshot.guideDefinitions.length}`} icon={FileText}>{snapshot.guideDefinitions.map((guide) => <div key={guide.key}><p className="text-sm font-medium">{guide.title}</p><p className="mt-1 text-xs text-mute">{guide.fields.map((field) => field.label).join(" · ")}</p></div>)}</Card> : null}
+      {snapshot?.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2"><button onClick={() => decide(false)} disabled={pending} className="rounded-pill border border-hairline px-5 py-3 text-sm">수정 요청</button><button data-testid="approve-design" onClick={() => decide(true)} disabled={pending} className="rounded-pill bg-ink px-5 py-3 text-sm text-white">설계 승인</button></div>}
+    </section>
   </div>;
 }
 
-function ConnectionNotice({ service }: { service: string }) {
-  return <div className="border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><span className="flex items-center gap-2 font-medium"><Unplug className="h-4 w-4" />{service} 계정 연결 전</span><p className="mt-1">이번 MVP에서는 캔버스 구성을 검증합니다. OAuth와 실제 외부 전송은 실행하지 않습니다.</p></div>;
+function SimulationTab({ input, setInput, run, pending, start, decide }: { input: string; setInput: (value: string) => void; run?: Run; pending: boolean; start: () => void; decide: (approve: boolean) => void }) {
+  return <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+    <section className="border border-hairline bg-white p-5"><p className="text-xs font-semibold tracking-[.12em] text-coral">SAMPLE INPUT</p><h2 className="mt-2 text-lg font-medium">Mock 시뮬레이션</h2><textarea aria-label="시뮬레이션 문의" value={input} onChange={(event) => setInput(event.target.value)} rows={5} className="mt-5 w-full border border-hairline p-3 text-sm" /><p className="mt-3 text-xs leading-5 text-mute">Notion Mock는 환불 3~5일 FAQ를 반환하며, Slack Mock는 실제 전송 없이 예정 메시지만 반환합니다.</p><button data-testid="start-simulation" onClick={start} disabled={pending || !input.trim()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-50"><Play className="h-4 w-4" />시뮬레이션 실행</button></section>
+    <section className="border border-hairline bg-white p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-medium">단계별 실행 상태</h2><StatusBadge status={run?.status ?? "NOT_STARTED"} /></div>
+      {!run ? <div className="py-28 text-center text-sm text-mute">샘플 입력으로 실행하면 StepRun이 여기에 표시됩니다.</div> : <div className="mt-5 space-y-3">{run.steps.map((step, index) => <article key={`${step.nodeId}-${step.sequenceNo}`} className="flex gap-3 border border-hairline p-4"><span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs ${step.status === "SUCCEEDED" ? "bg-green-100 text-green-800" : step.status === "WAITING_APPROVAL" ? "bg-amber-100 text-amber-800" : "bg-cloud"}`}>{index + 1}</span><div className="min-w-0"><p className="text-sm font-medium">{step.nodeType}</p><p className="mt-1 text-xs text-mute">{step.status}</p>{step.output && <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap bg-cloud p-2 text-[11px]">{JSON.stringify(step.output, null, 2)}</pre>}</div></article>)}
+        {run.status === "WAITING_APPROVAL" && <div className="border border-amber-200 bg-amber-50 p-5"><div className="flex gap-3"><Pause className="h-5 w-5 text-amber-700" /><div><p className="text-sm font-medium">담당자 승인 대기</p><p className="mt-1 text-xs text-mute">Slack 답변 Mock 직전에서 영속적으로 중단되었습니다.</p></div></div><div className="mt-4 grid grid-cols-2 gap-2"><button disabled={pending} onClick={() => decide(false)} className="rounded-pill border border-hairline py-2 text-sm">거절</button><button data-testid="approve-execution" disabled={pending} onClick={() => decide(true)} className="rounded-pill bg-coral py-2 text-sm text-white">승인 후 재개</button></div></div>}
+        {run.status === "SUCCEEDED" && <div className="border border-green-200 bg-green-50 p-5 text-sm text-green-900"><div className="flex items-center gap-2 font-medium"><Check className="h-5 w-5" />시뮬레이션 완료</div><p className="mt-2 text-xs">요구사항 일치: {run.requirementMatched ? "통과" : "검토 필요"} · 실제 외부 전송 없음</p></div>}
+      </div>}
+    </section>
+  </div>;
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement }) {
-  return <label className="block text-sm font-medium text-ink">{label}<span className="mt-2 block [&>*]:w-full [&>*]:border [&>*]:border-hairline [&>*]:bg-white [&>*]:px-3 [&>*]:py-2.5 [&>*]:text-sm [&>*]:outline-none [&>*]:focus:border-ink">{children}</span></label>;
-}
-
-function clamp(value: number, min: number, max: number) { return Math.min(Math.max(value, min), max); }
-
-function createsCycle(edges: AutomationEdge[], source: string, target: string) {
-  const graph = new Map<string, string[]>();
-  for (const edge of edges) graph.set(edge.source, [...(graph.get(edge.source) ?? []), edge.target]);
-  graph.set(source, [...(graph.get(source) ?? []), target]);
-  const stack = [target]; const visited = new Set<string>();
-  while (stack.length) {
-    const current = stack.pop()!;
-    if (current === source) return true;
-    if (visited.has(current)) continue;
-    visited.add(current);
-    stack.push(...(graph.get(current) ?? []));
-  }
-  return false;
-}
+function NodeCard({ node }: { node: WorkflowNode }) { return <div className="p-4 text-left"><p className="text-[10px] font-semibold uppercase tracking-[.12em] text-coral">{node.nodeType}</p><p className="mt-2 text-sm font-medium text-ink">{node.label}</p><p className="mt-2 text-[11px] text-mute">클릭하여 설정 보기</p></div>; }
+function StatusBadge({ status }: { status: string }) { return <span className="rounded-pill border border-hairline bg-cloud px-3 py-1.5 text-[11px] font-semibold tracking-wide text-charcoal">{status}</span>; }
+function TabButton({ active, onClick, icon: Icon, label, disabled }: { active: boolean; onClick: () => void; icon: typeof Workflow; label: string; disabled?: boolean }) { return <button type="button" onClick={onClick} disabled={disabled} className={`flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-30 ${active ? "bg-ink text-white" : "text-charcoal hover:bg-cloud"}`}><Icon className="h-4 w-4" />{label}</button>; }
+function Card({ title, icon: Icon, children }: { title: string; icon: typeof Workflow; children: React.ReactNode }) { return <article className="border border-hairline bg-white p-5"><div className="mb-4 flex items-center gap-2"><Icon className="h-4 w-4 text-coral" /><h2 className="text-sm font-medium">{title}</h2></div>{children}</article>; }
+function FlowPills({ items }: { items: string[] }) { return <div className="mt-4 flex flex-wrap items-center gap-1">{items.map((item, index) => <span key={item} className="flex items-center gap-1 text-xs"><span className="border border-hairline bg-cloud px-2 py-1.5">{item}</span>{index < items.length - 1 && <ChevronRight className="h-3 w-3 text-mute" />}</span>)}</div>; }
