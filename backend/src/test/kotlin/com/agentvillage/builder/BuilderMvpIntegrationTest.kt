@@ -96,6 +96,45 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `partial clarification answers accumulate and only unanswered fields are asked again`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("partial-$suffix@example.com", "password123", "partial_$suffix", "누적 답변 검증"))
+        var snapshot = service.createConversation(owner.id, "partial-conversation-$suffix")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "고객 문의 답변을 자동화하고 싶어요.", "partial-vague-$suffix")
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("inbound", "knowledgeSource", "approvalPolicy", "destination")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "Slack #customer-support 채널로 들어옵니다.", "partial-inbound-$suffix")
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("knowledgeSource", "approvalPolicy", "destination")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "Notion 고객 FAQ 데이터베이스를 참고합니다.", "partial-knowledge-$suffix")
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("approvalPolicy", "destination")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "담당자가 검토하고 승인한 경우에만 원래 Slack 메시지 스레드로 전송합니다.", "partial-final-$suffix")
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.clarificationQuestions).isEmpty()
+        assertThat(snapshot.proposal).isNotNull
+    }
+
+    @Test
+    fun `writing automation partial answer keeps only contextual unanswered questions`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("writing-$suffix@example.com", "password123", "writing_$suffix", "글쓰기 답변 검증"))
+        var snapshot = service.createConversation(owner.id, "writing-conversation-$suffix")
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "최신 토픽으로 글쓰기 자동화하고 싶어요.", "writing-vague-$suffix")
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "매일 아침 9시 참고는 최신뉴스 결과는 워드로", "writing-partial-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("knowledgeSource", "approvalPolicy", "destination")
+        assertThat(snapshot.clarificationQuestions.map { it.question }).containsExactly(
+            "최신 뉴스는 어느 사이트, RSS 또는 뉴스 서비스에서 수집할까요?",
+            "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?",
+            "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?",
+        )
+    }
+
+    @Test
     fun `unsupported developer automation is not compiled into a fake harness`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("unsupported-$suffix@example.com", "password123", "unsupported_$suffix", "범위 검증"))

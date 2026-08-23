@@ -83,7 +83,7 @@ class BuilderService(
         if (requirements.findByConversationId(conversationId) == null) {
             analyzeAndDesign(context, instruction, idempotencyKey, jobId)
         } else if (workflow.status == WorkflowStatus.NEEDS_CLARIFICATION) {
-            analyzeAndDesign(context, originalInstruction(conversationId) + "\n추가 답변: " + instruction, idempotencyKey, jobId, consumeUsage = false)
+            analyzeAndDesign(context, cumulativeInstruction(conversationId), idempotencyKey, jobId, consumeUsage = false)
         } else {
             throw ConflictException("BUILDER_MESSAGE_NOT_APPLICABLE", "현재 단계에서는 수정 요청이나 승인 작업을 사용해 주세요.")
         }
@@ -382,7 +382,10 @@ class BuilderService(
 
     private fun currentVersion(workflow: BuilderWorkflow) = workflow.currentVersionId?.let { versions.findByIdAndWorkflowId(it, workflow.id) } ?: throw ConflictException("WORKFLOW_NOT_COMPILED", "아직 컴파일된 워크플로우가 없습니다.")
     private fun graph(version: BuilderWorkflowVersion): WorkflowGraph = mapper.convertValue(version.graphJson, WorkflowGraph::class.java)
-    private fun originalInstruction(conversationId: UUID) = messages.findAllByConversationIdOrderByCreatedAt(conversationId).firstOrNull { it.role == "USER" }?.content.orEmpty()
+    private fun cumulativeInstruction(conversationId: UUID) = messages.findAllByConversationIdOrderByCreatedAt(conversationId)
+        .filter { it.role == "USER" }
+        .map { it.content }
+        .joinToString("\n추가 답변: ")
     private fun isPatchInstruction(value: String) =
         (value.contains("승인") || value.contains("담당자") || value.contains("확인")) &&
             (value.contains("Slack", true) || value.contains("슬랙") || value.contains("전송") || value.contains("답변")) &&

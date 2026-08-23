@@ -126,16 +126,29 @@ class StructuredMetaAgentPipeline(
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "article", "content", "writing")
+            .any(instruction.lowercase()::contains)
+        val scheduled = Regex("\\d{1,2}시").containsMatchIn(instruction) ||
+            Regex("매일\\s*(아침|오전|오후|밤|새벽|\\d)").containsMatchIn(instruction) ||
+            listOf("예약 실행", "schedule at", "daily at", "weekly at").any(instruction.lowercase()::contains)
+        val genericNewsReference = listOf("최신뉴스", "최신 뉴스", "최신 토픽", "뉴스", "기사", "news", "topic")
+            .any(instruction.lowercase()::contains)
+        val specificNewsSource = listOf("rss", "네이버", "구글 뉴스", "google news", "url", "사이트", "웹사이트", "피드")
+            .any(instruction.lowercase()::contains)
+        val wordFormatOnly = Regex("(워드|word)(로|문서|파일)?(?:\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(instruction)
+        val specificFileDestination = listOf("onedrive", "원드라이브", "sharepoint", "셰어포인트", "google drive", "구글 드라이브", "이메일", "다운로드", "폴더")
+            .any(instruction.lowercase()::contains)
         val questions = buildList {
-            val hasInbound = instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
-            val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("문서") || instruction.contains("데이터베이스")
+            val hasInbound = scheduled || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅") || instruction.contains("수동")
+            val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("데이터베이스") ||
+                (genericNewsReference && specificNewsSource)
             val hasApproval = instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내")
             val hasDestination = instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
-                ((instruction.contains("Slack", true) || instruction.contains("슬랙")) && instruction.contains("답변"))
-            if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
-            if (!hasKnowledge) add(ClarificationQuestion("knowledge-source", "knowledgeSource", "결과를 만들 때 참고할 자료는 어느 서비스나 데이터베이스에 있나요?"))
-            if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
-            if (!hasDestination) add(ClarificationQuestion("destination", "destination", "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
+                Regex("(Slack|슬랙)[^\\n]{0,30}(답변|회신)", RegexOption.IGNORE_CASE).containsMatchIn(instruction) || specificFileDestination
+            if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", if (writingAutomation) "글쓰기는 수동으로 시작할까요, 정해진 시간이나 이벤트에 실행할까요?" else "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
+            if (!hasKnowledge) add(ClarificationQuestion("knowledge-source", "knowledgeSource", if (writingAutomation && genericNewsReference) "최신 뉴스는 어느 사이트, RSS 또는 뉴스 서비스에서 수집할까요?" else if (writingAutomation) "글의 주제와 근거 자료는 어느 서비스나 데이터베이스에서 가져올까요?" else "결과를 만들 때 참고할 자료는 어느 서비스나 데이터베이스에 있나요?"))
+            if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", if (writingAutomation) "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?" else "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
+            if (!hasDestination) add(ClarificationQuestion("destination", "destination", if (writingAutomation && wordFormatOnly) "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?" else if (writingAutomation) "완성된 글은 어느 서비스의 어느 위치에 저장하거나 발행할까요?" else "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
         }
         val safeAgents = bundle.agentDefinitions.filterNot { agent ->
             val text = "${agent.key} ${agent.name} ${agent.role}".lowercase()
