@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 동작한다", async ({ page }) => {
+  test.setTimeout(120_000);
   const suffix = `${Date.now()}`.slice(-10);
   const email = `e2e_${suffix}@example.com`;
 
@@ -18,7 +19,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await expect(page.getByText("이메일 인증이 완료되었습니다.")).toBeVisible();
   await page.getByLabel("비밀번호").fill("Agentown!2026");
   await page.getByRole("button", { name: "인증하고 가입하기" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/onboarding\/company$/);
 
   await page.goto("/settings/credentials");
   await expect(page.getByText("ChatGPT Pro · Claude Pro를 그대로 사용하세요")).toBeVisible();
@@ -51,7 +52,9 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await page.getByRole("button", { name: "이 조직을 승인하고 내 회사에 저장" }).click();
   await expect(page).toHaveURL(/\/harnesses\/[^/]+\/edit$/);
 
-  await page.getByRole("button", { name: "2. 하네스 검증" }).click();
+  await page.getByRole("button", { name: "1. 연결 구조 생성" }).click();
+  await expect(page.getByText("연결 구조를 생성했습니다.")).toBeVisible();
+  await page.getByRole("button", { name: "2. 목표 검증" }).click();
   await expect(page.getByText(/검증 통과/)).toBeVisible();
   await page.getByRole("button", { name: "3. 버전 발행" }).click();
   await expect(page.getByText("불변 버전을 발행했습니다.")).toBeVisible();
