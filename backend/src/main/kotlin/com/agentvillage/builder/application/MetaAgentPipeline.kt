@@ -118,6 +118,7 @@ class StructuredMetaAgentPipeline(
     private fun validate(bundle: MetaAgentDesignBundle) {
         if (bundle.requirement.objective.isBlank() || bundle.requirement.steps.isEmpty()) invalid()
         if (bundle.clarificationQuestions.map { it.field }.distinct().size != bundle.clarificationQuestions.size) invalid()
+        if (bundle.clarificationQuestions.isNotEmpty()) return
         if (bundle.proposal.name.isBlank() || bundle.proposal.capabilities.isEmpty()) invalid()
         if (bundle.agentDefinitions.size != 2 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
         if (bundle.guideDefinitions.isEmpty() || bundle.guideDefinitions.size > 5 || bundle.guideDefinitions.map { it.key }.distinct().size != bundle.guideDefinitions.size) invalid()
@@ -143,7 +144,7 @@ class StructuredMetaAgentPipeline(
         }
         val search = eligibleAgents.firstOrNull { "${it.name} ${it.role}".contains("검색") || "${it.name} ${it.role}".contains("FAQ", true) }
         val answer = eligibleAgents.firstOrNull { it != search && ("${it.name} ${it.role}".contains("답변") || "${it.name} ${it.role}".contains("초안")) }
-        val agents = listOfNotNull(search, answer)
+        val agents = if (questions.isNotEmpty()) emptyList() else listOfNotNull(search, answer)
         return bundle.copy(clarificationQuestions = questions, agentDefinitions = agents)
     }
 
