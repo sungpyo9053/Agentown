@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -71,8 +71,13 @@ export default function DashboardPage() {
 }
 
 function WorkPanel({ harnesses, runners, pending, error, onSubmit }: { harnesses: Harness[]; runners: Runner[]; pending: boolean; error: Error | null; onSubmit: (harnessId: string, input: Record<string, string>) => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const published = harnesses.filter(item => item.status === "PUBLISHED");
-  const active = runners.filter(runner => runner.status === "ACTIVE" && runner.lastSeenAt && Date.now() - new Date(runner.lastSeenAt).getTime() < 30_000);
+  const active = runners.filter(runner => runner.status === "ACTIVE" && runner.lastSeenAt && now - new Date(runner.lastSeenAt).getTime() < 30_000);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
