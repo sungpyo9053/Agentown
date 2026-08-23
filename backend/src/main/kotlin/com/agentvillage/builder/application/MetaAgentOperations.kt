@@ -8,6 +8,8 @@ import com.agentvillage.builder.infrastructure.BuilderGenerationJobRepository
 import com.agentvillage.builder.infrastructure.BuilderUsageRecordRepository
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.agentvillage.common.exception.ConflictException
+import com.agentvillage.common.domain.UserRole
+import com.agentvillage.identity.application.UserDirectory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.stereotype.Service
@@ -62,6 +64,7 @@ class MetaAgentAuditService(private val runs: MetaAgentRunRepository) {
 @Service
 class BuilderUsageLimiter(
     private val records: BuilderUsageRecordRepository,
+    private val users: UserDirectory,
     @Value("\${builder.meta-agent.unlimited-owner-ids:}") unlimitedOwnerIds: String,
 ) {
     private val unlimited: Set<UUID> = unlimitedOwnerIds.split(',')
@@ -70,7 +73,7 @@ class BuilderUsageLimiter(
         .mapNotNull { value: String -> runCatching { UUID.fromString(value) }.getOrNull() }
         .toSet()
 
-    fun isUnlimited(ownerId: UUID) = ownerId in unlimited
+    fun isUnlimited(ownerId: UUID) = ownerId in unlimited || users.require(ownerId).role == UserRole.ADMIN
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(context: PipelineContext, idempotencyKey: String) {
