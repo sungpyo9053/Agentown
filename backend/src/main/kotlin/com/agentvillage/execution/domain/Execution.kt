@@ -1,6 +1,7 @@
 package com.agentvillage.execution.domain
 
 import jakarta.persistence.*
+import com.fasterxml.jackson.annotation.JsonIgnore
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
 import java.math.BigDecimal
@@ -23,6 +24,12 @@ class Execution(
     @Column(name = "runner_connection_id") var runnerConnectionId: UUID? = null,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_json", columnDefinition = "jsonb") val inputJson: Map<String, Any>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_json", columnDefinition = "jsonb") var outputJson: Map<String, Any>? = null,
+    @get:JsonIgnore
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "execution_snapshot_json", nullable = false, columnDefinition = "jsonb")
+    val executionSnapshotJson: Map<String, Any> = emptyMap(),
+    @get:JsonIgnore
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "credential_bindings_json", nullable = false, columnDefinition = "jsonb")
+    val credentialBindingsJson: Map<String, String> = emptyMap(),
     @Column(name = "current_step_key") var currentStepKey: String? = null,
     @Column(name = "error_code") var errorCode: String? = null,
     @Column(name = "error_message") var errorMessage: String? = null,

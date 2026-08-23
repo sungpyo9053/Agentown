@@ -18,6 +18,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import java.util.UUID
+import java.nio.charset.StandardCharsets
 
 @AutoConfigureMockMvc
 class CompanyDesignerIntegrationTest : IntegrationTestSupport() {
@@ -107,5 +108,46 @@ class CompanyDesignerIntegrationTest : IntegrationTestSupport() {
         ).andExpect(status().isOk)
             .andExpect(jsonPath("$.valid").value(false))
             .andExpect(jsonPath("$.errors").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("사용자 코드"))))
+    }
+
+    @Test
+    fun `single responsibility design uses one agent and reuses it on the next design`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val identity = identities.register(RegisterUserCommand("minimal-$suffix@example.com", "password123", "minimal_$suffix", "최소 설계 검증"))
+        val principal = AuthenticatedUser(identity.id, identity.email, "unused", true)
+        fun design(companyName: String) = mvc.perform(
+            post("/api/designer/companies/design").with(user(principal)).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content("""{
+                  "companyName":"$companyName","goal":"입력 문서를 짧게 요약한다.",
+                  "primaryInput":"긴 문서","desiredOutput":"핵심 요약","approvalPolicy":"",
+                  "provider":"OPENAI","model":"gpt-4o-mini","stubMode":true
+                }"""),
+        ).andExpect(status().isOk).andReturn().response.getContentAsString(StandardCharsets.UTF_8)
+        fun apply(designBody: String) = mvc.perform(
+            post("/api/designer/companies/apply").with(user(principal)).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(mapOf("draft" to mapper.readTree(designBody)["draft"], "stubMode" to true))),
+        )
+
+        val first = design("첫 요약 회사")
+        assertThat(mapper.readTree(first)["draft"]["agents"].size()).isEqualTo(1)
+        assertThat(mapper.readTree(first)["draft"]["approvalAfterLast"].asBoolean()).isFalse()
+        val firstApplied = apply(first).andExpect(status().isOk)
+            .andExpect(jsonPath("$.createdAgentIds.length()").value(1))
+            .andExpect(jsonPath("$.reusedAgentIds.length()").value(0))
+            .andReturn().response.getContentAsString(StandardCharsets.UTF_8)
+        val firstAgentId = mapper.readTree(firstApplied)["agentIds"][0].asText()
+
+        val second = design("두 번째 요약 회사")
+        val secondDraft = mapper.readTree(second)["draft"]
+        assertThat(secondDraft["outcome"].asText()).isEqualTo("MINIMAL_CHANGE")
+        assertThat(secondDraft["agents"][0]["existingAgentId"].asText()).isEqualTo(firstAgentId)
+        assertThat(secondDraft["changes"].map { it["type"].asText() }).contains("REUSE_AGENT", "REWIRE_STEPS")
+        apply(second).andExpect(status().isOk)
+            .andExpect(jsonPath("$.createdAgentIds.length()").value(0))
+            .andExpect(jsonPath("$.reusedAgentIds[0]").value(firstAgentId))
+
+        mvc.perform(get("/api/agents").with(user(principal))).andExpect(status().isOk)
+            .andExpect(jsonPath("$.length()").value(1))
     }
 }

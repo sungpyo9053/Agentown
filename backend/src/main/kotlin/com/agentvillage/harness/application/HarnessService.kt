@@ -8,16 +8,20 @@ import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.common.exception.ForbiddenException
 import com.agentvillage.harness.domain.*
 import com.agentvillage.harness.infrastructure.*
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.security.MessageDigest
+import java.time.Instant
 import java.util.UUID
 
 data class HarnessView(val harness: Harness, val steps: List<HarnessStep>, val edges: List<HarnessEdge>, val latestVersion: HarnessVersion?)
-data class ValidationResult(val valid: Boolean, val errors: List<String>)
+data class PublishedHarnessPlan(val versionId: UUID, val snapshot: Map<String, Any>)
 
 interface HarnessDirectory {
     fun requireOwnedView(id: UUID, ownerId: UUID): HarnessView
     fun latestPublished(id: UUID): HarnessVersion
+    fun publishedExecutionPlan(id: UUID, ownerId: UUID): PublishedHarnessPlan
 }
 
 @Service
@@ -27,6 +31,8 @@ class HarnessService(
     private val edges: HarnessEdgeRepository,
     private val versions: HarnessVersionRepository,
     private val agents: AgentDirectory,
+    private val validator: HarnessValidator,
+    private val mapper: ObjectMapper,
 ) : HarnessDirectory {
     @Transactional fun create(ownerId: UUID, name: String, description: String?, resultFormat: HarnessResultFormat = HarnessResultFormat.AUTO) =
         harnesses.save(Harness(ownerId = ownerId, name = name.trim(), description = description?.trim(), resultFormat = resultFormat))
@@ -97,17 +103,7 @@ class HarnessService(
     }
 
     @Transactional(readOnly = true)
-    fun validate(id: UUID, ownerId: UUID): ValidationResult {
-        val view = requireOwnedView(id, ownerId); val errors = mutableListOf<String>()
-        if (view.steps.isEmpty()) errors += "시작 단계가 없습니다."
-        if (view.steps.count { it.stepType == HarnessStepType.LLM } > 5) errors += "최대 에이전트 수를 초과했습니다."
-        if (view.steps.map { it.sequenceNo } != (1..view.steps.size).toList()) errors += "단계 순서가 연속적이지 않습니다."
-        if (view.steps.any { it.maxRetries !in 0..3 }) errors += "재시도 횟수가 제한을 벗어났습니다."
-        val ids = view.steps.map { it.id }.toSet()
-        if (view.edges.any { it.sourceStepId !in ids || it.targetStepId !in ids }) errors += "존재하지 않는 단계가 연결되어 있습니다."
-        view.steps.mapNotNull { it.agentId }.forEach { runCatching { agents.requireOwned(it, ownerId) }.onFailure { errors += "존재하지 않는 에이전트가 연결되어 있습니다: $it" } }
-        return ValidationResult(errors.isEmpty(), errors.distinct())
-    }
+    fun validate(id: UUID, ownerId: UUID): ValidationResult = validator.validate(requireOwnedView(id, ownerId), ownerId)
 
     @Transactional
     fun publish(id: UUID, ownerId: UUID): HarnessVersion {
@@ -115,7 +111,14 @@ class HarnessService(
         if (!result.valid) throw BadRequestException("HARNESS_INVALID", result.errors.joinToString(" "))
         val view = requireOwnedView(id, ownerId)
         val descriptors = view.steps.associate { it.id to it.agentId?.let { aid -> agents.describeOwned(aid, ownerId) } }
-        val snapshot = snapshot(view, descriptors)
+        val baseSnapshot = snapshot(view, descriptors)
+        val snapshot = baseSnapshot + ("validation" to mapOf(
+            "outcome" to result.outcome.name,
+            "validatorVersion" to HarnessValidator.VERSION,
+            "validatedAt" to Instant.now().toString(),
+            "structureHash" to sha256(baseSnapshot),
+            "checks" to result.checks.map { mapOf("code" to it.code, "status" to it.status.name) },
+        ))
         val next = (versions.findFirstByHarnessIdOrderByCreatedAtDesc(id)?.version?.substringAfterLast('.')?.toIntOrNull() ?: -1) + 1
         val version = versions.save(HarnessVersion(harnessId = id, version = "1.0.$next", snapshotJson = snapshot))
         view.harness.status = HarnessStatus.PUBLISHED
@@ -125,6 +128,17 @@ class HarnessService(
     @Transactional(readOnly = true)
     override fun latestPublished(id: UUID): HarnessVersion = versions.findFirstByHarnessIdOrderByCreatedAtDesc(id)
         ?: throw NotFoundException("HARNESS_VERSION_NOT_FOUND", "발행된 하네스 버전이 없습니다.")
+
+    @Transactional(readOnly = true)
+    override fun publishedExecutionPlan(id: UUID, ownerId: UUID): PublishedHarnessPlan {
+        requireOwnedView(id, ownerId)
+        val version = latestPublished(id)
+        val outcome = (version.snapshotJson["validation"] as? Map<*, *>)?.get("outcome")?.toString()
+        if (outcome != HarnessValidationOutcome.VALIDATED.name) {
+            throw BadRequestException("HARNESS_VERSION_NOT_VERIFIED", "독립 검증 Gate를 통과한 새 버전을 발행해 주세요.")
+        }
+        return PublishedHarnessPlan(version.id, version.snapshotJson)
+    }
 
     @Transactional(readOnly = true)
     fun latestPublishedId(versionId: UUID): UUID = versions.findById(versionId).orElseThrow {
@@ -171,29 +185,45 @@ class HarnessService(
         return latestPublished(id)
     }
 
-    private fun snapshot(view: HarnessView, descriptors: Map<UUID, AgentDescriptor?>): Map<String, Any> = mapOf(
+    private fun snapshot(view: HarnessView, descriptors: Map<UUID, AgentDescriptor?>): Map<String, Any> {
+        val agentKeys = view.steps.mapNotNull { step -> descriptors[step.id]?.let { it.id to "agent-${step.stepKey}" } }.toMap()
+        val stepKeys = view.steps.associate { it.id to it.stepKey }
+        return linkedMapOf(
+        "formatVersion" to 2,
         "name" to view.harness.name, "description" to (view.harness.description ?: ""),
         "result" to mapOf("format" to view.harness.resultFormat.name, "stepKey" to (view.harness.resultStepKey ?: "")),
         "agents" to descriptors.values.filterNotNull().map { mapOf(
-            "name" to it.name, "role" to it.role, "script" to it.script, "guide" to (it.guide ?: ""),
+            "key" to agentKeys.getValue(it.id), "sourceAgentId" to it.id.toString(),
+            "name" to it.name, "role" to it.role, "systemPrompt" to (it.systemPrompt ?: ""),
+            "script" to it.script, "guide" to (it.guide ?: ""),
             "provider" to it.provider.name, "recommendedModel" to it.model, "temperature" to it.temperature,
             "maxOutputTokens" to it.maxOutputTokens, "timeoutSeconds" to it.timeoutSeconds,
             "providerOptions" to it.providerOptions,
         ) },
         "steps" to view.steps.map { mapOf(
             "id" to it.stepKey,
+            "agentKey" to it.agentId?.let(agentKeys::get),
             "type" to it.stepType.name,
             "sequence" to it.sequenceNo,
             "maxRetries" to it.maxRetries,
+            "timeoutSeconds" to it.timeoutSeconds,
             "requiresApproval" to it.requiresApproval,
+            "inputMapping" to it.inputMapping,
         ) },
-        "edges" to view.edges.map { mapOf("from" to it.sourceStepId.toString(), "to" to (it.targetStepId?.toString() ?: "finish")) },
-    )
+        "edges" to view.edges.map { mapOf("from" to stepKeys.getValue(it.sourceStepId), "to" to (it.targetStepId?.let(stepKeys::get) ?: "finish")) },
+        )
+    }
 
+    private fun sha256(value: Map<String, Any>) = MessageDigest.getInstance("SHA-256")
+        .digest(mapper.writeValueAsBytes(value))
+        .joinToString("") { "%02x".format(it) }
+
+    @Suppress("UNCHECKED_CAST")
     private fun descriptor(m: Map<String, Any>) = AgentDescriptor(
         UUID.randomUUID(), m["name"].toString(), m["role"].toString(), m["script"].toString(), m["guide"]?.toString(),
         com.agentvillage.llmcredential.domain.LlmProvider.valueOf(m["provider"].toString()), m["recommendedModel"].toString(),
         java.math.BigDecimal(m["temperature"].toString()), (m["maxOutputTokens"] as Number).toInt(),
-        (m["timeoutSeconds"] as Number).toInt(), (m["providerOptions"] as? Map<String, Any>) ?: emptyMap(), null, null,
+        (m["timeoutSeconds"] as Number).toInt(), (m["providerOptions"] as? Map<String, Any>) ?: emptyMap(), null,
+        m["systemPrompt"]?.toString()?.takeIf(String::isNotBlank),
     )
 }

@@ -15,16 +15,14 @@ import java.util.Locale
 import java.util.UUID
 
 data class RegisterUserCommand(
-    val email: String?,
+    val email: String,
     val password: String,
-    val handle: String,
+    val handle: String?,
     val displayName: String,
-    val phoneHash: String? = null,
-    val phoneMasked: String? = null,
-    val phoneVerifiedAt: java.time.Instant? = null,
+    val emailVerifiedAt: java.time.Instant? = null,
 )
 
-data class AccountAvailability(val handleAvailable: Boolean?)
+data class AccountAvailability(val emailAvailable: Boolean?)
 data class PublicProfile(val id: UUID, val handle: String, val displayName: String, val bio: String?, val avatarUrl: String?)
 
 @Service
@@ -35,32 +33,26 @@ class IdentityService(
     private val events: ApplicationEventPublisher,
 ) : UserDirectory {
     @Transactional(readOnly = true)
-    fun availability(handle: String?): AccountAvailability = AccountAvailability(
-        handleAvailable = handle?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }?.let { !users.existsByHandle(it) },
+    fun availability(email: String?): AccountAvailability = AccountAvailability(
+        emailAvailable = email?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }?.let { !users.existsByEmailIgnoreCase(it) },
     )
 
     @Transactional
     fun register(command: RegisterUserCommand): UserIdentity {
-        val email = command.email?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() }
-        val handle = command.handle.trim().lowercase(Locale.ROOT)
-        if (email != null && users.existsByEmailIgnoreCase(email)) {
+        val email = command.email.trim().lowercase(Locale.ROOT)
+        val handle = command.handle?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: generateHandle(email)
+        if (users.existsByEmailIgnoreCase(email)) {
             throw ConflictException("EMAIL_ALREADY_USED", "이미 사용 중인 이메일입니다.")
         }
         if (users.existsByHandle(handle)) {
             throw ConflictException("HANDLE_ALREADY_USED", "이미 사용 중인 아이디입니다.")
         }
-        if (command.phoneHash != null && users.findByPhoneHash(command.phoneHash) != null) {
-            throw ConflictException("PHONE_ALREADY_USED", "이미 가입된 휴대폰 번호입니다.")
-        }
-
         val user = users.save(
             UserAccount(
                 email = email,
+                emailVerifiedAt = command.emailVerifiedAt,
                 passwordHash = passwordEncoder.encode(command.password),
                 handle = handle,
-                phoneHash = command.phoneHash,
-                phoneMasked = command.phoneMasked,
-                phoneVerifiedAt = command.phoneVerifiedAt,
             ),
         )
         val profile = profiles.save(Profile(userId = user.id, displayName = command.displayName.trim()))
@@ -120,10 +112,22 @@ class IdentityService(
         }
         user.status = com.agentvillage.identity.domain.UserStatus.WITHDRAWN
         user.email = null
-        user.phoneHash = null
-        user.phoneMasked = null
-        user.phoneVerifiedAt = null
+        user.emailVerifiedAt = null
         user.passwordHash = passwordEncoder.encode(UUID.randomUUID().toString())
+    }
+
+    private fun generateHandle(email: String): String {
+        val base = email.substringBefore('@').lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9_]"), "_")
+            .trim('_')
+            .let { if (it.length >= 3) it else "user_$it" }
+            .take(23)
+        if (!users.existsByHandle(base)) return base
+        repeat(20) {
+            val candidate = "${base.take(23)}_${UUID.randomUUID().toString().replace("-", "").take(6)}"
+            if (!users.existsByHandle(candidate)) return candidate
+        }
+        throw ConflictException("HANDLE_GENERATION_FAILED", "공개 프로필 주소를 생성하지 못했습니다. 다시 시도해 주세요.")
     }
 
     private fun UserAccount.toIdentity(profile: Profile) =

@@ -26,7 +26,8 @@ services:
       LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
       LLM_MASTER_KEY: ${LLM_MASTER_KEY:?Set a base64-encoded 32-byte LLM_MASTER_KEY}
       COOKIE_SECURE: "false"
-      SMS_EXPOSE_DEVELOPMENT_VALUES: "true"
+      EMAIL_PROVIDER: stub
+      EMAIL_EXPOSE_DEVELOPMENT_VALUES: "true"
       CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://host.docker.internal:3000"
     ports:
       - "8080:8080"

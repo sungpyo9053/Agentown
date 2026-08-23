@@ -59,7 +59,11 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
             .andExpect(status().isOk).andExpect(jsonPath("$.steps.length()").value(1))
         postJson("/api/harnesses/$harnessId/validate", "{}").andExpect(status().isOk).andExpect(jsonPath("$.valid").value(true))
         val version = postJson("/api/harnesses/$harnessId/publish", "{}").andExpect(status().isOk)
+            .andExpect(jsonPath("$.snapshotJson.formatVersion").value(2))
+            .andExpect(jsonPath("$.snapshotJson.validation.outcome").value("VALIDATED"))
+            .andExpect(jsonPath("$.snapshotJson.validation.structureHash").isNotEmpty)
             .andExpect(jsonPath("$.snapshotJson.agents[0].credentialId").doesNotExist()).andReturn().response.contentAsString
+        val firstVersionId = mapper.readTree(version)["id"].asText()
         assertThat(version).doesNotContain("encryptedSecret", "apiKey")
         postJson("/api/harnesses/$harnessId/clone", "{}").andExpect(status().isOk)
         val zipBytes = mvc.perform(get("/api/harnesses/$harnessId/download").with(user(principal)))
@@ -78,6 +82,10 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
         val executionJson = postJson("/api/harnesses/$harnessId/executions", """{"input":{"topic":"Kotlin"},"stubMode":true}""",
             "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk).andReturn().response.contentAsString
         val executionId = mapper.readTree(executionJson)["id"].asText()
+        mvc.perform(get("/api/executions/$executionId").with(user(principal)))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.execution.executionSnapshotJson").doesNotExist())
+            .andExpect(jsonPath("$.execution.credentialBindingsJson").doesNotExist())
         queueWorker.poll()
         var body = ""
         repeat(30) {
@@ -102,6 +110,23 @@ class HarnessExecutionIntegrationTest : IntegrationTestSupport() {
 
         postJson("/api/harnesses/$harnessId/connect", """{"agentIds":["$agentId"],"approvalAfterLast":true}""")
             .andExpect(status().isOk)
+
+        // A draft edit after publication must not change executions of the already published version.
+        val immutableExecution = postJson("/api/harnesses/$harnessId/executions", """{"input":{"topic":"불변 버전"},"stubMode":true}""",
+            "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk)
+            .andExpect(jsonPath("$.harnessVersionId").value(firstVersionId)).andReturn().response.contentAsString
+        val immutableId = mapper.readTree(immutableExecution)["id"].asText()
+        queueWorker.poll()
+        var immutableBody = ""
+        repeat(30) {
+            Thread.sleep(100)
+            immutableBody = mvc.perform(get("/api/executions/$immutableId").with(user(principal))).andReturn().response.contentAsString
+            if (mapper.readTree(immutableBody)["execution"]["status"].asText() == "SUCCEEDED") return@repeat
+        }
+        assertThat(mapper.readTree(immutableBody)["execution"]["status"].asText()).isEqualTo("SUCCEEDED")
+
+        // Only a newly validated publication may change the executable structure.
+        postJson("/api/harnesses/$harnessId/publish", "{}").andExpect(status().isOk)
         val approvalExecution = postJson("/api/harnesses/$harnessId/executions", """{"input":{"topic":"승인"},"stubMode":true}""",
             "Idempotency-Key" to UUID.randomUUID().toString()).andExpect(status().isOk).andReturn().response.contentAsString
         val approvalId = mapper.readTree(approvalExecution)["id"].asText()

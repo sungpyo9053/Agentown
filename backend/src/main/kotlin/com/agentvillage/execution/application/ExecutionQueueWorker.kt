@@ -1,10 +1,8 @@
 package com.agentvillage.execution.application
 
-import com.agentvillage.agent.application.AgentDirectory
 import com.agentvillage.execution.domain.*
 import com.agentvillage.execution.infrastructure.ExecutionRepository
 import com.agentvillage.execution.infrastructure.ExecutionStepRepository
-import com.agentvillage.harness.application.HarnessDirectory
 import com.agentvillage.harness.domain.HarnessStepType
 import com.agentvillage.llmcredential.application.CredentialDirectory
 import jakarta.annotation.PostConstruct
@@ -29,7 +27,7 @@ private class ExecutionExpiredException(message: String) : RuntimeException(mess
 @Service
 class ExecutionProcessor(
     private val executions: ExecutionRepository, private val executionSteps: ExecutionStepRepository,
-    private val harnesses: HarnessDirectory, private val agents: AgentDirectory,
+    private val snapshots: ExecutionSnapshotReader,
     private val credentials: CredentialDirectory, private val gateways: AiModelGatewayRegistry,
     private val service: ExecutionService,
     private val metrics: ExecutionMetrics,
@@ -41,48 +39,48 @@ class ExecutionProcessor(
     suspend fun process(id: UUID) {
         val execution = executions.findById(id).orElse(null) ?: return
         if (execution.status != ExecutionStatus.QUEUED) return
-        execution.status = ExecutionStatus.RUNNING; execution.startedAt = Instant.now(); execution.heartbeatAt = Instant.now()
+        execution.status = ExecutionStatus.RUNNING; execution.startedAt = execution.startedAt ?: Instant.now(); execution.heartbeatAt = Instant.now()
         executions.save(execution)
         metrics.started()
         service.record(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))
-        val harness = harnesses.requireOwnedView(execution.harnessId, execution.ownerId)
+        val plan = snapshots.read(execution.executionSnapshotJson)
         val priorSteps = executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id)
         val completedKeys = priorSteps.filter { it.status == StepStatus.SUCCEEDED }.map { it.stepKey }.toSet()
         var current: Map<String, Any> = priorSteps.lastOrNull { it.status == StepStatus.SUCCEEDED }?.outputJson
             ?: execution.inputJson.filterKeys { it != "_stubMode" }
         val stubMode = execution.inputJson["_stubMode"] == true
         try {
-            for (step in harness.steps) {
-                if (step.stepKey in completedKeys) continue
+            for (step in plan.steps) {
+                if (step.key in completedKeys) continue
                 if (execution.status == ExecutionStatus.CANCELLED) return
                 if (execution.timeoutAt?.isBefore(Instant.now()) == true) throw ExecutionExpiredException("전체 실행 시간이 초과되었습니다.")
-                execution.currentStepKey = step.stepKey; execution.heartbeatAt = Instant.now(); executions.save(execution)
-                val agent = step.agentId?.let { agents.describeOwned(it, execution.ownerId) }
-                val executionStep = executionSteps.save(ExecutionStep(executionId = id, harnessStepId = step.id,
-                    stepKey = step.stepKey, stepType = step.stepType.name, inputJson = current, startedAt = Instant.now(), status = StepStatus.RUNNING,
+                execution.currentStepKey = step.key; execution.heartbeatAt = Instant.now(); executions.save(execution)
+                val agent = step.agentKey?.let(plan.agents::get)
+                val executionStep = executionSteps.save(ExecutionStep(executionId = id, harnessStepId = null,
+                    stepKey = step.key, stepType = step.type.name, inputJson = current, startedAt = Instant.now(), status = StepStatus.RUNNING,
                     provider = agent?.provider?.name, model = agent?.model))
-                service.record(id, "STEP_STARTED", agent?.id, mapOf("stepKey" to step.stepKey, "type" to step.stepType.name))
-                if (step.stepType == HarnessStepType.APPROVAL) {
+                service.record(id, "STEP_STARTED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "type" to step.type.name))
+                if (step.type == HarnessStepType.APPROVAL) {
                     execution.status = ExecutionStatus.WAITING_APPROVAL
                     executionStep.status = StepStatus.WAITING_APPROVAL
                     executionStep.outputJson = current
                     executions.save(execution); executionSteps.save(executionStep)
-                    service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return
+                    service.record(id, "WAITING_APPROVAL", agent?.sourceAgentId, mapOf("stepKey" to step.key)); return
                 }
-                val output = executeWithRetry(step.maxRetries, executionStep, agent?.id) {
-                    withTimeout(step.timeoutSeconds * 1000L) { when (step.stepType) {
+                val output = executeWithRetry(step.maxRetries, executionStep, agent?.sourceAgentId) {
+                    withTimeout(step.timeoutSeconds * 1000L) { when (step.type) {
                         HarnessStepType.LLM -> llmSemaphore.withPermit { executeLlm(execution, agent!!, current, stubMode, executionStep) }
-                        HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.id, mapOf("stepKey" to step.stepKey, "tool" to "EXTERNAL_API")); mapOf("result" to "external-api-stub", "input" to current) }
-                        HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.id, mapOf("stepKey" to step.stepKey, "tool" to "DOWNLOAD")); mapOf("result" to current) }
+                        HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "EXTERNAL_API")); mapOf("result" to "external-api-stub", "input" to current) }
+                        HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "DOWNLOAD")); mapOf("result" to current) }
                         HarnessStepType.APPROVAL -> error("Approval step must be handled before execution")
                     }}
                 }
-                current = current + mapOf(step.stepKey to output) + output
+                current = current + mapOf(step.key to output) + output
                 executionStep.outputJson = current; executionStep.status = StepStatus.SUCCEEDED; executionStep.finishedAt = Instant.now()
                 executionSteps.save(executionStep)
-                service.record(id, "STEP_OUTPUT_CREATED", agent?.id, mapOf("stepKey" to step.stepKey))
-                service.record(id, "STEP_COMPLETED", agent?.id, mapOf("stepKey" to step.stepKey))
-                if (step.requiresApproval) { execution.status = ExecutionStatus.WAITING_APPROVAL; executions.save(execution); service.record(id, "WAITING_APPROVAL", agent?.id, mapOf("stepKey" to step.stepKey)); return }
+                service.record(id, "STEP_OUTPUT_CREATED", agent?.sourceAgentId, mapOf("stepKey" to step.key))
+                service.record(id, "STEP_COMPLETED", agent?.sourceAgentId, mapOf("stepKey" to step.key))
+                if (step.requiresApproval) { execution.status = ExecutionStatus.WAITING_APPROVAL; executions.save(execution); service.record(id, "WAITING_APPROVAL", agent?.sourceAgentId, mapOf("stepKey" to step.key)); return }
             }
             execution.outputJson = current; execution.status = ExecutionStatus.SUCCEEDED; execution.finishedAt = Instant.now()
             executions.save(execution)
@@ -113,11 +111,12 @@ class ExecutionProcessor(
         throw requireNotNull(last)
     }
 
-    private fun executeLlm(execution: Execution, agent: com.agentvillage.agent.application.AgentDescriptor,
+    private fun executeLlm(execution: Execution, agent: SnapshotAgentConfig,
                            input: Map<String, Any>, stubMode: Boolean, step: ExecutionStep): Map<String, Any> {
-        service.record(execution.id, "MODEL_REQUEST_SENT", agent.id, mapOf("provider" to agent.provider.name, "model" to agent.model))
+        service.record(execution.id, "MODEL_REQUEST_SENT", agent.sourceAgentId, mapOf("provider" to agent.provider.name, "model" to agent.model))
         val response = if (stubMode) AiModelResponse(stubContent(agent, input), TokenUsage(1, 1), "stub-request") else {
-            val credentialId = requireNotNull(agent.credentialId)
+            val credentialId = execution.credentialBindingsJson[agent.key]?.let(UUID::fromString)
+                ?: throw IllegalStateException("${agent.name} 구성원의 실행 자격증명 연결이 없습니다.")
             credentials.withDecrypted(credentialId, execution.ownerId, agent.provider) { secret, options ->
                 DecryptedCredential(agent.provider, secret, options).use { credential -> gateways.get(agent.provider).execute(credential,
                     AiModelRequest(agent.model, agent.systemPrompt, input.toString(), agent.temperature, agent.maxOutputTokens, agent.timeoutSeconds, agent.providerOptions)) }
@@ -129,7 +128,7 @@ class ExecutionProcessor(
         return mapOf("result" to response.content, "stub" to stubMode, "agent" to agent.name)
     }
 
-    private fun stubContent(agent: com.agentvillage.agent.application.AgentDescriptor, input: Map<String, Any>): String {
+    private fun stubContent(agent: SnapshotAgentConfig, input: Map<String, Any>): String {
         val topic = input["topic"]?.toString() ?: "Agentown 글쓰기 하네스 검증"
         val identity = "${agent.name} ${agent.role}".lowercase()
         return when {
@@ -217,7 +216,12 @@ class ExecutionQueueWorker(private val executions: ExecutionRepository, private 
     fun poll() {
         executions.findTop20ByStatusAndExecutionModeInOrderByQueuedAt(ExecutionStatus.QUEUED, listOf(ExecutionMode.CLOUD_API, ExecutionMode.STUB)).forEach { execution ->
             if (activeUsers.add(execution.ownerId)) scope.launch { total.withPermit {
-                try { processor.process(execution.id) } finally { activeUsers.remove(execution.ownerId) }
+                try { processor.process(execution.id) } finally {
+                    activeUsers.remove(execution.ownerId)
+                    // Close the approval race: if approval re-queues while the previous coroutine is
+                    // still unwinding, dispatch it immediately instead of waiting for another tick.
+                    poll()
+                }
             } }
         }
     }

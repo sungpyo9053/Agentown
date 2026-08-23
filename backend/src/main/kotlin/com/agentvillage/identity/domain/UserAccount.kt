@@ -23,6 +23,9 @@ class UserAccount(
     @Column(unique = true, length = 320)
     var email: String? = null,
 
+    @Column(name = "email_verified_at")
+    var emailVerifiedAt: java.time.Instant? = null,
+
     @Column(name = "password_hash", nullable = false, length = 100)
     var passwordHash: String,
 
@@ -37,14 +40,6 @@ class UserAccount(
     @Column(nullable = false, length = 20)
     var role: UserRole = UserRole.USER,
 
-    @Column(name = "phone_hash", unique = true, length = 64)
-    var phoneHash: String? = null,
-
-    @Column(name = "phone_masked", length = 20)
-    var phoneMasked: String? = null,
-
-    @Column(name = "phone_verified_at")
-    var phoneVerifiedAt: java.time.Instant? = null,
 ) : AuditedEntity()
 
 @Entity

@@ -55,7 +55,7 @@ class ApiRateLimitFilter(
         val path = request.requestURI
         return when {
             path == "/api/auth/login" -> RateLimitRule("login", 20, 300)
-            path == "/api/auth/phone/send-code" || path == "/api/auth/password/temporary" -> RateLimitRule("phone", 5, 600)
+            path == "/api/auth/email/send-code" || path == "/api/auth/password/temporary" -> RateLimitRule("email", 5, 600)
             path == "/api/designer/companies/design" -> RateLimitRule("designer", 30, 60)
             path.matches(Regex("^/api/harnesses/[^/]+/executions$")) -> RateLimitRule("execution", 10, 60)
             else -> null

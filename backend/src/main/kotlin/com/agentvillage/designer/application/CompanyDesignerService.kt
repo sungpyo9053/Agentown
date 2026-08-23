@@ -51,6 +51,17 @@ data class DesignedAgent(
     val characterKey: String = "manager",
     val provider: LlmProvider,
     val recommendedModel: String,
+    val existingAgentId: UUID? = null,
+)
+
+enum class DesignChangeType { REUSE_AGENT, ADD_AGENT, REWIRE_STEPS }
+enum class CompanyDesignOutcome { MINIMAL_CHANGE, NEW_HARNESS }
+
+data class DesignChange(
+    val type: DesignChangeType,
+    val agentKey: String? = null,
+    val existingAgentId: UUID? = null,
+    val reason: String,
 )
 
 data class DesignedStep(
@@ -69,10 +80,17 @@ data class CompanyDesignDraft(
     val designSource: String = "BYOK",
     val resultAgentKey: String? = null,
     val outputFormat: HarnessResultFormat = HarnessResultFormat.AUTO,
+    val outcome: CompanyDesignOutcome = CompanyDesignOutcome.NEW_HARNESS,
+    val changes: List<DesignChange> = emptyList(),
 )
 
 data class CompanyDesignResult(val draft: CompanyDesignDraft, val valid: Boolean, val errors: List<String>)
-data class AppliedCompanyDesign(val harnessId: UUID, val agentIds: List<UUID>)
+data class AppliedCompanyDesign(
+    val harnessId: UUID,
+    val agentIds: List<UUID>,
+    val createdAgentIds: List<UUID>,
+    val reusedAgentIds: List<UUID>,
+)
 
 @Service
 class CompanyDesignerService(
@@ -87,7 +105,7 @@ class CompanyDesignerService(
 ) {
     fun design(ownerId: UUID, command: CompanyDesignCommand): CompanyDesignResult {
         models.requireSupported(command.provider, command.model)
-        val draft = if (command.stubMode) {
+        val proposed = if (command.stubMode) {
             if (!stubEnabled) throw BadRequestException("STUB_DISABLED", "Stub 설계는 이 환경에서 비활성화되어 있습니다.")
             stubDraft(command)
         } else {
@@ -100,7 +118,7 @@ class CompanyDesignerService(
                     AiModelRequest(
                         model = command.model,
                         systemPrompt = designerSystemPrompt(),
-                        input = designerInput(command),
+                        input = designerInput(command, ownerId),
                         temperature = BigDecimal("0.20"),
                         maxOutputTokens = 8_000,
                         timeoutSeconds = 120,
@@ -112,6 +130,7 @@ class CompanyDesignerService(
                 }
             }
         }
+        val draft = withReusePlan(ownerId, proposed)
         val errors = validate(draft, ownerId, command.credentialId, command.stubMode)
         return CompanyDesignResult(draft, errors.isEmpty(), errors)
     }
@@ -125,7 +144,14 @@ class CompanyDesignerService(
         if (errors.isNotEmpty()) throw BadRequestException("COMPANY_DESIGN_INVALID", errors.joinToString(" "))
         val ordered = draft.steps.sortedBy { it.sequence }
         val agentByKey = draft.agents.associateBy { it.key }
-        val createdIds = draft.agents.associate { designed ->
+        val newlyCreated = mutableListOf<UUID>()
+        val reused = mutableListOf<UUID>()
+        val resolvedIds = draft.agents.associate { designed ->
+            designed.existingAgentId?.let { existingId ->
+                agents.getOwned(existingId, ownerId)
+                reused += existingId
+                return@associate designed.key to existingId
+            }
             val linkedCredential = if (stubMode) null else credentialId
             val created = agents.create(ownerId, SaveAgentCommand(
                 name = designed.name,
@@ -156,21 +182,22 @@ class CompanyDesignerService(
                 rewriteCriteria = designed.rewriteCriteria,
                 approvalCriteria = designed.approvalCriteria,
             ))
+            newlyCreated += created.id
             designed.key to created.id
         }
         val harness = harnesses.create(ownerId, draft.companyName, draft.goal)
         harnesses.connect(
             harness.id,
             ownerId,
-            ordered.map { createdIds.getValue(agentByKey.getValue(it.agentKey).key) },
+            ordered.map { resolvedIds.getValue(agentByKey.getValue(it.agentKey).key) },
             approvalAfterLast = draft.approvalAfterLast,
         )
-        val resultAgentId = (draft.resultAgentKey?.let(createdIds::get)
-            ?: ordered.asReversed().mapNotNull { createdIds[it.agentKey] }.first())
+        val resultAgentId = (draft.resultAgentKey?.let(resolvedIds::get)
+            ?: ordered.asReversed().mapNotNull { resolvedIds[it.agentKey] }.first())
         harnesses.configureResult(harness.id, ownerId, resolvedFormat(draft.outputFormat, agentByKey.getValue(
             draft.resultAgentKey?.takeIf(agentByKey::containsKey) ?: ordered.last().agentKey
         ).desiredOutput), resultAgentId)
-        return AppliedCompanyDesign(harness.id, createdIds.values.toList())
+        return AppliedCompanyDesign(harness.id, resolvedIds.values.toList(), newlyCreated, reused)
     }
 
     private fun parseDraft(content: String, command: CompanyDesignCommand): CompanyDesignDraft {
@@ -192,6 +219,10 @@ class CompanyDesignerService(
         if (draft.resultAgentKey == null || draft.agents.none { it.key == draft.resultAgentKey }) errors += "최종 결과 담당 구성원이 존재하지 않습니다."
         if (draft.steps.any { it.maxRetries !in 0..3 }) errors += "재시도 횟수는 0~3회여야 합니다."
         if (draft.agents.any { containsDangerousWork(it.taskDescription + " " + it.responsibility) }) errors += "사용자 코드, Shell, 패키지 또는 컨테이너 실행 작업은 허용되지 않습니다."
+        draft.agents.mapNotNull { it.existingAgentId }.forEach { existingId ->
+            runCatching { agents.getOwned(existingId, ownerId) }
+                .onFailure { errors += "재사용할 구성원이 존재하지 않거나 다른 사용자의 구성원입니다: $existingId" }
+        }
         draft.agents.forEach { agent ->
             runCatching { models.requireSupported(agent.provider, agent.recommendedModel) }
                 .onFailure { errors += "${agent.name}의 추천 모델이 지원 목록에 없습니다." }
@@ -213,6 +244,9 @@ class CompanyDesignerService(
 
     private fun stubDraft(command: CompanyDesignCommand): CompanyDesignDraft {
         val templates = when {
+            isSingleResponsibility(command) -> listOf(
+                Triple("specialist", "업무 담당자", "입력을 요청된 결과 형식으로 정확하게 변환하고 완료 조건을 확인한다."),
+            )
             listOf("글", "블로그", "콘텐츠").any(command.goal::contains) -> listOf(
                 Triple("researcher", "리서처", "입력 주제에 필요한 근거와 미검증 범위를 조사해 전달한다."),
                 Triple("writer", "작가", "검증된 조사 결과로 사용자의 질문에 답하는 결과물을 작성한다."),
@@ -256,12 +290,48 @@ class CompanyDesignerService(
             goal = command.goal,
             agents = designed,
             steps = designed.mapIndexed { index, agent -> DesignedStep("step-${index + 1}", agent.key, index + 1, if (index == designed.lastIndex) 2 else 1) },
-            approvalAfterLast = true,
+            approvalAfterLast = command.approvalPolicy.isNotBlank(),
             designSource = "STUB",
             resultAgentKey = resultAgentKey,
             outputFormat = resolvedFormat(command.outputFormat, command.desiredOutput),
         )
     }
+
+    private fun withReusePlan(ownerId: UUID, draft: CompanyDesignDraft): CompanyDesignDraft {
+        val available = agents.list(ownerId)
+        val used = mutableSetOf<UUID>()
+        val planned = draft.agents.map { proposed ->
+            val explicit = proposed.existingAgentId?.let { id -> available.firstOrNull { it.id == id } }
+            val match = explicit ?: available.firstOrNull { candidate ->
+                candidate.id !in used && candidate.modelProvider == proposed.provider &&
+                    (normalize(candidate.role) == normalize(proposed.role) || normalize(candidate.name) == normalize(proposed.name))
+            }
+            match?.also { used += it.id }?.let { proposed.copy(existingAgentId = it.id) } ?: proposed.copy(existingAgentId = null)
+        }
+        val changes = planned.map { agent ->
+            if (agent.existingAgentId != null) DesignChange(
+                DesignChangeType.REUSE_AGENT, agent.key, agent.existingAgentId,
+                "같은 소유자의 동일 역할·Provider 구성원을 재사용합니다.",
+            ) else DesignChange(
+                DesignChangeType.ADD_AGENT, agent.key, null,
+                "기존 구성원 중 이 책임을 충족하는 역할이 없어 최소 한 명을 추가합니다.",
+            )
+        } + DesignChange(DesignChangeType.REWIRE_STEPS, reason = "목표에 필요한 순차 전달 관계만 구성합니다.")
+        return draft.copy(
+            agents = planned,
+            outcome = if (planned.any { it.existingAgentId != null }) CompanyDesignOutcome.MINIMAL_CHANGE else CompanyDesignOutcome.NEW_HARNESS,
+            changes = changes,
+        )
+    }
+
+    private fun isSingleResponsibility(command: CompanyDesignCommand): Boolean {
+        val text = "${command.goal} ${command.desiredOutput}".lowercase()
+        val simple = listOf("요약", "번역", "분류", "형식 변환", "포맷 변환").any(text::contains)
+        val boundary = listOf("조사", "근거", "검수", "검증", "승인", "발행").any(text::contains) || command.requiredEvidence.isNotBlank()
+        return simple && !boundary
+    }
+
+    private fun normalize(value: String) = value.lowercase().replace(Regex("[^a-z0-9가-힣]"), "")
 
     private fun resolvedFormat(format: HarnessResultFormat, desiredOutput: String): HarnessResultFormat {
         if (format != HarnessResultFormat.AUTO) return format
@@ -279,13 +349,19 @@ class CompanyDesignerService(
     private fun designerSystemPrompt() = """You design safe declarative AI companies for Agentown.
 Return one JSON object only, without Markdown fences. Use the exact CompanyDesignDraft field names.
 Create 1 to 5 sequential agents. Every agent must have a unique key and exactly one step.
-Generalize this operating pattern: root orchestration, agents for responsibilities, guides for reusable quality policy, schemas for handoff contracts, and a final reviewer or approval boundary.
+Use exactly one agent when the work has one responsibility. Add a separate reviewer or approval boundary only when evidence, risk, or an independent decision requires it.
+Reuse an existing owner-scoped agent when its role and provider already satisfy the responsibility. Do not add agents merely to make the organization look complete.
+Generalize this operating pattern: root orchestration, agents for distinct responsibilities, guides for reusable quality policy, schemas for handoff contracts, and only necessary approval boundaries.
 Never propose Python, Node.js, Shell, package installation, Dockerfile, binary execution, or arbitrary user code.
 Do not include credentials, API keys, tokens, organization IDs, user inputs, or execution results.
 Keep provider and recommendedModel exactly as supplied by the user.
 """.trimIndent()
 
-    private fun designerInput(command: CompanyDesignCommand) = """
+    private fun designerInput(command: CompanyDesignCommand, ownerId: UUID): String {
+        val inventory = agents.list(ownerId).joinToString("\n") {
+            "- id=${it.id}, name=${it.name}, role=${it.role}, provider=${it.modelProvider}, model=${it.modelName}"
+        }.ifBlank { "- none" }
+        return """
 Company name: ${command.companyName}
 Goal: ${command.goal}
 Primary input: ${command.primaryInput}
@@ -297,9 +373,13 @@ Human approval policy: ${command.approvalPolicy}
 Provider: ${command.provider}
 Recommended model: ${command.model}
 
+Existing owner-scoped agents (reuse an exact matching responsibility instead of proposing a duplicate):
+$inventory
+
 Required JSON shape:
-{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"any free-form job role","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager (appearance only, never a role constraint)","provider":"${command.provider}","recommendedModel":"${command.model}"}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"${command.provider}","resultAgentKey":"writer","outputFormat":"AUTO|TEXT|MARKDOWN|HTML|JSON|CSV|EXTERNAL"}
+{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"any free-form job role","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager (appearance only, never a role constraint)","provider":"${command.provider}","recommendedModel":"${command.model}","existingAgentId":null}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"${command.provider}","resultAgentKey":"writer","outputFormat":"AUTO|TEXT|MARKDOWN|HTML|JSON|CSV|EXTERNAL"}
 """.trimIndent()
+    }
 
     companion object {
         private val allowedCharacters = setOf("writer", "reviewer", "designer", "developer", "manager")

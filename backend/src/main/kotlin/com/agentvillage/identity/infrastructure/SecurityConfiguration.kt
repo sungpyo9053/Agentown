@@ -49,9 +49,9 @@ class SecurityConfiguration {
 
     @Bean
     fun userDetailsService(users: UserAccountRepository): UserDetailsService = UserDetailsService { loginId ->
-        val user = users.findByHandle(loginId.lowercase())
+        val user = users.findByEmailIgnoreCase(loginId.trim())
             ?: throw UsernameNotFoundException("User not found")
-        AuthenticatedUser(user.id, user.handle, user.passwordHash, user.status == UserStatus.ACTIVE, user.role)
+        AuthenticatedUser(user.id, user.email.orEmpty(), user.passwordHash, user.status == UserStatus.ACTIVE, user.role)
     }
 
     @Bean
@@ -81,7 +81,7 @@ class SecurityConfiguration {
             .securityContext { it.securityContextRepository(HttpSessionSecurityContextRepository()) }
             .authorizeHttpRequests { requests ->
                 requests
-                    .requestMatchers("/actuator/health/**", "/api/auth/signup", "/api/auth/login", "/api/auth/csrf", "/api/auth/availability", "/api/auth/phone/**", "/api/auth/password/temporary", "/api/runner/**").permitAll()
+                    .requestMatchers("/actuator/health/**", "/api/auth/signup", "/api/auth/login", "/api/auth/csrf", "/api/auth/availability", "/api/auth/email/**", "/api/auth/password/temporary", "/api/runner/**").permitAll()
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
                     .requestMatchers(HttpMethod.GET, "/api/mini-homes/me").authenticated()
                     .requestMatchers(HttpMethod.GET, "/api/mini-homes/*").permitAll()

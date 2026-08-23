@@ -24,11 +24,13 @@ class ExecutionController(private val service: ExecutionService, private val map
     fun create(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID,
                @RequestHeader("Idempotency-Key") key: String, @RequestBody request: CreateExecutionRequest) =
         service.create(id, p.userId, key, request.input, request.stubMode, request.executionMode ?: if (request.stubMode) com.agentvillage.execution.domain.ExecutionMode.STUB else com.agentvillage.execution.domain.ExecutionMode.CLOUD_API)
-    @GetMapping("/api/executions/{id}") fun get(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.get(id, p.userId)
+    @GetMapping("/api/executions/{id}") fun get(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) =
+        ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(service.get(id, p.userId))
     @PostMapping("/api/executions/{id}/cancel") fun cancel(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.cancel(id, p.userId)
     @PostMapping("/api/executions/{id}/approve") fun approve(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.approve(id, p.userId)
     @PostMapping("/api/executions/{id}/reject") fun reject(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.reject(id, p.userId)
-    @GetMapping("/api/executions/{id}/history") fun history(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.history(id, p.userId)
+    @GetMapping("/api/executions/{id}/history") fun history(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) =
+        ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(service.history(id, p.userId))
     @GetMapping("/api/executions/{id}/download")
     fun download(
         @AuthenticationPrincipal p: AuthenticatedUser,
@@ -66,7 +68,11 @@ class ExecutionController(private val service: ExecutionService, private val map
             .contentType(contentType)
             .body(body)
     @GetMapping("/api/executions/{id}/events", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
-    fun events(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) = service.subscribe(id, p.userId)
+    fun events(@AuthenticationPrincipal p: AuthenticatedUser, @PathVariable id: UUID) =
+        ResponseEntity.ok()
+            .cacheControl(org.springframework.http.CacheControl.noStore())
+            .header("X-Accel-Buffering", "no")
+            .body(service.subscribe(id, p.userId))
 
     private fun extractResult(output: Map<String, Any>, resultStepKey: String?): Any {
         val configured = resultStepKey?.let(output::get)

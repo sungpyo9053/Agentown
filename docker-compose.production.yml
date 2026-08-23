@@ -30,10 +30,10 @@ services:
       RATE_LIMIT_ENABLED: "true"
       TRUST_FORWARDED_FOR: "true"
       EXECUTION_STUB_ENABLED: "false"
-      SMS_PROVIDER: ${SMS_PROVIDER:-webhook}
-      SMS_EXPOSE_DEVELOPMENT_VALUES: "false"
-      SMS_WEBHOOK_URL: ${SMS_WEBHOOK_URL:-}
-      SMS_WEBHOOK_TOKEN: ${SMS_WEBHOOK_TOKEN:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-webhook}
+      EMAIL_EXPOSE_DEVELOPMENT_VALUES: "false"
+      EMAIL_WEBHOOK_URL: ${EMAIL_WEBHOOK_URL:-}
+      EMAIL_WEBHOOK_TOKEN: ${EMAIL_WEBHOOK_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
