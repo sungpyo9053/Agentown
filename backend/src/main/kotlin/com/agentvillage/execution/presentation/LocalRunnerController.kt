@@ -11,7 +11,12 @@ import java.util.UUID
 data class PairLocalRunnerRequest(val provider: LocalRunnerProvider, val deviceName: String)
 data class CompleteRunnerJobRequest(val output: Map<String, Any>)
 data class FailRunnerJobRequest(val code: String = "LOCAL_CLI_FAILED", val message: String)
-data class RunnerProgressRequest(val eventType: String, val agentId: UUID? = null, val stepKey: String)
+data class RunnerProgressRequest(
+    val eventType: String,
+    val agentId: UUID? = null,
+    val stepKey: String,
+    val output: Map<String, Any>? = null,
+)
 
 @RestController
 class LocalRunnerController(private val service: LocalRunnerService) {
@@ -22,6 +27,6 @@ class LocalRunnerController(private val service: LocalRunnerService) {
     @PostMapping("/api/runner/heartbeat") fun heartbeat(@RequestHeader("X-Runner-Token") token: String) = service.heartbeat(token)
     @PostMapping("/api/runner/jobs/claim") fun claim(@RequestHeader("X-Runner-Token") token: String) = service.claim(token)
     @PostMapping("/api/runner/jobs/{id}/complete") @ResponseStatus(HttpStatus.NO_CONTENT) fun complete(@RequestHeader("X-Runner-Token") token: String, @PathVariable id: UUID, @RequestBody request: CompleteRunnerJobRequest) = service.complete(token, id, request.output)
-    @PostMapping("/api/runner/jobs/{id}/events") @ResponseStatus(HttpStatus.NO_CONTENT) fun progress(@RequestHeader("X-Runner-Token") token: String, @PathVariable id: UUID, @RequestBody request: RunnerProgressRequest) = service.progress(token, id, request.eventType, request.agentId, request.stepKey)
+    @PostMapping("/api/runner/jobs/{id}/events") @ResponseStatus(HttpStatus.NO_CONTENT) fun progress(@RequestHeader("X-Runner-Token") token: String, @PathVariable id: UUID, @RequestBody request: RunnerProgressRequest) = service.progress(token, id, request.eventType, request.agentId, request.stepKey, request.output)
     @PostMapping("/api/runner/jobs/{id}/fail") @ResponseStatus(HttpStatus.NO_CONTENT) fun fail(@RequestHeader("X-Runner-Token") token: String, @PathVariable id: UUID, @RequestBody request: FailRunnerJobRequest) = service.fail(token, id, request.code, request.message)
 }

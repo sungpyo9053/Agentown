@@ -9,7 +9,7 @@ import { OfficeAgent, OfficeRoomItem, placedAssets, resolveAgentPosition } from 
 import { PixelOffice } from "@/components/PixelOffice";
 import { api } from "@/lib/api";
 
-type Execution = {id:string;harnessId:string;status:string;currentStepKey?:string;outputJson?:Record<string,unknown>;errorCode?:string;errorMessage?:string;startedAt?:string;finishedAt?:string};
+type Execution = {id:string;harnessId:string;status:string;executionMode:string;inputJson:Record<string,unknown>;currentStepKey?:string;outputJson?:Record<string,unknown>;errorCode?:string;errorMessage?:string;startedAt?:string;finishedAt?:string};
 type ExecutionView = {execution:Execution;steps:{id:string;stepKey:string;status:string;provider?:string;model?:string;outputJson?:Record<string,unknown>}[]};
 type EventItem = {id:string;sequenceNo:number;eventType:string;agentId?:string;payload:Record<string,unknown>;createdAt:string};
 type ResultFormat="AUTO"|"TEXT"|"MARKDOWN"|"HTML"|"JSON"|"CSV"|"EXTERNAL";
@@ -54,7 +54,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   return <AppShell kicker="LIVE ORCHESTRATION" title={harness.data?.harness.name??"AI 팀 실행 관제"}>
     <div className="overflow-hidden border border-hairline bg-white"><PixelOffice agents={workflowAgents} items={placedAssets(home.data?.items??[])} statuses={scene.statuses} backgroundKey={home.data?.backgroundKey} /></div>
     <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px]">
-      <section className="rounded-3xl bg-white p-6 shadow-card"><div className="flex items-center justify-between"><h2 className="text-xl font-black">실제 실행 이벤트</h2><span className="rounded-full bg-ink px-4 py-2 text-xs font-black text-white">{status}</span></div>
+      <section className="rounded-3xl bg-white p-6 shadow-card"><div className="flex items-center justify-between"><div><h2 className="text-xl font-black">실제 실행 이벤트</h2><p className="mt-1 text-xs text-stone-500">{execution.data?.execution.executionMode==="LOCAL_CLI"?"내 Codex/Claude 구독 계정이 실행 중입니다.":execution.data?.execution.executionMode==="STUB"?"개발용 Stub 실행입니다.":"연결된 API 계정이 실행 중입니다."}</p></div><span className="rounded-full bg-ink px-4 py-2 text-xs font-black text-white">{status}</span></div>
         <div className="mt-5 max-h-96 space-y-2 overflow-auto">{events.map(event=><div key={event.id} className="flex gap-3 rounded-xl bg-stone-50 p-3 text-sm"><b className="w-7 text-coral">{event.sequenceNo}</b><span className="font-bold">{eventLabel(event.eventType)}</span><span className="ml-auto text-stone-500">{event.agentId?agentMap[event.agentId]?.name:"오케스트레이터"}</span></div>)}{!events.length&&<p className="text-stone-500">Queue 이벤트를 기다리는 중입니다.</p>}</div>
       </section>
       <aside className="space-y-4"><div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs text-stone-300">CURRENT STEP</p><p className="mt-2 text-2xl font-black">{execution.data?.execution.currentStepKey??"대기"}</p></div>
@@ -63,8 +63,15 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
         {execution.data?.execution.errorCode&&<div className="rounded-3xl bg-red-50 p-5 text-red-700"><b>{execution.data.execution.errorCode}</b><p className="mt-2 text-sm">{execution.data.execution.errorMessage}</p></div>}
       </aside>
     </div>
+    {(execution.data?.steps.length??0)>0&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black text-coral">EMPLOYEE OUTPUTS</p><h2 className="text-xl font-black">직원별 실제 작업 결과</h2></div><p className="text-xs text-stone-500">각 결과는 다음 직원의 입력으로 전달됩니다.</p></div><div className="mt-5 grid gap-4">{execution.data?.steps.map(step=>{const harnessStep=harness.data?.steps.find(item=>item.stepKey===step.stepKey);const agent=harnessStep?.agentId?agentMap[harnessStep.agentId]:undefined;const output=stepResult(step.outputJson);return <article key={step.id} className="rounded-2xl border p-5"><div className="flex flex-wrap items-center gap-3"><b>{agent?.name??step.stepKey}</b><span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black">{step.status}</span>{step.provider&&<small className="text-stone-500">{step.provider} · {step.model}</small>}</div>{output?<div className="mt-4 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-stone-50 p-4 text-sm leading-6">{output}</div>:<p className="mt-3 text-sm text-stone-400">결과를 만드는 중입니다…</p>}</article>})}</div></section>}
     {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black text-coral">PRIVATE RESULT · {resultFormat}</p><h2 className="text-xl font-black">내 실행 결과물</h2></div><div className="flex flex-wrap gap-2">{resultFormat!=="EXTERNAL"&&<a href={`/api/executions/${id}/download?format=${resultFormat.toLowerCase()}`} className="rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">최종 {resultFormatLabel(resultFormat)} 다운로드</a>}<a href={`/api/executions/${id}/download?format=debug-json`} className="rounded-full border px-4 py-2 text-sm font-bold">실행 기록 .json</a></div></div><p className="mt-2 text-xs text-stone-500">결과 형식과 담당 단계는 하네스가 결정합니다. 실행 결과는 실행한 계정만 접근할 수 있습니다.</p><div className="mt-5">{resultFormat==="JSON"?<pre className="max-h-[34rem] overflow-auto whitespace-pre-wrap rounded-2xl bg-stone-950 p-5 text-xs text-stone-100">{typeof result==="string"?result:JSON.stringify(result,null,2)}</pre>:resultFormat==="EXTERNAL"?<p className="rounded-2xl bg-amber-50 p-5 text-sm">외부 서비스가 만든 파일은 아래 결과물 목록에서 MIME 형식 그대로 내려받습니다.</p>:<MarkdownResult content={typeof result==="string"?result:JSON.stringify(result,null,2)}/>}</div>{(artifacts.data?.length??0)>0&&<div className="mt-6 border-t pt-5"><h3 className="font-black">외부 생성 파일</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">{artifacts.data?.map(item=><a key={item.id} href={`/api/artifacts/${item.id}/download`} className="rounded-2xl border p-4 hover:border-coral"><b className="block">{item.fileName}</b><small className="text-stone-500">{item.mimeType} · {item.status}</small></a>)}</div></div>}<details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
   </AppShell>;
+}
+
+function stepResult(output?:Record<string,unknown>):string|null{
+ if(!output)return null;
+ if(typeof output.result==="string")return output.result;
+ return JSON.stringify(output,null,2);
 }
 
 function buildScene(events:EventItem[],agents:OfficeAgent[],items:OfficeRoomItem[]){

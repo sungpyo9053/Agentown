@@ -1,4 +1,4 @@
-{$DOMAIN} {
+{$DOMAIN}, {$ALT_DOMAIN} {
 	encode zstd gzip
 
 	header {

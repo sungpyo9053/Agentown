@@ -33,6 +33,7 @@ class ExecutionService(
     private val harnesses: HarnessDirectory, private val agents: AgentDirectory,
     private val snapshots: ExecutionSnapshotReader,
     private val preflight: ExecutionPreflightValidator,
+    private val localRunners: LocalRunnerConnectionRepository,
     private val metrics: ExecutionMetrics,
     @Value("\${execution.stub-enabled:true}") private val stubEnabled: Boolean,
 ) {
@@ -43,6 +44,7 @@ class ExecutionService(
         if (queued >= 3) throw ConflictException("EXECUTION_QUEUE_LIMIT", "사용자당 대기 실행은 최대 3개입니다.")
         val published = harnesses.publishedExecutionPlan(harnessId, ownerId)
         val plan = snapshots.read(published.snapshot)
+        if (executionMode == ExecutionMode.LOCAL_CLI) validateLocalRunner(ownerId, plan)
         val credentialBindings = if (executionMode == ExecutionMode.CLOUD_API && !stubMode) {
             plan.agents.values.mapNotNull { snapshot ->
                 val live = agents.describeOwned(snapshot.sourceAgentId, ownerId)
@@ -71,6 +73,13 @@ class ExecutionService(
     @Transactional fun approve(id: UUID, ownerId: UUID): Execution {
         val e = requireOwned(id, ownerId)
         if (e.status != ExecutionStatus.WAITING_APPROVAL) throw ConflictException("EXECUTION_NOT_WAITING_APPROVAL", "승인 대기 중인 실행이 아닙니다.")
+        if (e.executionMode == ExecutionMode.LOCAL_CLI && e.outputJson != null) {
+            e.status = ExecutionStatus.SUCCEEDED
+            e.finishedAt = Instant.now()
+            record(id, "EXECUTION_COMPLETED", null, mapOf("status" to "SUCCEEDED", "approved" to true, "mode" to "LOCAL_CLI"))
+            metrics.completed(e.startedAt, "SUCCEEDED")
+            return e
+        }
         executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id).lastOrNull { it.status == StepStatus.WAITING_APPROVAL }?.let {
             it.status = StepStatus.SUCCEEDED; it.finishedAt = Instant.now(); executionSteps.save(it)
         }
@@ -94,6 +103,27 @@ class ExecutionService(
         return ExecutionResultPayload(output, plan.resultFormat, plan.resultStepKey)
     }
     fun requireOwned(id: UUID, ownerId: UUID) = executions.findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
+
+    private fun validateLocalRunner(ownerId: UUID, plan: ImmutableExecutionPlan) {
+        if (plan.steps.any { it.type == HarnessStepType.APPROVAL }) {
+            throw BadRequestException("LOCAL_RUNNER_MID_APPROVAL_UNSUPPORTED", "실제 직원 실행은 현재 전체 작업 완료 후 승인만 지원합니다. 승인 위치를 변경해 새 버전을 발행해 주세요.")
+        }
+        val providers = plan.steps.filter { it.type == HarnessStepType.LLM }.mapNotNull { step ->
+            step.agentKey?.let(plan.agents::get)?.provider?.name
+        }.toSet()
+        if (providers.size != 1 || providers.singleOrNull() !in setOf("OPENAI", "ANTHROPIC")) {
+            throw BadRequestException("LOCAL_RUNNER_PROVIDER_UNSUPPORTED", "한 번의 실제 실행에는 Codex 직원만 또는 Claude 직원만 연결할 수 있습니다.")
+        }
+        val required = if (providers.single() == "OPENAI") LocalRunnerProvider.CODEX else LocalRunnerProvider.CLAUDE
+        val active = localRunners.findAllByOwnerIdOrderByCreatedAtDesc(ownerId).any {
+            it.provider == required && it.status == LocalRunnerStatus.ACTIVE &&
+                it.lastSeenAt?.isAfter(Instant.now().minus(30, ChronoUnit.SECONDS)) == true
+        }
+        if (!active) throw BadRequestException(
+            "LOCAL_RUNNER_NOT_ACTIVE",
+            "${if (required == LocalRunnerProvider.CODEX) "Codex" else "Claude"} Runner가 실행 중이 아닙니다. AI 연결 화면에서 Runner를 연결하고 시작해 주세요.",
+        )
+    }
     fun record(executionId: UUID, type: String, agentId: UUID?, payload: Map<String, Any>): ExecutionEvent {
         val event = events.save(ExecutionEvent(executionId = executionId, sequenceNo = events.countByExecutionId(executionId) + 1, eventType = type, agentId = agentId, payload = payload))
         if (TransactionSynchronizationManager.isActualTransactionActive() && TransactionSynchronizationManager.isSynchronizationActive()) {

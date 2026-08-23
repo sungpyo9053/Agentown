@@ -6,4 +6,6 @@ Poller가 Coroutine으로 가져와 전체 20, 사용자 1, LLM 50, 외부 API 1
 
 상태는 QUEUED, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED, CANCELLED, TIMEOUT이다. 서버 시작 시 오래된 RUNNING을 QUEUED로 복구한다. 모든 시각화는 저장된 ExecutionEvent를 SSE로 전달한 결과다. 개발·테스트는 `stubMode`로 키 없이 전체 흐름을 검증할 수 있다.
 
+Local Runner 실행에서는 Runner가 직원마다 `STEP_STARTED`, `MODEL_REQUEST_SENT`, `STEP_OUTPUT_CREATED`, `STEP_COMPLETED`를 순서대로 보고한다. 서버는 직원별 실제 출력을 `ExecutionStep`에 저장하고 다음 직원의 입력 및 실행 관제 화면에 사용한다. 전체 작업 뒤 승인이 설정된 하네스는 Runner 완료 후 `WAITING_APPROVAL`에 머물며, 사용자가 승인해야 최종 `SUCCEEDED`와 결과 다운로드가 확정된다. 현재 Local Runner MVP는 한 하네스에서 Codex 또는 Claude 한 공급자만 사용하며, 중간 승인 지점은 지원하지 않고 전체 작업 완료 후 승인만 지원한다.
+
 발행 스냅샷에는 Validator 버전, 검증 시각, 구조 SHA-256과 각 검사 결과를 기록한다. 설계 LLM은 구조를 제안할 뿐 발행을 승인할 수 없다. 기존 발행 버전 이후 Draft를 수정해도 이미 생성된 실행과 해당 버전의 실행 결과는 변하지 않는다.

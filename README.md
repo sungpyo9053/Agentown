@@ -107,6 +107,7 @@ VS Code에서는 저장소에 포함된 `Full Stack: Debug` 구성을 선택하�
 - 최대 5개 Agent의 순차 하네스 연결·검증·불변 발행·복제·ZIP
 - Codex CLI용 `AGENTS.md`와 Claude Code용 `CLAUDE.md`를 포함한 표준 회사 패키지
 - PostgreSQL Queue, Coroutine 내부 Worker, 작업별 동시성 제한, SSE 이벤트
+- 회사 홈의 실제 업무 지시, Codex/Claude Local Runner 직원별 실행·결과 전달·최종 승인
 - 실제 단계 이벤트에 따른 캐릭터 작업 상태와 담당 순서 이동
 - 실행자 전용 결과와 외부 HTTPS 다운로드, 무료 마켓 기반
 - 프로필·비밀번호·탈퇴와 공개 프로필 개인정보 최소화

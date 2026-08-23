@@ -24,7 +24,10 @@ interface LocalRunnerConnectionRepository : JpaRepository<LocalRunnerConnection,
     fun findByIdAndOwnerId(id: UUID, ownerId: UUID): LocalRunnerConnection?
     fun findByTokenHash(tokenHash: String): LocalRunnerConnection?
 }
-interface ExecutionStepRepository : JpaRepository<ExecutionStep, UUID> { fun findAllByExecutionIdOrderByStartedAtAsc(executionId: UUID): List<ExecutionStep> }
+interface ExecutionStepRepository : JpaRepository<ExecutionStep, UUID> {
+    fun findAllByExecutionIdOrderByStartedAtAsc(executionId: UUID): List<ExecutionStep>
+    fun findByExecutionIdAndStepKey(executionId: UUID, stepKey: String): ExecutionStep?
+}
 interface ExecutionEventRepository : JpaRepository<ExecutionEvent, UUID> {
     fun findAllByExecutionIdOrderBySequenceNo(executionId: UUID): List<ExecutionEvent>
     fun countByExecutionId(executionId: UUID): Long

@@ -22,10 +22,14 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
 
   await page.goto("/settings/credentials");
   await expect(page.getByText("ChatGPT Pro · Claude Pro를 그대로 사용하세요")).toBeVisible();
-  await page.getByLabel("구독 서비스").selectOption("CLAUDE");
   await page.getByRole("button", { name: "Runner 연결 토큰 만들기" }).click();
   await expect(page.getByText("한 번만 표시되는 Runner 토큰")).toBeVisible();
   await expect(page.getByText("Agentown Runner 연결.command")).toBeVisible();
+  const runnerToken = await page.locator("code").textContent();
+  expect(runnerToken).toBeTruthy();
+  const runnerHeaders = { "X-Runner-Token": runnerToken! };
+  const heartbeat = await page.request.post("http://127.0.0.1:8080/api/runner/heartbeat", { headers: runnerHeaders });
+  expect(heartbeat.ok()).toBeTruthy();
   await page.getByText("고급 옵션: API 키로 서버에서 바로 실행").click();
   await page.getByLabel("API 공급자").selectOption("ANTHROPIC");
   await expect(page.getByPlaceholder(/sk-ant-api03-/)).toBeVisible();
@@ -51,6 +55,55 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await expect(page.getByText(/검증 통과/)).toBeVisible();
   await page.getByRole("button", { name: "3. 버전 발행" }).click();
   await expect(page.getByText("불변 버전을 발행했습니다.")).toBeVisible();
+  const harnessEditUrl = page.url();
+
+  const freshHeartbeat = await page.request.post("http://127.0.0.1:8080/api/runner/heartbeat", { headers: runnerHeaders });
+  expect(freshHeartbeat.ok()).toBeTruthy();
+  await page.goto("/dashboard");
+  await expect(page.getByRole("heading", { name: "AI 직원에게 실제 업무 지시" })).toBeVisible();
+  await expect(page.getByText(/연결됨/)).toBeVisible({ timeout: 15_000 });
+  await page.getByLabel("원하는 최종 결과").fill("직원별 검증 결과가 포함된 Markdown");
+  await page.getByLabel("실제 업무 지시").fill("실제 직원 실행 회귀 테스트 결과를 작성해 줘.");
+  await page.getByLabel("참고 정보와 제약사항").fill("검증 fixture임을 명시한다.");
+  await page.getByRole("button", { name: "실제 AI 직원 업무 시작" }).click();
+  await expect(page).toHaveURL(/\/executions\/[^/]+$/);
+
+  const claim = await page.request.post("http://127.0.0.1:8080/api/runner/jobs/claim", { headers: runnerHeaders });
+  expect(claim.ok()).toBeTruthy();
+  const job = await claim.json() as { executionId: string; agents: Array<{ stepKey: string; agentId: string; name: string }> };
+  const realOutput: Record<string, unknown> = {};
+  for (let index = 0; index < job.agents.length; index += 1) {
+    const agent = job.agents[index];
+    const stage = { result: `실제 Runner fixture ${index + 1}: ${agent.name} 작업 완료` };
+    for (const eventType of ["STEP_STARTED", "MODEL_REQUEST_SENT", "STEP_OUTPUT_CREATED", "STEP_COMPLETED"]) {
+      const progress = await page.request.post(`http://127.0.0.1:8080/api/runner/jobs/${job.executionId}/events`, {
+        headers: runnerHeaders,
+        data: { eventType, agentId: agent.agentId, stepKey: agent.stepKey, output: eventType === "STEP_OUTPUT_CREATED" ? stage : undefined },
+      });
+      expect(progress.ok()).toBeTruthy();
+    }
+    realOutput[agent.stepKey] = stage;
+    realOutput.result = stage.result;
+  }
+  const complete = await page.request.post(`http://127.0.0.1:8080/api/runner/jobs/${job.executionId}/complete`, {
+    headers: runnerHeaders,
+    data: { output: realOutput },
+  });
+  expect(complete.ok()).toBeTruthy();
+  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 }).toContain("WAITING_APPROVAL");
+  await expect(page.getByRole("heading", { name: "직원별 실제 작업 결과" })).toBeVisible();
+  await expect(page.getByText(`실제 Runner fixture 1: ${job.agents[0].name} 작업 완료`, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "승인", exact: true }).click();
+  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 }).toContain("SUCCEEDED");
+  const realDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: "최종 HTML (.html) 다운로드" }).click();
+  const realDownload = await realDownloadPromise;
+  const realStream = await realDownload.createReadStream();
+  let realHtml = "";
+  for await (const chunk of realStream) realHtml += chunk.toString();
+  expect(realHtml).toContain("실제 Runner fixture");
+
+  await page.goto(harnessEditUrl);
   await page.getByRole("button", { name: "비용 없이 Stub 검증" }).click();
   await expect(page).toHaveURL(/\/executions\/[^/]+$/);
 
