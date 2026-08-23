@@ -27,7 +27,17 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         val stranger = identities.register(RegisterUserCommand("builder-other-$suffix@example.com", "password123", "builder_other_$suffix", "다른 워크스페이스"))
 
         var snapshot = service.createConversation(owner.id, "conversation-$suffix")
-        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "Slack으로 고객 문의를 받고 Notion FAQ를 찾아 답변 초안을 만든 뒤 담당자 승인 후 Slack으로 전송하고 싶다.", "message-1-$suffix")
+        val conversationId = snapshot.conversationId
+        val workflowId = snapshot.workflowId
+        snapshot = service.sendMessage(owner.id, conversationId, "고객 문의 답변하는 일을 자동화하고 싶어요.", "message-vague-$suffix")
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("inbound", "knowledgeSource", "approvalPolicy", "destination")
+        assertThat(snapshot.proposal).isNull()
+        assertThat(snapshot.graph).isNull()
+
+        snapshot = service.sendMessage(owner.id, conversationId, "Slack #customer-support 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 원래 Slack 스레드로 전송한다.", "message-details-$suffix")
+        assertThat(snapshot.conversationId).isEqualTo(conversationId)
+        assertThat(snapshot.workflowId).isEqualTo(workflowId)
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
         assertThat(snapshot.requirement?.steps).hasSize(5)
         assertThat(snapshot.proposal).isNotNull
@@ -63,6 +73,12 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(run.output).containsEntry("externalCallPerformed", false)
         assertThat(run.requirementMatched).isTrue()
         assertThat(service.decideExecution(owner.id, run.id, true, "execution-approve-$suffix").id).isEqualTo(run.id)
+
+        val stopped = service.stop(owner.id, workflowId, "workflow-stop-$suffix")
+        assertThat(stopped.conversationId).isEqualTo(conversationId)
+        assertThat(stopped.workflowId).isEqualTo(workflowId)
+        assertThat(stopped.currentVersionId).isEqualTo(snapshot.currentVersionId)
+        assertThat(stopped.status).isEqualTo(WorkflowStatus.STOPPED)
 
         assertThatThrownBy { service.snapshot(stranger.id, snapshot.conversationId) }.isInstanceOf(NotFoundException::class.java)
     }
