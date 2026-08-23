@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "objective": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "trigger": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "inputs": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 20 },
+        "outputs": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 20 },
+        "steps": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "minItems": 1, "maxItems": 20 },
+        "decisions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 20 },
+        "exceptions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 20 },
+        "humanApprovalRequired": { "type": "boolean" }
+      },
+      "required": ["objective", "trigger", "inputs", "outputs", "steps", "decisions", "exceptions", "humanApprovalRequired"]
+    },
+    "clarificationQuestions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]{1,60}$" },
+          "field": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "required": { "type": "boolean" }
+        },
+        "required": ["id", "field", "question", "required"]
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "minItems": 1, "maxItems": 20 },
+        "integrations": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 10 },
+        "approvalPoints": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
+        "failurePolicy": { "type": "string", "minLength": 1, "maxLength": 500 }
+      },
+      "required": ["name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy"]
+    },
+    "agentDefinitions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "role": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "inputSchema": { "$ref": "#/$defs/fields" },
+          "outputSchema": { "$ref": "#/$defs/fields" },
+          "behaviorRules": { "$ref": "#/$defs/rules" },
+          "forbiddenRules": { "$ref": "#/$defs/rules" },
+          "evidenceRequirements": { "$ref": "#/$defs/rules" }
+        },
+        "required": ["key", "name", "role", "inputSchema", "outputSchema", "behaviorRules", "forbiddenRules", "evidenceRequirements"]
+      }
+    },
+    "guideDefinitions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "fields": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
+                "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+                "type": { "type": "string", "enum": ["text", "select", "boolean", "secret"] },
+                "required": { "type": "boolean" },
+                "secret": { "type": "boolean" },
+                "help": { "type": "string", "minLength": 1, "maxLength": 500 }
+              },
+              "required": ["key", "label", "type", "required", "secret", "help"]
+            }
+          }
+        },
+        "required": ["key", "title", "description", "fields"]
+      }
+    }
+  },
+  "required": ["requirement", "clarificationQuestions", "proposal", "agentDefinitions", "guideDefinitions"],
+  "$defs": {
+    "fields": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
+          "type": { "type": "string", "enum": ["string", "boolean", "number", "object", "array"] },
+          "required": { "type": "boolean" },
+          "description": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "required": ["name", "type", "required", "description"]
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+      "minItems": 1,
+      "maxItems": 20
+    }
+  }
+}

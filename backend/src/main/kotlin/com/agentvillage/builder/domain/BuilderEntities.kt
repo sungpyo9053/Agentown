@@ -129,5 +129,38 @@ class MetaAgentRun(
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_summary", nullable = false, columnDefinition = "jsonb") val inputSummary: Map<String, Any?>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_summary", columnDefinition = "jsonb") val outputSummary: Map<String, Any?>? = null,
     @Column(name = "error_code", length = 80) val errorCode: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "failure_summary", columnDefinition = "jsonb") val failureSummary: Map<String, Any?>? = null,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)
+
+enum class BuilderGenerationStatus { QUEUED, RUNNING, SUCCEEDED, FAILED }
+enum class BuilderGenerationStage { REQUEST_ACCEPTED, CODEX_ANALYZING, STRUCTURE_VALIDATING, DESIGN_SAVING, COMPLETED, FAILED }
+
+@Entity @Table(name = "builder_generation_jobs")
+class BuilderGenerationJob(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "conversation_id", nullable = false) val conversationId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(nullable = false, columnDefinition = "text") val instruction: String,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) var status: BuilderGenerationStatus = BuilderGenerationStatus.QUEUED,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) var stage: BuilderGenerationStage = BuilderGenerationStage.REQUEST_ACCEPTED,
+    @Column(name = "estimated_seconds", nullable = false) val estimatedSeconds: Int = 90,
+    @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
+    @Column(name = "error_code", length = 80) var errorCode: String? = null,
+    @Column(name = "error_message", length = 500) var errorMessage: String? = null,
+    @Column(name = "started_at") var startedAt: Instant? = null,
+    @Column(name = "finished_at") var finishedAt: Instant? = null,
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_usage_records")
+class BuilderUsageRecord(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "owner_id", nullable = false) val ownerId: UUID,
+    @Column(name = "conversation_id", nullable = false) val conversationId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "usage_type", nullable = false, length = 40) val usageType: String = "BUILDER_CODEX_DESIGN",
+    @Column(name = "limit_slot", length = 20) val limitSlot: String?,
+    @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
     @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
 )

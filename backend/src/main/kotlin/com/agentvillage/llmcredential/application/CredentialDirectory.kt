@@ -12,6 +12,7 @@ data class CredentialMetadata(
 )
 
 interface CredentialDirectory {
+    fun findLatestActive(ownerId: UUID, provider: LlmProvider): CredentialMetadata? = null
     fun requireOwned(credentialId: UUID, ownerId: UUID, provider: LlmProvider): CredentialMetadata
     fun requireActive(credentialId: UUID, ownerId: UUID, provider: LlmProvider): CredentialMetadata
     fun <T> withDecrypted(credentialId: UUID, ownerId: UUID, provider: LlmProvider, block: (CharArray, Map<String, Any>) -> T): T

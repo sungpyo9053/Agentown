@@ -10,7 +10,7 @@ enum class WorkflowStatus {
 
 enum class BuilderRunStatus { RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED }
 enum class BuilderStepStatus { PENDING, RUNNING, WAITING_APPROVAL, SUCCEEDED, FAILED }
-enum class ApprovalType { DESIGN, EXECUTION }
+enum class ApprovalType { DESIGN, EXECUTION, ACTIVATION }
 enum class ApprovalStatus { PENDING, APPROVED, REJECTED }
 
 enum class NodeType(val wireName: String, val riskLevel: String) {
@@ -80,6 +80,14 @@ data class GuideDefinition(val key: String, val title: String, val description: 
         fields.forEach { appendLine("- ${it.label}: ${it.help}") }
     }
 }
+
+data class MetaAgentDesignBundle(
+    val requirement: AutomationRequirement,
+    val clarificationQuestions: List<ClarificationQuestion>,
+    val proposal: AutomationProposal,
+    val agentDefinitions: List<AgentDefinition>,
+    val guideDefinitions: List<GuideDefinition>,
+)
 
 data class NodePosition(val x: Double, val y: Double)
 data class WorkflowNode(

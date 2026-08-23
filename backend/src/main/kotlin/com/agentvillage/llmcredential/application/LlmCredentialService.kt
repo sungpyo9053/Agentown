@@ -36,6 +36,10 @@ class LlmCredentialService(
     private val verifierRegistry: CredentialVerifierRegistry,
     private val optionsPolicy: ProviderOptionsPolicy,
 ) : CredentialDirectory {
+    @Transactional(readOnly = true)
+    override fun findLatestActive(ownerId: UUID, provider: LlmProvider): CredentialMetadata? =
+        credentials.findFirstByOwnerIdAndProviderAndStatusOrderByCreatedAtDesc(ownerId, provider, CredentialStatus.ACTIVE)?.toMetadata()
+
     fun verify(provider: LlmProvider, secret: CharArray, providerOptions: Map<String, Any>): VerifyCredentialResult {
         optionsPolicy.validate(providerOptions)
         return try {

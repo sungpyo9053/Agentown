@@ -46,6 +46,10 @@ auth:
     expose-development-values: ${EMAIL_EXPOSE_DEVELOPMENT_VALUES:false}
     webhook-url: ${EMAIL_WEBHOOK_URL:}
     webhook-token: ${EMAIL_WEBHOOK_TOKEN:}
+    from-address: ${EMAIL_FROM_ADDRESS:no-reply@reviewdr.kr}
+    ses-region: ${EMAIL_SES_REGION:ap-northeast-2}
+    ses-access-key: ${EMAIL_SES_ACCESS_KEY:}
+    ses-secret-key: ${EMAIL_SES_SECRET_KEY:}
 providers:
   openai:
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}
@@ -59,3 +63,10 @@ security:
   rate-limit:
     enabled: ${RATE_LIMIT_ENABLED:true}
     trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
+builder:
+  meta-agent:
+    mode: ${BUILDER_META_AGENT_MODE:real}
+    codex-command: ${BUILDER_CODEX_COMMAND:codex}
+    model: ${BUILDER_CODEX_MODEL:gpt-5.6-luna}
+    timeout-seconds: ${BUILDER_CODEX_TIMEOUT_SECONDS:120}
+    unlimited-owner-ids: ${BUILDER_UNLIMITED_OWNER_IDS:}

@@ -18,16 +18,22 @@ data class ExecutionDecisionRequest(val approve: Boolean)
 
 @RestController
 @RequestMapping("/api/builder")
-class BuilderController(private val service: BuilderService, private val catalog: WorkflowNodeCatalog) {
+class BuilderController(private val service: BuilderService, private val generation: com.agentvillage.builder.application.BuilderGenerationService, private val catalog: WorkflowNodeCatalog) {
     @PostMapping("/conversations")
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) = service.createConversation(user.userId, key)
 
     @GetMapping("/conversations/{conversationId}")
     fun get(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId)
 
+    @GetMapping("/conversations")
+    fun conversations(@AuthenticationPrincipal user: AuthenticatedUser) = service.listConversations(user.userId)
+
     @PostMapping("/conversations/{conversationId}/messages")
     fun message(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID, @RequestHeader("Idempotency-Key") key: String, @Valid @RequestBody request: BuilderMessageRequest) =
-        service.sendMessage(user.userId, conversationId, request.content, key)
+        generation.enqueue(user.userId, conversationId, request.content, key)
+
+    @GetMapping("/generation-jobs/{jobId}")
+    fun generationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID) = generation.get(user.userId, jobId)
 
     @GetMapping("/conversations/{conversationId}/requirement")
     fun requirement(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).requirement
@@ -68,6 +74,12 @@ class BuilderController(private val service: BuilderService, private val catalog
     fun readiness(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).let {
         mapOf("ready" to (it.status.name == "READY_TO_ACTIVATE"), "status" to it.status, "blockingReasons" to if (it.status.name == "READY_TO_ACTIVATE") emptyList<String>() else listOf("검증된 시뮬레이션을 완료해야 합니다."))
     }
+
+    @PostMapping("/workflows/{workflowId}/activate")
+    fun activate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String) = service.activate(user.userId, workflowId, key)
+
+    @GetMapping("/active-automation-teams")
+    fun activeTeams(@AuthenticationPrincipal user: AuthenticatedUser) = service.activeAutomationTeams(user.userId)
 
     @GetMapping("/node-catalog")
     fun nodeCatalog() = catalog.allowedTypes().sorted()

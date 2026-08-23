@@ -1,6 +1,9 @@
 spring:
   jpa:
     show-sql: false
+builder:
+  meta-agent:
+    mode: mock
 llm:
   encryption:
     current-version: test-v1

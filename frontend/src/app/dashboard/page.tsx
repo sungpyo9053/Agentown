@@ -16,6 +16,7 @@ type Agent = { id: string; name: string; role: string; department?: string; char
 type Execution = { id: string; status: string; currentStepKey?: string; createdAt: string };
 type Harness = { id: string; name: string; description?: string; status: string; visibility: string };
 type Runner = { id: string; provider: "CODEX" | "CLAUDE"; deviceName: string; status: string; lastSeenAt?: string };
+type AutomationTeam = { workflowId: string; workflowVersionId: string; versionNo: number; teamName: string; workflowName: string; agents: Array<{ key: string; name: string; role: string }> };
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -24,6 +25,7 @@ export default function DashboardPage() {
   const executions = useQuery({ queryKey: ["executions"], queryFn: () => api<Execution[]>("/executions") });
   const harnesses = useQuery({ queryKey: ["harnesses"], queryFn: () => api<Harness[]>("/harnesses") });
   const runners = useQuery({ queryKey: ["local-runners"], queryFn: () => api<Runner[]>("/local-runners"), refetchInterval: 5_000 });
+  const automationTeams = useQuery({ queryKey: ["active-automation-teams"], queryFn: () => api<AutomationTeam[]>("/builder/active-automation-teams") });
   const startWork = useMutation({
     mutationFn: ({ harnessId, input }: { harnessId: string; input: Record<string, string> }) => api<{ id: string }>(`/harnesses/${harnessId}/executions`, {
       method: "POST",
@@ -43,10 +45,12 @@ export default function DashboardPage() {
     <p className="-mt-6 mb-8 text-sm font-medium text-mute">@{home.data.handle} · 방문 {home.data.visitCount}</p>
 
     <div className="grid gap-2 sm:grid-cols-3">
-      <Stat label="구성원" value={agents.data?.length ?? 0} />
+      <Stat label="구성원" value={(agents.data?.length ?? 0) + (automationTeams.data?.reduce((count, team) => count + team.agents.length, 0) ?? 0)} />
       <Stat label="진행 중인 목표" value={harnesses.data?.filter(item => item.status === "ACTIVE").length ?? 0} />
       <Stat label="실행 중" value={running} />
     </div>
+
+    {automationTeams.data?.map(team => <section key={team.workflowId} className="mt-2 border border-hairline bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-[.14em] text-coral">DEPLOYED WORKFLOW · VERSION {team.versionNo}</p><h2 className="mt-2 text-2xl font-semibold">{team.teamName}</h2><p className="mt-1 text-sm text-mute">{team.workflowName}</p></div><Link href="/assemble/automation" className="rounded-pill bg-cloud px-5 py-3 text-sm font-medium">Workflow 보기</Link></div><div className="mt-5 grid gap-3 md:grid-cols-2">{team.agents.map(member => <article key={member.key} className="border border-hairline bg-cloud p-4"><p className="text-xs font-semibold text-coral">팀원 · {member.key}</p><h3 className="mt-2 font-medium">{member.name}</h3><p className="mt-1 text-sm leading-6 text-mute">{member.role}</p></article>)}</div></section>)}
 
     <div className="mt-2 border border-hairline bg-white">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-6 py-4">

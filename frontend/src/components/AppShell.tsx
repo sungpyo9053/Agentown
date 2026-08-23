@@ -107,7 +107,7 @@ export function AppShell({ title, kicker, children }: { title: string; kicker: s
           <nav className="hidden items-center gap-6 text-sm font-medium text-ink lg:flex">
             {groups.map((group) => <Link key={group.key} href={group.href} className="hover:opacity-60">{group.key === "board" ? companyName : group.label}</Link>)}
           </nav>
-          <SessionNav compact showAdminLink hideGreeting />
+          <SessionNav compact showAdminLink />
         </div>
       </header>
 
