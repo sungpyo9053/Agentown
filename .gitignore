@@ -11,6 +11,7 @@ node_modules/
 .env.local
 .agentown/
 deploy/.env.production
+deploy/codex-auth/
 frontend/playwright-report/
 frontend/test-results/
 *.iml

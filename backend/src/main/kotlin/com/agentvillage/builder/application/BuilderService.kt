@@ -97,6 +97,7 @@ class BuilderService(
         consumeUsage: Boolean = true,
     ) {
         val pipelineContext = context.pipeline(jobId)
+        pipeline.preflight(pipelineContext)
         if (consumeUsage) usageLimiter.claim(pipelineContext, idempotencyKey)
         val bundle = pipeline.generateDesign(pipelineContext, instruction)
         val requirement = bundle.requirement

@@ -28,14 +28,25 @@ class MetaAgentExecutionException(
 class CodexCliMetaAgentModel(
     private val credentials: CredentialDirectory,
     private val runner: CodexCliRunner,
+    private val usageLimiter: BuilderUsageLimiter,
     private val mapper: ObjectMapper,
     @Value("\${builder.meta-agent.model:gpt-5.6-luna}") override val modelName: String,
 ) : MetaAgentModel {
     override val executorName = "codex-cli"
 
+    override fun preflight(context: PipelineContext) {
+        if (credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI) != null) return
+        if (usageLimiter.isUnlimited(context.ownerId) && runner.hasSharedAuth()) return
+        if (usageLimiter.isUnlimited(context.ownerId)) throw BadRequestException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "운영 테스트용 서버 Codex 로그인이 필요합니다.")
+        throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
+    }
+
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
         val credential = credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI)
-            ?: throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
+        if (credential == null && usageLimiter.isUnlimited(context.ownerId)) {
+            return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)))
+        }
+        credential ?: throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
         return credentials.withDecrypted(credential.id, context.ownerId, LlmProvider.OPENAI) { secret, _ ->
             runner.execute(secret, modelName, prompt(mapper.writeValueAsString(input)))
         }
@@ -68,14 +79,34 @@ class CodexCliMetaAgentModel(
 class CodexCliRunner(
     @Value("\${builder.meta-agent.codex-command:codex}") private val command: String,
     @Value("\${builder.meta-agent.timeout-seconds:120}") private val timeoutSeconds: Long,
+    @Value("\${builder.meta-agent.shared-codex-home:/var/lib/agentown-codex}") private val sharedCodexHome: String,
 ) {
+    fun hasSharedAuth(): Boolean = Files.isRegularFile(Path.of(sharedCodexHome).resolve("auth.json"))
+
     fun execute(apiKey: CharArray, model: String, prompt: String): String {
+        val isolatedHome = Files.createTempDirectory("agentown-codex-home-")
+        return try {
+            execute(apiKey, isolatedHome, model, prompt)
+        } finally {
+            deleteTemporary(isolatedHome)
+        }
+    }
+
+    fun executeWithSharedAuth(model: String, prompt: String): String {
+        val home = Path.of(sharedCodexHome)
+        if (!hasSharedAuth()) {
+            throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
+        }
+        return execute(null, home, model, prompt)
+    }
+
+    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String): String {
         val root = Files.createTempDirectory("agentown-codex-meta-")
         return try {
             val schema = root.resolve("schema.json")
             javaClass.getResourceAsStream("/builder/meta-agent-design-bundle.schema.json")?.use { input -> Files.copy(input, schema) }
                 ?: throw MetaAgentExecutionException("BUILDER_SCHEMA_MISSING", "Configuration", false, safeMessage = "메타 에이전트 출력 스키마를 찾을 수 없습니다.")
-            val codexHome = Files.createDirectories(root.resolve("codex-home"))
+            Files.createDirectories(codexHome)
             val processBuilder = ProcessBuilder(
                 command, "exec", "-",
                 "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config",
@@ -88,7 +119,7 @@ class CodexCliRunner(
                 clear()
                 put("PATH", "/usr/local/bin:/usr/bin:/bin")
                 put("CODEX_HOME", codexHome.toString())
-                put("CODEX_API_KEY", String(apiKey))
+                if (apiKey != null) put("CODEX_API_KEY", String(apiKey))
                 put("LANG", "C.UTF-8")
             }
             val process = processBuilder.start()

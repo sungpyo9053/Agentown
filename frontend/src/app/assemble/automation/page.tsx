@@ -86,8 +86,10 @@ export default function AutomationBuilderPage() {
   })) ?? [], [snapshot?.graph]);
   const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map((edge) => ({ ...edge, animated: true, style: { stroke: "#ea725c", strokeWidth: 2 } })) ?? [], [snapshot?.graph]);
   const onNodeClick: NodeMouseHandler = (_, node) => setSelectedNode(snapshot?.graph?.nodes.find((item) => item.id === node.id));
-  const pending = create.isPending || send.isPending || Boolean(generationJobId) || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending;
+  const generationPending = Boolean(generationJobId) && generation.data?.status !== "SUCCEEDED" && generation.data?.status !== "FAILED";
+  const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending;
   const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || snapshotQuery.error;
+  const generationProgress = generation.data ? Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100)) : 0;
 
   return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
@@ -95,7 +97,22 @@ export default function AutomationBuilderPage() {
       <div className="flex items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} /><button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
     </div>
 
-    {generation.data && generation.data.status !== "SUCCEEDED" && <div className="mb-5 border border-coral/30 bg-orange-50 p-5"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">실제 Codex 메타 에이전트 팀이 설계 중입니다</p><p className="mt-1 text-xs text-mute">{stageLabel(generation.data.stage)} · 경과 {generation.data.elapsedSeconds}초 · 예상 남은 시간 약 {generation.data.remainingSeconds}초</p></div><StatusBadge status={generation.data.status} /></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-coral transition-all" style={{ width: `${Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100))}%` }} /></div></div>}
+    {generation.data && generation.data.status !== "SUCCEEDED" && (
+      <div className={`mb-5 border p-5 ${generation.data.status === "FAILED" ? "border-red-200 bg-red-50" : "border-coral/30 bg-orange-50"}`}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium">{generation.data.status === "FAILED" ? "Codex 설계를 시작하지 못했습니다" : "실제 Codex 메타 에이전트 팀이 설계 중입니다"}</p>
+            <p className="mt-1 text-xs text-mute">{generation.data.status === "FAILED" ? generation.data.errorMessage : `${stageLabel(generation.data.stage)} · 경과 ${generation.data.elapsedSeconds}초 · 예상 남은 시간 약 ${generation.data.remainingSeconds}초`}</p>
+          </div>
+          <StatusBadge status={generation.data.status} />
+        </div>
+        {generation.data.status === "FAILED" ? (
+          <a href="/settings/credentials" className="mt-4 inline-block rounded-pill bg-ink px-5 py-2.5 text-xs font-medium text-white">AI 연결 확인</a>
+        ) : (
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-coral transition-all" style={{ width: `${generationProgress}%` }} /></div>
+        )}
+      </div>
+    )}
 
     <nav aria-label="Builder 화면" className="mb-5 grid grid-cols-3 border border-hairline bg-white p-1">
       <TabButton active={tab === "design"} onClick={() => setTab("design")} icon={MessageSquare} label="설계 · 대화" />

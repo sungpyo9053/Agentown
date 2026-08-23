@@ -11,6 +11,7 @@ import java.util.UUID
 interface MetaAgentModel {
     val executorName: String
     val modelName: String
+    fun preflight(context: PipelineContext) = Unit
     fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String
 }
 
@@ -70,6 +71,7 @@ class StructuredMetaAgentPipeline(
     private val audit: MetaAgentAuditService,
     private val progress: BuilderJobProgressService,
 ) {
+    fun preflight(context: PipelineContext) = model.preflight(context)
     private val designStages = listOf(
         "analyze_business_process",
         "clarify_requirements",
