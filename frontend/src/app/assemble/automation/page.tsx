@@ -31,6 +31,8 @@ type ConversationSummary = { conversationId: string; workflowId: string; title: 
 
 const storageKey = "agentown.builder.conversation.v1";
 const sampleRequest = "저는 회사에서 고객 문의를 담당하고 있습니다. Slack의 #customer-support 채널에 문의가 올라오면, Notion의 고객 FAQ 데이터베이스에서 관련 내용을 찾아 답변 초안을 만들고 있습니다. 답변은 바로 보내지 말고 제가 검토하고 승인한 경우에만 해당 Slack 메시지의 스레드로 전송되게 자동화하고 싶습니다.";
+const faqSampleInput = "환불은 언제 처리되나요?";
+const genericSampleInput = "검증할 주제와 근거 원문을 입력하세요.";
 
 function key(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 
@@ -39,7 +41,7 @@ export default function AutomationBuilderPage() {
   const [conversationId, setConversationId] = useState<string>();
   const [tab, setTab] = useState<Tab>("design");
   const [message, setMessage] = useState(sampleRequest);
-  const [simulationInput, setSimulationInput] = useState("환불은 언제 처리되나요?");
+  const [simulationInput, setSimulationInput] = useState(faqSampleInput);
   const [run, setRun] = useState<Run>();
   const [selectedNode, setSelectedNode] = useState<WorkflowNode>();
   const [generationJobId, setGenerationJobId] = useState<string>();
@@ -49,6 +51,11 @@ export default function AutomationBuilderPage() {
   const snapshot = snapshotQuery.data;
   const history = useQuery({ queryKey: ["builder-conversations"], queryFn: () => api<ConversationSummary[]>("/builder/conversations") });
   const generation = useQuery({ queryKey: ["builder-generation", generationJobId], queryFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}`), enabled: Boolean(generationJobId), refetchInterval: query => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(query.state.data?.status ?? "") ? false : 1500 });
+  useEffect(() => {
+    if (!snapshot?.graph) return;
+    const suggested = sampleSimulationInput(snapshot.graph);
+    setSimulationInput((current) => current === faqSampleInput || current === genericSampleInput ? suggested : current);
+  }, [snapshot?.currentVersionId, snapshot?.graph]);
   function store(next: Snapshot) {
     window.localStorage.setItem(storageKey, next.conversationId); setConversationId(next.conversationId);
     queryClient.setQueryData(["builder", next.conversationId], next);
@@ -197,5 +204,5 @@ function StatusBadge({ status }: { status: string }) { return <span className="r
 function TabButton({ active, onClick, icon: Icon, label, disabled }: { active: boolean; onClick: () => void; icon: typeof Workflow; label: string; disabled?: boolean }) { return <button type="button" onClick={onClick} disabled={disabled} className={`flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-30 ${active ? "bg-ink text-white" : "text-charcoal hover:bg-cloud"}`}><Icon className="h-4 w-4" />{label}</button>; }
 function Card({ title, icon: Icon, children }: { title: string; icon: typeof Workflow; children: React.ReactNode }) { return <article className="border border-hairline bg-white p-5"><div className="mb-4 flex items-center gap-2"><Icon className="h-4 w-4 text-coral" /><h2 className="text-sm font-medium">{title}</h2></div>{children}</article>; }
 function FlowPills({ items }: { items: string[] }) { return <div className="mt-4 flex flex-wrap items-center gap-1">{items.map((item, index) => <span key={item} className="flex items-center gap-1 text-xs"><span className="border border-hairline bg-cloud px-2 py-1.5">{item}</span>{index < items.length - 1 && <ChevronRight className="h-3 w-3 text-mute" />}</span>)}</div>; }
-function sampleSimulationInput(graph: WorkflowGraph) { const types = new Set(graph.nodes.map((node) => node.nodeType)); return types.has("slack.new_message.mock") && types.has("notion.search.mock") ? "환불은 언제 처리되나요?" : "검증할 주제와 근거 원문을 입력하세요."; }
+function sampleSimulationInput(graph: WorkflowGraph) { const types = new Set(graph.nodes.map((node) => node.nodeType)); return types.has("slack.new_message.mock") && types.has("notion.search.mock") ? faqSampleInput : genericSampleInput; }
 function stageLabel(stage: string) { return ({ REQUEST_ACCEPTED: "요청 접수", CODEX_ANALYZING: "업무 분석·에이전트 설계", STRUCTURE_VALIDATING: "구조화 결과 검증", DESIGN_SAVING: "설계 저장", COMPLETED: "완료", FAILED: "실패" } as Record<string, string>)[stage] ?? stage; }
