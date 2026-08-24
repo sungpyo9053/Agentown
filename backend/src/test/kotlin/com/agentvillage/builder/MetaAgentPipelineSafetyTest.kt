@@ -72,6 +72,45 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
+    fun `detailed writing result is normalized to the four employee standard team`() {
+        val mapper = jacksonObjectMapper()
+        val deterministic = DeterministicMockMetaAgentModel(mapper)
+        val model = mock<MetaAgentModel>()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(model.executorName).thenReturn("real-output-shape-test")
+        whenever(model.modelName).thenReturn("mock")
+        whenever(model.generate(any(), any(), any())).thenAnswer { invocation ->
+            val raw = deterministic.generate(invocation.arguments[0] as PipelineContext, invocation.arguments[1] as String, invocation.arguments[2] as Map<String, Any?>)
+            mapper.readTree(raw).also { root ->
+                val agents = (root as com.fasterxml.jackson.databind.node.ObjectNode).putArray("agentDefinitions")
+                agents.add(mapper.readTree(raw)["agentDefinitions"][2])
+                val plan = root["proposal"]["graphPlan"] as com.fasterxml.jackson.databind.node.ObjectNode
+                val nodes = plan.putArray("nodes")
+                nodes.add(mapper.readTree(raw)["proposal"]["graphPlan"]["nodes"][0])
+                nodes.add(mapper.readTree(raw)["proposal"]["graphPlan"]["nodes"][4])
+                nodes.add(mapper.readTree(raw)["proposal"]["graphPlan"]["nodes"][5])
+                val edges = plan.putArray("edges")
+                edges.addObject().put("id", "model-edge-1").put("source", "manual").put("target", "fact-edit").put("condition", "success")
+                edges.addObject().put("id", "model-edge-2").put("source", "fact-edit").put("target", "approval").put("condition", "success")
+            }.toString()
+        }
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        val result = pipeline.generateDesign(
+            context,
+            "글쓰기 자동화를 수동으로 시작하고 사용자가 제공한 원문으로 초안을 작성해 담당자 승인 후 화면에 표시한다.",
+        )
+
+        assertThat(result.agentDefinitions.map { it.key })
+            .containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        assertThat(result.proposal.graphPlan!!.nodes.filter { it.nodeType == "ai.generate" }.map { it.config["agentKey"] })
+            .containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        assertThat(result.proposal.graphPlan!!.nodes.last().nodeType).isEqualTo("human.approval")
+    }
+
+    @Test
     fun `invalid model json is rejected before becoming a domain object`() {
         val model = mock<MetaAgentModel>()
         val runs = mock<MetaAgentRunRepository>()

@@ -21,6 +21,8 @@ chmod 600 deploy/.env.production
 
 첫 번째 출력은 `LLM_MASTER_KEYS=v1:<출력>`에, 두 번째 출력은 `POSTGRES_PASSWORD`에 넣는다. 이 파일은 Git에 올리지 않는다. 이메일 발송 서비스 계약 후 HTTPS 웹훅 URL과 토큰을 입력한다. 사용자 LLM 키는 이 마스터 키로 AES-256-GCM 암호화되며 원문은 조회 API, 로그, 복제본에 포함되지 않는다.
 
+운영 테스트 계정이 서버 공용 Codex 로그인을 사용하는 경우 `deploy/codex-auth/auth.json`을 컨테이너의 `app` 사용자만 읽을 수 있게 둔다. 이 디렉터리는 Git에 포함되지 않는 런타임 비밀정보다. 소스 동기화나 `rsync --delete` 시에는 반드시 `deploy/.env.production`과 함께 `deploy/codex-auth/`를 제외하고, 이미지 갱신 뒤 컨테이너에서 `/home/app/.codex/auth.json`을 읽을 수 있는지 확인한다. 인증 파일의 내용은 로그나 배포 산출물에 출력하지 않는다.
+
 ## 배포와 점검
 
 ```bash
@@ -28,6 +30,18 @@ docker compose --env-file deploy/.env.production -f docker-compose.production.ym
 docker compose --env-file deploy/.env.production -f docker-compose.production.yml up -d --build
 docker compose --env-file deploy/.env.production -f docker-compose.production.yml ps
 curl -fsS https://YOUR_DOMAIN/health
+```
+
+아카이브를 서버에 동기화하는 배포라면 런타임 파일 보존 조건은 다음과 같다.
+
+```bash
+rsync -a --delete \
+  --exclude deploy/.env.production \
+  --exclude deploy/codex-auth/ \
+  RELEASE_DIR/ /opt/agentown/
+docker compose --env-file deploy/.env.production -f docker-compose.production.yml up -d --build
+docker compose --env-file deploy/.env.production -f docker-compose.production.yml exec -T backend \
+  sh -c 'test -r /home/app/.codex/auth.json'
 ```
 
 Caddy가 인증서를 자동 발급하고 HTTPS만 외부에 제공한다. Backend와 PostgreSQL은 Compose 내부 네트워크에서만 접근 가능하며 Backend CORS는 `DOMAIN`에서 만든 HTTPS Origin만 허용한다. 배포 후 회원가입, 로그인, BYOK 검증, Stub이 아닌 실제 1회 실행, 결과 다운로드를 운영 계정으로 확인한다.

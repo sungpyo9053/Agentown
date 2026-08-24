@@ -255,12 +255,60 @@ class StructuredMetaAgentPipeline(
             if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", if (writingAutomation) "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?" else "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
             if (!hasDestination) add(ClarificationQuestion("destination", "destination", if (writingAutomation && wordFormatOnly) "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?" else if (writingAutomation) "완성된 글은 어느 서비스의 어느 위치에 저장하거나 발행할까요?" else "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
         }
-        return bundle.copy(
+        val normalized = bundle.copy(
             clarificationQuestions = questions,
             proposal = bundle.proposal.copy(graphPlan = bundle.proposal.graphPlan?.let(::normalizeGraphPlan)),
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
+        return if (writingAutomation && questions.isEmpty()) standardizeWritingTeam(normalized, instruction) else normalized
     }
+
+    private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val agents = listOf(
+            writingAgent("source-analyst", "자료 분석가", "입력 자료에서 사실, 의견, 근거와 부족한 항목을 분석한다.", "analysis"),
+            writingAgent("content-planner", "콘텐츠 기획자", "독자와 목적에 맞는 제목, 요약, 본문 구조를 설계한다.", "plan"),
+            writingAgent("draft-writer", "초안 작성자", "확정된 근거와 기획만 사용해 요청 형식의 초안을 작성한다.", "draft"),
+            writingAgent("fact-editor", "팩트체커·편집자", "초안의 근거, 사실과 의견 구분, 문체와 구조를 검수한다.", "result"),
+        )
+        val plan = bundle.proposal.graphPlan ?: return bundle.copy(agentDefinitions = agents)
+        val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
+        val firstAi = plan.nodes.indexOfFirst { it.nodeType in aiTypes }.let { if (it < 0) plan.nodes.indexOfFirst { node -> node.nodeType == NodeType.HUMAN_APPROVAL.wireName }.let { approval -> if (approval < 0) plan.nodes.size else approval } else it }
+        val retained = plan.nodes.filterNot { it.nodeType in aiTypes }.toMutableList()
+        val insertionIndex = plan.nodes.take(firstAi).count { it.nodeType !in aiTypes }
+        val writingNodes = listOf(
+            WorkflowNodePlan("source-analysis", NodeType.AI_GENERATE.wireName, "자료 분석", mapOf("instruction" to "사용자 제공 자료의 사실과 근거를 분석", "agentKey" to "source-analyst")),
+            WorkflowNodePlan("content-plan", NodeType.AI_GENERATE.wireName, "콘텐츠 기획", mapOf("instruction" to "독자와 목적에 맞는 제목과 본문 구조를 기획", "agentKey" to "content-planner")),
+            WorkflowNodePlan("draft-write", NodeType.AI_GENERATE.wireName, "초안 작성", mapOf("instruction" to instruction, "agentKey" to "draft-writer")),
+            WorkflowNodePlan("fact-edit", NodeType.AI_GENERATE.wireName, "팩트체크와 편집", mapOf("instruction" to "근거와 품질 기준에 따라 초안을 검수", "agentKey" to "fact-editor")),
+        )
+        retained.addAll(insertionIndex.coerceIn(0, retained.size), writingNodes)
+        val normalizedPlan = WorkflowGraphPlan(
+            entryNodeId = retained.firstOrNull()?.id ?: plan.entryNodeId,
+            nodes = retained,
+            edges = retained.zipWithNext().mapIndexed { index, (source, target) -> WorkflowEdgePlan("edge-${index + 1}", source.id, target.id) },
+        )
+        val guides = bundle.guideDefinitions.takeIf { definitions -> definitions.any { it.fields.isNotEmpty() } }
+            ?: listOf(GuideDefinition("writing-input", "글쓰기 입력과 품질 설정", "작성할 주제, 근거 원문, 독자와 출력 형식을 설정합니다.", listOf(
+                GuideField("topic", "주제", "text", true, false, "작성할 글의 주제"),
+                GuideField("sourceText", "근거 원문", "textarea", true, false, "에이전트가 사실 근거로 사용할 사용자 제공 자료"),
+                GuideField("audience", "대상 독자", "text", true, false, "예: 일반 독자"),
+            )))
+        return bundle.copy(
+            requirement = bundle.requirement.copy(steps = retained.map { it.label }),
+            proposal = bundle.proposal.copy(capabilities = retained.map { it.label }, graphPlan = normalizedPlan),
+            agentDefinitions = agents,
+            guideDefinitions = guides,
+        )
+    }
+
+    private fun writingAgent(key: String, name: String, role: String, output: String) = AgentDefinition(
+        key, name, role,
+        listOf(FieldDefinition("text", "string", true, "사용자 제공 입력")),
+        listOf(FieldDefinition(output, "string", true, "구조화된 단계 결과")),
+        listOf("사용자 요청의 목적과 독자를 보존한다", "제공된 입력과 앞 단계 결과만 사용한다"),
+        listOf("근거 없는 내용을 만들지 않는다", "외부 작업을 직접 수행하지 않는다"),
+        listOf("사용한 입력과 판단 근거"),
+    )
 
     private fun normalizeGraphPlan(plan: WorkflowGraphPlan): WorkflowGraphPlan {
         val branchById = plan.nodes.filter { it.nodeType == NodeType.CONDITION_BRANCH.wireName }.associateBy { it.id }
