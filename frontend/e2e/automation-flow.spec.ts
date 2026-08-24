@@ -99,6 +99,8 @@ test("글쓰기 표준 하네스는 네 명의 실제 직원을 글쓰기 자동
   }
   await page.getByTestId("approve-design").click();
   await page.getByRole("button", { name: "시뮬레이션" }).click();
+  await expect(page.getByLabel("시뮬레이션 문의")).toHaveValue("검증할 주제와 근거 원문을 입력하세요.");
+  await expect(page.getByText("현재 Workflow Graph를 안전한 Mock 계약으로 실행합니다. 외부 저장·전송은 발생하지 않습니다.")).toBeVisible();
   await page.getByLabel("시뮬레이션 문의").fill("검증용 글 주제와 참고 원문");
   await page.getByTestId("start-simulation").click();
   await expect(page.getByText("담당자 승인 대기")).toBeVisible();
