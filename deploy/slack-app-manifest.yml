@@ -1,0 +1,20 @@
+display_information:
+  name: Agentown
+features:
+  bot_user:
+    display_name: Agentown
+oauth_config:
+  redirect_urls:
+    - https://reviewdr.kr/api/connectors/slack/oauth/callback
+  scopes:
+    bot:
+      - channels:history
+      - chat:write
+settings:
+  event_subscriptions:
+    request_url: https://reviewdr.kr/api/connectors/slack/events
+    bot_events:
+      - message.channels
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

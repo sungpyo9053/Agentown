@@ -49,6 +49,7 @@ const groups = [
     { href: "/settings/subscription", label: "구독 관리" },
     { href: "/settings/preferences", label: "환경 설정" },
     { href: "/settings/credentials", label: "AI 연결" },
+    { href: "/settings/connections", label: "업무 연결" },
   ] },
 ];
 

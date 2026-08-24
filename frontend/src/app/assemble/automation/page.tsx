@@ -28,6 +28,7 @@ type Run = { id: string; status: string; currentNodeId?: string; output?: Record
 type Tab = "design" | "canvas" | "simulation";
 type GenerationJob = { id: string; conversationId: string; workflowId: string; status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; stage: string; estimatedSeconds: number; elapsedSeconds: number; remainingSeconds: number; errorCode?: string; errorMessage?: string };
 type ConversationSummary = { conversationId: string; workflowId: string; title: string; status: string; currentVersionNo?: number; updatedAt: string };
+type SlackStatus = { configured: boolean; connected: boolean };
 
 const storageKey = "agentown.builder.conversation.v1";
 const sampleRequest = "저는 회사에서 고객 문의를 담당하고 있습니다. Slack의 #customer-support 채널에 문의가 올라오면, Notion의 고객 FAQ 데이터베이스에서 관련 내용을 찾아 답변 초안을 만들고 있습니다. 답변은 바로 보내지 말고 제가 검토하고 승인한 경우에만 해당 Slack 메시지의 스레드로 전송되게 자동화하고 싶습니다.";
@@ -50,6 +51,7 @@ export default function AutomationBuilderPage() {
   const snapshotQuery = useQuery({ queryKey: ["builder", conversationId], queryFn: () => api<Snapshot>(`/builder/conversations/${conversationId}`), enabled: Boolean(conversationId) });
   const snapshot = snapshotQuery.data;
   const history = useQuery({ queryKey: ["builder-conversations"], queryFn: () => api<ConversationSummary[]>("/builder/conversations") });
+  const slackConnection = useQuery({ queryKey: ["slack-connection"], queryFn: () => api<SlackStatus>("/connectors/slack") });
   const generation = useQuery({ queryKey: ["builder-generation", generationJobId], queryFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}`), enabled: Boolean(generationJobId), refetchInterval: query => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(query.state.data?.status ?? "") ? false : 1500 });
   useEffect(() => {
     if (!snapshot?.graph) return;
@@ -110,6 +112,11 @@ export default function AutomationBuilderPage() {
   const generationProgress = generation.data ? Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100)) : 0;
 
   return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
+    <div className={`mb-5 border p-4 text-sm ${slackConnection.data?.connected ? "border-green-200 bg-green-50 text-green-900" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+      <b>실제 커넥터:</b> Slack {slackConnection.data?.connected ? "연결 완료" : slackConnection.data?.configured ? "연결 대기" : "서버 앱 설정 대기"} · Notion 다음 단계
+      <a href="/settings/connections" className="ml-3 font-medium underline">업무 연결 관리</a>
+      <p className="mt-1 text-xs opacity-75">현재 캔버스 실행은 계속 Mock Connector만 사용하며, 실제 외부 전송은 승인·재개 단계가 배포되기 전까지 발생하지 않습니다.</p>
+    </div>
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
       <div><p className="text-xs font-semibold tracking-[.14em] text-coral">ACTUAL CODEX DESIGN · SLACK/NOTION MOCK</p><p className="mt-1 text-sm text-mute">실제 Codex가 설계하고, 외부 쓰기 없이 Mock Connector로 안전하게 시뮬레이션합니다.</p></div>
       <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>

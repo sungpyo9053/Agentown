@@ -71,3 +71,14 @@ builder:
     timeout-seconds: ${BUILDER_CODEX_TIMEOUT_SECONDS:120}
     unlimited-owner-ids: ${BUILDER_UNLIMITED_OWNER_IDS:}
     shared-codex-home: ${BUILDER_SHARED_CODEX_HOME:/var/lib/agentown-codex}
+connectors:
+  slack:
+    enabled: ${SLACK_CONNECTOR_ENABLED:false}
+    client-id: ${SLACK_CLIENT_ID:}
+    client-secret: ${SLACK_CLIENT_SECRET:}
+    signing-secret: ${SLACK_SIGNING_SECRET:}
+    redirect-uri: ${SLACK_REDIRECT_URI:http://localhost:8080/api/connectors/slack/oauth/callback}
+    frontend-result-url: ${SLACK_FRONTEND_RESULT_URL:http://localhost:3000/settings/connections}
+    event-request-url: ${SLACK_EVENT_REQUEST_URL:http://localhost:8080/api/connectors/slack/events}
+    scopes: ${SLACK_SCOPES:channels:history,chat:write}
+    api-base-url: ${SLACK_API_BASE_URL:https://slack.com}

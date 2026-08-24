@@ -44,6 +44,14 @@ services:
       BUILDER_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
       BUILDER_UNLIMITED_OWNER_IDS: ${BUILDER_UNLIMITED_OWNER_IDS:-}
       BUILDER_SHARED_CODEX_HOME: /home/app/.codex
+      SLACK_CONNECTOR_ENABLED: ${SLACK_CONNECTOR_ENABLED:-false}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SLACK_REDIRECT_URI: ${SLACK_REDIRECT_URI:-https://${DOMAIN}/api/connectors/slack/oauth/callback}
+      SLACK_FRONTEND_RESULT_URL: ${SLACK_FRONTEND_RESULT_URL:-https://${DOMAIN}/settings/connections}
+      SLACK_EVENT_REQUEST_URL: ${SLACK_EVENT_REQUEST_URL:-https://${DOMAIN}/api/connectors/slack/events}
+      SLACK_SCOPES: ${SLACK_SCOPES:-channels:history,chat:write}
     volumes:
       - ./deploy/codex-auth:/home/app/.codex
     depends_on:
