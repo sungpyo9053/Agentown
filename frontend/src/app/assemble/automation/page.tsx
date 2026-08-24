@@ -73,7 +73,15 @@ export default function AutomationBuilderPage() {
   const patch = useMutation({ mutationFn: (instruction: string) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/patches`, { method: "POST", headers: { "Idempotency-Key": key("patch") }, body: JSON.stringify({ instruction, baseVersionId: snapshot!.currentVersionId, expectedGraphHash: snapshot!.validation!.graphHash }) }), onSuccess: (next) => { store(next); setMessage(""); setTab("canvas"); } });
   const simulate = useMutation({ mutationFn: () => api<Run>(`/builder/workflows/${snapshot!.workflowId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("simulation") }, body: JSON.stringify({ input: { message: simulationInput } }) }), onSuccess: (next) => { setRun(next); setTab("simulation"); } });
   const approveRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/builder/simulations/${run!.id}/approval`, { method: "POST", headers: { "Idempotency-Key": key("execution-approval") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
-  const activate = useMutation({ mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/activate`, { method: "POST", headers: { "Idempotency-Key": key("activation") }, body: "{}" }), onSuccess: store });
+  const activate = useMutation({
+    mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/activate`, { method: "POST", headers: { "Idempotency-Key": key("activation") }, body: "{}" }),
+    onSuccess: (next) => {
+      store(next);
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["home"] });
+      queryClient.invalidateQueries({ queryKey: ["active-automation-teams"] });
+    },
+  });
   const cancelGeneration = useMutation({ mutationFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}/cancel`, { method: "POST", headers: { "Idempotency-Key": key("cancel-generation") }, body: "{}" }), onSuccess: next => queryClient.setQueryData(["builder-generation", next.id], next) });
   const stopWorkflow = useMutation({ mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/stop`, { method: "POST", headers: { "Idempotency-Key": key("stop-workflow") }, body: "{}" }), onSuccess: store });
 
@@ -89,6 +97,7 @@ export default function AutomationBuilderPage() {
   const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map((edge) => ({ ...edge, animated: true, style: { stroke: "#ea725c", strokeWidth: 2 } })) ?? [], [snapshot?.graph]);
   const onNodeClick: NodeMouseHandler = (_, node) => setSelectedNode(snapshot?.graph?.nodes.find((item) => item.id === node.id));
   const generationPending = Boolean(generationJobId) && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(generation.data?.status ?? "");
+  const validationInvalid = snapshot?.validation?.valid === false;
   const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending || stopWorkflow.isPending;
   const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || stopWorkflow.error || cancelGeneration.error || snapshotQuery.error;
   const generationProgress = generation.data ? Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100)) : 0;
@@ -124,6 +133,7 @@ export default function AutomationBuilderPage() {
     </nav>
 
     {error && <div role="alert" className="mb-5 flex gap-2 border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="h-5 w-5 shrink-0" />{error.message}</div>}
+    {validationInvalid && <div role="alert" className="mb-5 border border-red-200 bg-red-50 p-5 text-red-900"><div className="flex gap-2 text-sm font-medium"><AlertTriangle className="h-5 w-5 shrink-0" />요구사항과 실행 그래프가 일치하지 않습니다.</div><ul className="mt-3 space-y-1 pl-7 text-xs leading-5">{snapshot.validation!.issues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId ?? index}`}>{issue.message}</li>)}</ul></div>}
 
     {snapshot?.status === "STOPPED" && <div className="mb-5 border border-hairline bg-cloud p-5 text-sm text-charcoal"><b>중지된 자동화입니다.</b><p className="mt-1 text-xs text-mute">Version과 로그는 조회할 수 있지만 수정·시뮬레이션·회사 배치는 차단됩니다.</p></div>}
     {tab === "design" && <DesignTab snapshot={snapshot} message={message} setMessage={setMessage} submit={submit} pending={pending || snapshot?.status === "STOPPED"} decide={(approve) => decideDesign.mutate(approve)} />}
@@ -131,14 +141,14 @@ export default function AutomationBuilderPage() {
       <ReactFlow nodes={flowNodes} edges={flowEdges} onNodeClick={onNodeClick} fitView fitViewOptions={{ padding: .2 }} minZoom={.35} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false}>
         <Background gap={20} color="#d4d4d0" /><Controls /><MiniMap pannable zoomable nodeColor={(node) => node.id.includes("approval") ? "#ea725c" : "#111"} />
       </ReactFlow>
-      <div className="absolute left-5 top-5 z-10 rounded-lg border border-hairline bg-white/95 px-4 py-3 shadow-sm"><p className="text-xs font-semibold text-ink">Workflow Version {snapshot.versions[0]?.versionNo}</p><p className="mt-1 text-[11px] text-mute">{snapshot.versions[0]?.changeSummary} · {snapshot.validation?.validatorVersion}</p></div>
+      <div className="absolute left-5 top-5 z-10 rounded-lg border border-hairline bg-white/95 px-4 py-3 shadow-sm"><p className="text-xs font-semibold text-ink">Workflow Version {snapshot.versions[0]?.versionNo}</p><p className="mt-1 text-[11px] text-mute">{snapshot.versions[0]?.changeSummary} · {snapshot.validation?.validatorVersion}</p><a href={`/api/builder/workflows/${snapshot.workflowId}/package`} className="mt-2 inline-block text-[11px] font-medium text-coral underline">표준 하네스 폴더 다운로드</a></div>
       {selectedNode && <aside className="absolute bottom-4 right-4 top-4 z-10 w-80 overflow-auto rounded-xl border border-hairline bg-white p-5 shadow-xl">
         <button className="float-right text-xs text-mute" onClick={() => setSelectedNode(undefined)}>닫기</button><p className="text-xs font-semibold tracking-[.12em] text-coral">NODE SETTINGS</p><h3 className="mt-2 text-lg font-medium">{selectedNode.label}</h3><p className="mt-1 font-mono text-xs text-mute">{selectedNode.nodeType}</p>
         <div className="mt-5 space-y-3">{Object.entries(selectedNode.config).length ? Object.entries(selectedNode.config).map(([name, value]) => <label key={name} className="block text-xs font-medium">{name}<input readOnly value={String(value)} className="mt-1 w-full border border-hairline bg-cloud px-3 py-2 font-normal" /></label>) : <p className="text-sm text-mute">Mock 단계라 별도 연결 계정이 필요하지 않습니다.</p>}</div>
         <div className="mt-5 border-t border-hairline pt-4 text-xs leading-5 text-mute"><ShieldCheck className="mb-2 h-5 w-5 text-green-700" />토큰은 Graph에 저장되지 않습니다. 실제 OAuth는 후속 단계입니다.</div>
       </aside>}
     </section>}
-    {tab === "simulation" && snapshot?.graph && <SimulationTab input={simulationInput} setInput={setSimulationInput} run={run} pending={pending} start={() => simulate.mutate()} decide={(approve) => approveRun.mutate(approve)} active={snapshot.status === "ACTIVE"} deploy={() => activate.mutate()} />}
+    {tab === "simulation" && snapshot?.graph && <SimulationTab input={simulationInput} setInput={setSimulationInput} run={run} pending={pending} validationInvalid={validationInvalid} start={() => simulate.mutate()} decide={(approve) => approveRun.mutate(approve)} active={snapshot.status === "ACTIVE"} deploy={() => activate.mutate()} />}
   </AppShell>;
 }
 
@@ -168,13 +178,13 @@ function DesignTab({ snapshot, message, setMessage, submit, pending, decide }: {
   </div>;
 }
 
-function SimulationTab({ input, setInput, run, pending, start, decide, active, deploy }: { input: string; setInput: (value: string) => void; run?: Run; pending: boolean; start: () => void; decide: (approve: boolean) => void; active: boolean; deploy: () => void }) {
+function SimulationTab({ input, setInput, run, pending, validationInvalid, start, decide, active, deploy }: { input: string; setInput: (value: string) => void; run?: Run; pending: boolean; validationInvalid: boolean; start: () => void; decide: (approve: boolean) => void; active: boolean; deploy: () => void }) {
   return <div className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
-    <section className="border border-hairline bg-white p-5"><p className="text-xs font-semibold tracking-[.12em] text-coral">SAMPLE INPUT</p><h2 className="mt-2 text-lg font-medium">Mock 시뮬레이션</h2><textarea aria-label="시뮬레이션 문의" value={input} onChange={(event) => setInput(event.target.value)} rows={5} className="mt-5 w-full border border-hairline p-3 text-sm" /><p className="mt-3 text-xs leading-5 text-mute">Notion Mock는 환불 3~5일 FAQ를 반환하며, Slack Mock는 실제 전송 없이 예정 메시지만 반환합니다.</p><button data-testid="start-simulation" onClick={start} disabled={pending || !input.trim()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-50"><Play className="h-4 w-4" />시뮬레이션 실행</button></section>
+    <section className="border border-hairline bg-white p-5"><p className="text-xs font-semibold tracking-[.12em] text-coral">SAMPLE INPUT</p><h2 className="mt-2 text-lg font-medium">Mock 시뮬레이션</h2><textarea aria-label="시뮬레이션 문의" value={input} onChange={(event) => setInput(event.target.value)} rows={5} className="mt-5 w-full border border-hairline p-3 text-sm" /><p className="mt-3 text-xs leading-5 text-mute">Notion Mock는 환불 3~5일 FAQ를 반환하며, Slack Mock는 실제 전송 없이 예정 메시지만 반환합니다.</p><button data-testid="start-simulation" onClick={start} disabled={pending || validationInvalid || !input.trim()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-50"><Play className="h-4 w-4" />시뮬레이션 실행</button></section>
     <section className="border border-hairline bg-white p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-medium">단계별 실행 상태</h2><StatusBadge status={run?.status ?? "NOT_STARTED"} /></div>
       {!run ? <div className="py-28 text-center text-sm text-mute">샘플 입력으로 실행하면 StepRun이 여기에 표시됩니다.</div> : <div className="mt-5 space-y-3">{run.steps.map((step, index) => <article key={`${step.nodeId}-${step.sequenceNo}`} className="flex gap-3 border border-hairline p-4"><span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs ${step.status === "SUCCEEDED" ? "bg-green-100 text-green-800" : step.status === "WAITING_APPROVAL" ? "bg-amber-100 text-amber-800" : "bg-cloud"}`}>{index + 1}</span><div className="min-w-0"><p className="text-sm font-medium">{step.nodeType}</p><p className="mt-1 text-xs text-mute">{step.status}</p>{step.output && <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap bg-cloud p-2 text-[11px]">{JSON.stringify(step.output, null, 2)}</pre>}</div></article>)}
         {run.status === "WAITING_APPROVAL" && <div className="border border-amber-200 bg-amber-50 p-5"><div className="flex gap-3"><Pause className="h-5 w-5 text-amber-700" /><div><p className="text-sm font-medium">담당자 승인 대기</p><p className="mt-1 text-xs text-mute">Slack 답변 Mock 직전에서 영속적으로 중단되었습니다.</p></div></div><div className="mt-4 grid grid-cols-2 gap-2"><button disabled={pending} onClick={() => decide(false)} className="rounded-pill border border-hairline py-2 text-sm">거절</button><button data-testid="approve-execution" disabled={pending} onClick={() => decide(true)} className="rounded-pill bg-coral py-2 text-sm text-white">승인 후 재개</button></div></div>}
-        {run.status === "SUCCEEDED" && <div className="border border-green-200 bg-green-50 p-5 text-sm text-green-900"><div className="flex items-center gap-2 font-medium"><Check className="h-5 w-5" />시뮬레이션 완료</div><p className="mt-2 text-xs">요구사항 일치: {run.requirementMatched ? "통과" : "검토 필요"} · 실제 외부 전송 없음</p><button data-testid="activate-workflow" onClick={deploy} disabled={pending || active} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-50"><Rocket className="h-4 w-4" />{active ? "업무 자동화 팀 배치 완료" : "우리 회사에 배치"}</button></div>}
+        {run.status === "SUCCEEDED" && <div className="border border-green-200 bg-green-50 p-5 text-sm text-green-900"><div className="flex items-center gap-2 font-medium"><Check className="h-5 w-5" />시뮬레이션 완료</div><p className="mt-2 text-xs">요구사항 일치: {run.requirementMatched ? "통과" : "검토 필요"} · 실제 외부 전송 없음</p><button data-testid="activate-workflow" onClick={deploy} disabled={pending || active || validationInvalid} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-50"><Rocket className="h-4 w-4" />{active ? "업무 자동화 팀 배치 완료" : "우리 회사에 배치"}</button></div>}
       </div>}
     </section>
   </div>;

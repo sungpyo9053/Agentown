@@ -42,9 +42,88 @@
         "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "minItems": 1, "maxItems": 20 },
         "integrations": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 10 },
         "approvalPoints": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
-        "failurePolicy": { "type": "string", "minLength": 1, "maxLength": 500 }
+        "failurePolicy": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "graphPlan": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "entryNodeId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+            "nodes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+                  "nodeType": { "type": "string", "enum": ["manual.trigger", "text.input", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "notion.search.mock", "notion.read_page.mock"] },
+                  "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+                  "config": {
+                    "anyOf": [
+                      { "type": "object", "additionalProperties": false, "properties": {} },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "expression": { "type": "string", "maxLength": 500 } },
+                        "required": ["expression"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                          "categories": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "maxItems": 20 },
+                          "agentKey": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" }
+                        },
+                        "required": ["categories", "agentKey"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                          "instruction": { "type": "string", "maxLength": 1000 },
+                          "agentKey": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" }
+                        },
+                        "required": ["instruction", "agentKey"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "approver": { "type": "string", "maxLength": 160 } },
+                        "required": ["approver"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "database": { "type": "string", "maxLength": 300 } },
+                        "required": ["database"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "pageId": { "type": "string", "maxLength": 300 } },
+                        "required": ["pageId"]
+                      }
+                    ]
+                  }
+                },
+                "required": ["id", "nodeType", "label", "config"]
+              }
+            },
+            "edges": {
+              "type": "array",
+              "maxItems": 40,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+                  "source": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+                  "target": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+                  "condition": { "type": "string", "minLength": 1, "maxLength": 100 }
+                },
+                "required": ["id", "source", "target", "condition"]
+              }
+            }
+          },
+          "required": ["entryNodeId", "nodes", "edges"]
+        }
       },
-      "required": ["name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy"]
+      "required": ["name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy", "graphPlan"]
     },
     "agentDefinitions": {
       "type": "array",

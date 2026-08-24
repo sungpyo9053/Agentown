@@ -2,8 +2,11 @@ package com.agentvillage.builder
 
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.agent.application.AgentService
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.WorkflowStatus
+import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
+import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.identity.application.IdentityService
@@ -19,6 +22,39 @@ import java.util.UUID
 class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var service: BuilderService
     @Autowired lateinit var identities: IdentityService
+    @Autowired lateinit var requirements: BuilderRequirementRepository
+    @Autowired lateinit var agents: AgentService
+
+    @Test
+    fun `approved writing harness imports four persisted employees into writing automation team`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))
+        var snapshot = service.createConversation(owner.id, "writing-team-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id, snapshot.conversationId,
+            "글쓰기 자동화를 수동으로 시작하고 사용자가 제공한 주제와 원문만 사용해 일반 독자용 한국어 블로그 초안을 작성한다. 콘텐츠 담당자 승인 후 화면에 표시한다.",
+            "writing-team-message-$suffix",
+        )
+        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "writing-team-design-$suffix")
+        assertThat(service.harnessPackage(owner.id, snapshot.workflowId).keys).contains(
+            "AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json",
+            "agents/source-analyst.md", "agents/content-planner.md", "agents/draft-writer.md", "agents/fact-editor.md",
+        )
+        var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("text" to "검증용 주제와 참고 원문"), "writing-team-run-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
+        run = service.decideExecution(owner.id, run.id, true, "writing-team-execution-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
+        snapshot = service.activate(owner.id, snapshot.workflowId, "writing-team-activation-$suffix")
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.ACTIVE)
+
+        val team = service.activeAutomationTeams(owner.id).single()
+        assertThat(team.category).isEqualTo("업무 자동화")
+        assertThat(team.teamName).isEqualTo("글쓰기 자동화 팀")
+        assertThat(team.employees.map { it.agentKey }).containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        assertThat(team.employees.map { it.name }).containsExactly("자료 분석가", "콘텐츠 기획자", "초안 작성자", "팩트체커·편집자")
+        assertThat(agents.list(owner.id).filter { it.department == "글쓰기 자동화 팀" }).hasSize(4)
+    }
 
     @Test
     fun `natural language design compile version patch and simulation approval resume persist end to end`() {
@@ -47,10 +83,11 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             .doesNotContain("승인 라우팅", "게시 에이전트", "문의 분류")
         assertThat(snapshot.guideDefinitions.map { it.key }).containsExactly("slack-mock", "notion-mock")
         assertThat(snapshot.graph).isNull()
+        val plannedNodeTypes = snapshot.proposal!!.graphPlan!!.nodes.map { it.nodeType }
 
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "design-approve-$suffix")
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.READY_TO_SIMULATE)
-        assertThat(snapshot.graph?.nodes?.map { it.nodeType }).containsExactly("slack.new_message.mock", "notion.search.mock", "ai.generate", "human.approval", "slack.reply.mock")
+        assertThat(snapshot.graph?.nodes?.map { it.nodeType }).containsExactlyElementsOf(plannedNodeTypes)
         assertThat(snapshot.validation?.valid).isTrue()
         assertThat(snapshot.currentVersionId).isEqualTo(snapshot.approvedVersionId)
 
@@ -73,6 +110,23 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(run.output).containsEntry("externalCallPerformed", false)
         assertThat(run.requirementMatched).isTrue()
         assertThat(service.decideExecution(owner.id, run.id, true, "execution-approve-$suffix").id).isEqualTo(run.id)
+
+        snapshot = service.activate(owner.id, workflowId, "activation-$suffix")
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.ACTIVE)
+        val teams = service.activeAutomationTeams(owner.id)
+        assertThat(teams).hasSize(1)
+        assertThat(teams.single().category).isEqualTo("업무 자동화")
+        assertThat(teams.single().workflowVersionId).isEqualTo(snapshot.currentVersionId)
+        assertThat(teams.single().employees.map { it.agentKey }).containsExactly("faq-searcher", "faq-answer-writer")
+        assertThat(teams.single().employees).allSatisfy { employee ->
+            assertThat(employee.department).isEqualTo(teams.single().teamName)
+            assertThat(employee.agentMarkdown).contains("## Role")
+            assertThat(employee.guideMarkdown).isNotBlank()
+        }
+        assertThat(agents.list(owner.id).filter { it.department == teams.single().teamName }).hasSize(2)
+        assertThat(service.activate(owner.id, workflowId, "activation-$suffix").status).isEqualTo(WorkflowStatus.ACTIVE)
+        assertThat(service.activeAutomationTeams(owner.id).single().employees).hasSize(2)
+        assertThat(service.activeAutomationTeams(stranger.id)).isEmpty()
 
         val stopped = service.stop(owner.id, workflowId, "workflow-stop-$suffix")
         assertThat(stopped.conversationId).isEqualTo(conversationId)
@@ -117,38 +171,76 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
-    fun `writing automation partial answer keeps only contextual unanswered questions`() {
+    fun `writing automation with scheduled news is rejected instead of becoming FAQ workflow`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-$suffix@example.com", "password123", "writing_$suffix", "글쓰기 답변 검증"))
-        var snapshot = service.createConversation(owner.id, "writing-conversation-$suffix")
+        val snapshot = service.createConversation(owner.id, "writing-conversation-$suffix")
 
-        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "최신 토픽으로 글쓰기 자동화하고 싶어요.", "writing-vague-$suffix")
-        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "매일 아침 9시 참고는 최신뉴스 결과는 워드로", "writing-partial-$suffix")
-
-        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
-        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("knowledgeSource", "approvalPolicy", "destination")
-        assertThat(snapshot.clarificationQuestions.map { it.question }).containsExactly(
-            "최신 뉴스는 어느 사이트, RSS 또는 뉴스 서비스에서 수집할까요?",
-            "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?",
-            "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?",
-        )
+        assertThatThrownBy {
+            service.sendMessage(
+                owner.id,
+                snapshot.conversationId,
+                "내 슬랙으로 매일 8시에 주식 경제 보고서를 보내줘. 네이버 경제뉴스를 수집하고 담당자 승인 후 로컬 저장해줘.",
+                "writing-message-$suffix",
+            )
+        }
+            .isInstanceOf(BadRequestException::class.java)
+            .hasMessageContaining("정기 예약 실행")
+            .hasMessageContaining("외부 뉴스 수집")
     }
 
     @Test
-    fun `unsupported developer automation is not compiled into a fake harness`() {
+    fun `legacy compiled workflow with unsupported requirement cannot start simulation`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("legacy-$suffix@example.com", "password123", "legacy_$suffix", "기존 설계 검증"))
+        var snapshot = service.createConversation(owner.id, "legacy-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다.",
+            "legacy-message-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "legacy-design-$suffix")
+        val requirement = requirements.findByConversationId(snapshot.conversationId)!!
+        requirement.structuredJson = requirement.structuredJson + mapOf(
+            "objective" to "네이버 경제뉴스 보고서를 매일 8시에 Slack으로 전송한다.",
+            "trigger" to "오전 8시 정기 실행",
+            "inputs" to listOf("네이버 경제뉴스"),
+            "outputs" to listOf("Slack 보고서"),
+            "steps" to listOf("뉴스 수집", "보고서 작성", "Slack 전송"),
+            "decisions" to listOf("포함할 뉴스 선택"),
+            "exceptions" to listOf("뉴스 수집 실패"),
+            "humanApprovalRequired" to false,
+        )
+        requirements.saveAndFlush(requirement)
+
+        val invalidSnapshot = service.snapshot(owner.id, snapshot.conversationId)
+        assertThat(invalidSnapshot.requirement?.objective).isEqualTo("네이버 경제뉴스 보고서를 매일 8시에 Slack으로 전송한다.")
+        assertThat(invalidSnapshot.validation?.valid).isFalse()
+        assertThat(invalidSnapshot.validation?.issues?.map { it.code }).contains("MEANING_REQUIREMENT_DROPPED", "MEANING_UNREQUESTED_INTEGRATION")
+
+        assertThatThrownBy {
+            service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "실행"), "legacy-run-$suffix")
+        }
+            .isInstanceOf(BadRequestException::class.java)
+            .hasMessageContaining("정기 예약 실행")
+            .hasMessageContaining("외부 뉴스 수집")
+    }
+
+    @Test
+    fun `unsupported developer automation is rejected before fake harness compilation`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("unsupported-$suffix@example.com", "password123", "unsupported_$suffix", "범위 검증"))
         var snapshot = service.createConversation(owner.id, "unsupported-conversation-$suffix")
-        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "나는 백엔드 개발자인데 커밋까지 자동화해줘", "unsupported-message-$suffix")
-        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
-        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("inbound", "knowledgeSource", "approvalPolicy", "destination")
-        assertThat(snapshot.proposal).isNull()
-        assertThat(snapshot.graph).isNull()
+        assertThatThrownBy {
+            service.sendMessage(owner.id, snapshot.conversationId, "나는 백엔드 개발자인데 커밋까지 자동화해줘", "unsupported-message-$suffix")
+        }
+            .isInstanceOf(BadRequestException::class.java)
+            .hasMessageContaining("개발 도구 쓰기·배포")
     }
 
     @ParameterizedTest(name = "모호한 요청은 설계하지 않고 질문한다 - {0}")
     @ValueSource(strings = [
-        "글쓰기를 자동화하고 싶어요.",
         "고객 문의 답변하는 일을 자동화하고 싶어요.",
         "매일 하는 보고 업무를 줄이고 싶어요.",
         "회의 정리를 자동으로 해주세요.",

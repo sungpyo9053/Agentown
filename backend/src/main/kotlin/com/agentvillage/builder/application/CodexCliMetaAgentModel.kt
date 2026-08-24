@@ -58,12 +58,18 @@ class CodexCliMetaAgentModel(
         다음 역할을 내부적으로 순서대로 수행하고 최종 결과만 제공된 JSON Schema에 맞춰 반환한다.
         1. Business Process Analyst: 목적, 현재 단계, 입출력, 판단, 예외를 추출한다.
         2. Requirement Clarifier: 자동화에 반드시 필요하지만 누락된 정보만 질문한다.
-        3. Automation Architect: 자동화 범위, 사람 승인 지점, Mock 연동, 실패 처리를 설계한다.
-        4. Agent Designer: 자연어 판단 단계인 FAQ 검색과 답변 초안 작성에 대해서만 Agent Definition을 정확히 2개 만든다. key는 각각 faq-searcher, faq-answer-writer를 사용한다. 트리거, 승인, 게시, 라우팅, 분류를 AI Agent로 만들지 않는다.
-        5. Guide Designer: 채널, 데이터베이스, 승인자 설정 가이드를 만든다.
+        3. Automation Architect: 요구사항과 의미가 같은 실행 그래프 graphPlan, 사람 승인 지점, Mock 연동, 실패 처리를 설계한다.
+        4. Agent Designer: graphPlan의 자연어 판단 단계에 필요한 Agent Definition을 1~5개 만든다. 트리거, 승인, 외부 전송 자체를 AI Agent로 만들지 않는다.
+        5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
-        허용된 MVP 시나리오는 Slack 문의 수신 -> Notion FAQ 검색 -> AI 답변 초안 -> 사람 승인 -> Slack 스레드 답변이다.
-        외부 연동 명칭은 반드시 Slack Mock과 Notion Mock으로 표현한다.
+        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, text.input, condition.branch, ai.classify, ai.generate,
+        human.approval, slack.new_message.mock, slack.reply.mock, notion.search.mock, notion.read_page.mock뿐이다.
+        condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
+        human.approval에는 approver, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.
+        AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
+        외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
+        사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
+        사용자 요구사항을 지원되는 다른 시나리오로 바꾸거나 누락하지 않는다.
         Python, JavaScript, Shell, 임의 코드, 패키지 설치, 실제 외부 전송을 제안하지 않는다.
         이미 제공된 정보를 다시 질문하지 않는다. 정보가 부족하면 최소 질문만 clarificationQuestions에 넣는다.
         특히 문의 유입 위치, 답변 자료 위치, 승인 여부, 결과 전송 위치가 누락됐는지 확인한다.

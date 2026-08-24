@@ -36,9 +36,10 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.TEXT_INPUT) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.CONDITION_BRANCH, requiredConfig = setOf("expression")) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.AI_CLASSIFY, requiredConfig = setOf("categories")) { config, input -> NodeSimulation(input + ("category" to (config["categories"] as? List<*>)?.firstOrNull().toString())) },
-        SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { _, input ->
-            val faq = input["notionResult"]?.toString() ?: "관련 FAQ를 찾지 못했습니다."
-            NodeSimulation(input + ("draft" to "문의 주셔서 감사합니다. $faq"))
+        SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { config, input ->
+            val source = input["notionResult"] ?: input["text"] ?: input["message"] ?: input.values.firstOrNull()?.toString().orEmpty()
+            val generated = "[Mock] ${config["instruction"]}: $source"
+            NodeSimulation(input + mapOf("result" to generated, "draft" to generated))
         },
         SimpleNodeContract(NodeType.HUMAN_APPROVAL, requiredConfig = setOf("approver")) { _, input -> NodeSimulation(input, pauses = true) },
         SimpleNodeContract(NodeType.SLACK_NEW_MESSAGE_MOCK, setOf("slack:messages:read")) { _, input -> NodeSimulation(input + ("message" to (input["message"] ?: ""))) },
@@ -80,8 +81,143 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                 issues += ValidationIssue("WRITE_REQUIRES_APPROVAL", "Slack 답변 전 모든 경로에 담당자 승인이 필요합니다.", reply.id)
             }
         }
+        graph.nodes.filter { it.nodeType == NodeType.CONDITION_BRANCH.wireName }.forEach { branch ->
+            val outgoing = graph.edges.filter { it.source == branch.id }
+            if (outgoing.isEmpty() || outgoing.any { parseBranchCondition(it.condition) == null }) {
+                issues += ValidationIssue("INVALID_BRANCH_EDGE", "조건 분기의 edge condition은 field=value 형식이어야 합니다.", branch.id)
+            }
+            if (outgoing.map { it.condition }.distinct().size != outgoing.size) {
+                issues += ValidationIssue("DUPLICATE_BRANCH_CONDITION", "조건 분기의 edge condition이 중복됩니다.", branch.id)
+            }
+        }
         return WorkflowValidationResult(issues.isEmpty(), graphHash = hash(graph), issues = issues)
     }
+
+    fun validate(
+        graph: WorkflowGraph,
+        requirement: AutomationRequirement,
+        proposal: AutomationProposal,
+        agents: List<AgentDefinition>,
+        sourceInstruction: String? = null,
+    ): WorkflowValidationResult {
+        val structural = validate(graph)
+        val issues = structural.issues +
+            sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else requirementFidelityIssues(source, requirement) } +
+            semanticIssues(graph, requirement, proposal, agents)
+        return structural.copy(valid = issues.isEmpty(), issues = issues)
+    }
+
+    private fun requirementFidelityIssues(sourceInstruction: String, requirement: AutomationRequirement): List<ValidationIssue> {
+        val source = sourceInstruction.lowercase()
+        val structured = listOf(
+            requirement.objective,
+            requirement.trigger,
+            requirement.inputs.joinToString(" "),
+            requirement.outputs.joinToString(" "),
+            requirement.steps.joinToString(" "),
+            requirement.decisions.joinToString(" "),
+        ).joinToString(" ").lowercase()
+        val issues = mutableListOf<ValidationIssue>()
+
+        fun compareFacet(label: String, sourceHas: Boolean, structuredHas: Boolean, rejectAddition: Boolean = false) {
+            if (sourceHas && !structuredHas) issues += ValidationIssue("MEANING_REQUIREMENT_DROPPED", "사용자 요청의 '$label' 의미가 구조화 요구사항에서 누락되었습니다.")
+            if (rejectAddition && !sourceHas && structuredHas) issues += ValidationIssue("MEANING_REQUIREMENT_ADDED", "사용자가 요청하지 않은 '$label' 의미가 구조화 요구사항에 추가되었습니다.")
+        }
+
+        compareFacet("Slack", containsAny(source, "slack", "슬랙"), containsAny(structured, "slack", "슬랙"), rejectAddition = true)
+        compareFacet("Notion/FAQ", containsAny(source, "notion", "노션", "faq"), containsAny(structured, "notion", "노션", "faq"), rejectAddition = true)
+        compareFacet("분류", containsAny(source, "분류", "카테고리", "classify", "classification"), containsAny(structured, "분류", "카테고리", "classify", "classification"))
+        compareFacet("생성", requestsGeneration(source), requestsGeneration(structured))
+        val sourceApproval = containsAny(source, "승인", "검토") && !containsAny(source, "승인 없이", "검토 없이", "승인 불필요")
+        compareFacet("사람 승인", sourceApproval, requirement.humanApprovalRequired)
+        return issues
+    }
+
+    private fun semanticIssues(
+        graph: WorkflowGraph,
+        requirement: AutomationRequirement,
+        proposal: AutomationProposal,
+        agents: List<AgentDefinition>,
+    ): List<ValidationIssue> {
+        val issues = mutableListOf<ValidationIssue>()
+        val trigger = requirement.trigger.lowercase()
+        val requested = listOf(
+            requirement.objective,
+            requirement.trigger,
+            requirement.inputs.joinToString(" "),
+            requirement.outputs.joinToString(" "),
+            requirement.steps.joinToString(" "),
+            requirement.decisions.joinToString(" "),
+        ).joinToString(" ").lowercase()
+        val outputAndSteps = listOf(requirement.objective, requirement.outputs.joinToString(" "), requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
+        val types = graph.nodes.map { it.nodeType }.toSet()
+        val hasSlackTrigger = NodeType.SLACK_NEW_MESSAGE_MOCK.wireName in types
+        val hasSlackReply = NodeType.SLACK_REPLY_MOCK.wireName in types
+        val hasNotion = types.any { it == NodeType.NOTION_SEARCH_MOCK.wireName || it == NodeType.NOTION_READ_PAGE_MOCK.wireName }
+        val hasApproval = NodeType.HUMAN_APPROVAL.wireName in types
+        val hasClassification = NodeType.AI_CLASSIFY.wireName in types
+        val hasGeneration = NodeType.AI_GENERATE.wireName in types
+        val hasManualTrigger = types.any { it == NodeType.MANUAL_TRIGGER.wireName || it == NodeType.TEXT_INPUT.wireName }
+        val requestsSlack = containsAny(requested, "slack", "슬랙")
+        val requestsNotion = containsAny(requested, "notion", "노션", "faq", "데이터베이스")
+        val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
+        val requestsSlackOutbound = requestsSlack && containsAny(outputAndSteps, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
+        val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
+        val requestsClassification = containsAny(requested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
+        val requestsGeneration = if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
+
+        fun mismatch(code: String, message: String, nodeId: String? = null) {
+            issues += ValidationIssue(code, message, nodeId)
+        }
+
+        if (requestsSlackInbound && !hasSlackTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 Slack 시작 조건이 그래프에 없습니다.")
+        if (requestsSlackOutbound && !hasSlackReply) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Slack 결과 전달 단계가 그래프에 없습니다.")
+        if (requestsNotion && !hasNotion) mismatch("MEANING_SOURCE_MISSING", "요구사항의 Notion/FAQ 자료 조회 단계가 그래프에 없습니다.")
+        if (requirement.humanApprovalRequired && !hasApproval) mismatch("MEANING_APPROVAL_MISSING", "요구사항의 사람 승인 단계가 그래프에 없습니다.")
+        if (!requirement.humanApprovalRequired && hasApproval) mismatch("MEANING_UNREQUESTED_APPROVAL", "요구하지 않은 사람 승인 단계가 그래프에 추가되었습니다.")
+        if (requestsManualTrigger && !hasManualTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 수동 시작 조건이 그래프에 없습니다.")
+        if (requestsClassification && !hasClassification) mismatch("MEANING_DECISION_MISSING", "요구사항의 분류 판단 단계가 그래프에 없습니다.")
+        if (requestsGeneration && !hasGeneration) mismatch("MEANING_GENERATION_MISSING", "요구사항의 생성 단계가 그래프에 없습니다.")
+        if (!requestsSlack && (hasSlackTrigger || hasSlackReply)) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Slack 연동이 그래프에 추가되었습니다.")
+        if (!requestsNotion && hasNotion) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Notion/FAQ 연동이 그래프에 추가되었습니다.")
+        if (!requestsClassification && hasClassification) mismatch("MEANING_UNREQUESTED_DECISION", "요구하지 않은 분류 단계가 그래프에 추가되었습니다.")
+        if (!requestsGeneration && hasGeneration) mismatch("MEANING_UNREQUESTED_GENERATION", "요구하지 않은 생성 단계가 그래프에 추가되었습니다.")
+
+        val agentKeys = agents.map { it.key }.toSet()
+        val referencedAgentKeys = graph.nodes.mapNotNull { it.config["agentKey"]?.toString()?.takeIf(String::isNotBlank) }.toSet()
+        graph.nodes.forEach { node ->
+            val agentKey = node.config["agentKey"]?.toString()
+            if (agentKey != null && agentKey !in agentKeys) mismatch("MEANING_UNKNOWN_AGENT", "그래프가 존재하지 않는 Agent '$agentKey'를 참조합니다.", node.id)
+            if (node.nodeType in setOf(NodeType.AI_CLASSIFY.wireName, NodeType.AI_GENERATE.wireName) && agentKey.isNullOrBlank()) {
+                mismatch("MEANING_AGENT_MISSING", "AI 노드에 담당 Agent가 연결되지 않았습니다.", node.id)
+            }
+        }
+        agents.filter { it.key !in referencedAgentKeys }.forEach { mismatch("MEANING_UNUSED_AGENT", "Agent '${it.key}'가 실행 그래프에 연결되지 않았습니다.") }
+
+        val proposalIntegrations = proposal.integrations.joinToString(" ").lowercase()
+        if ((hasSlackTrigger || hasSlackReply) && !containsAny(proposalIntegrations, "slack", "슬랙")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 Slack이 없습니다.")
+        if (hasNotion && !containsAny(proposalIntegrations, "notion", "노션")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 Notion이 없습니다.")
+        return issues
+    }
+
+    private fun containsAny(value: String, vararg candidates: String) = candidates.any(value::contains)
+
+    private fun parseBranchCondition(value: String): Pair<String, String>? {
+        val match = Regex("^([A-Za-z][A-Za-z0-9]*)=(true|false|[A-Za-z0-9_-]+)$").matchEntire(value.trim()) ?: return null
+        return match.groupValues[1] to match.groupValues[2]
+    }
+
+    private fun requestsGeneration(value: String) = containsAny(
+        value,
+        "초안", "답변", "요약", "작성", "생성", "분석", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "릴리스 노트",
+        "draft", "answer", "summary", "generate", "write", "analyze", "extract", "translate", "proofread", "report", "release note",
+    )
+
+    private fun requestsExplicitGeneration(value: String) = containsAny(
+        value,
+        "초안", "답변", "요약", "작성", "생성", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "릴리스 노트",
+        "draft", "answer", "summary", "generate", "write", "extract", "translate", "proofread", "report", "release note",
+    )
 
     private fun hasCycle(graph: WorkflowGraph): Boolean {
         val edges = graph.edges.groupBy { it.source }

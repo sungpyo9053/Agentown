@@ -44,7 +44,7 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
-    fun `detailed result normalizes model role wording into two safe agents`() {
+    fun `detailed result preserves model designed agents instead of forcing FAQ roles`() {
         val mapper = jacksonObjectMapper()
         val deterministic = DeterministicMockMetaAgentModel(mapper)
         val model = mock<MetaAgentModel>()
@@ -67,7 +67,8 @@ class MetaAgentPipelineSafetyTest {
         val result = pipeline.generateDesign(context, "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다")
 
         assertThat(result.clarificationQuestions).isEmpty()
-        assertThat(result.agentDefinitions.map { it.key }).containsExactly("faq-searcher", "faq-answer-writer")
+        assertThat(result.agentDefinitions.map { it.key }).containsExactly("classifier")
+        assertThat(result.agentDefinitions.single().role).isEqualTo("문의 의도를 분류한다")
     }
 
     @Test
@@ -84,5 +85,27 @@ class MetaAgentPipelineSafetyTest {
         assertThatThrownBy { pipeline.generateDesign(context, "Slack 문의를 Notion FAQ로 처리") }
             .isInstanceOf(BadRequestException::class.java)
             .hasMessageContaining("승인된 스키마")
+    }
+
+    @Test
+    fun `scheduled Naver news request is rejected instead of becoming Slack FAQ mock`() {
+        val mapper = jacksonObjectMapper()
+        val deterministic = DeterministicMockMetaAgentModel(mapper)
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(deterministic, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        assertThatThrownBy {
+            pipeline.generateDesign(
+                context,
+                "내 슬랙으로 매일 8시에 주식 경제 보고서를 보내줘. 네이버 경제뉴스를 수집하고 담당자 승인 후 로컬 저장해줘.",
+            )
+        }
+            .isInstanceOf(BadRequestException::class.java)
+            .hasMessageContaining("정기 예약 실행")
+            .hasMessageContaining("외부 뉴스 수집")
+            .hasMessageContaining("로컬 파일 저장")
+            .hasMessageContaining("요청을 거절하거나 다른 자동화로 바꾸지 않았으며")
     }
 }

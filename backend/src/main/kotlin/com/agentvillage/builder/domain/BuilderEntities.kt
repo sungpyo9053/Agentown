@@ -164,3 +164,24 @@ class BuilderUsageRecord(
     @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
     @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
 )
+
+@Entity @Table(name = "builder_automation_teams")
+class BuilderAutomationTeam(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "workflow_version_id", nullable = false, unique = true) val workflowVersionId: UUID,
+    @Column(nullable = false, length = 80) val name: String,
+    @Column(nullable = false, length = 40) val category: String = "업무 자동화",
+) : AuditedEntity()
+
+@Entity @Table(name = "builder_automation_team_members")
+class BuilderAutomationTeamMember(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "team_id", nullable = false) val teamId: UUID,
+    @Column(name = "agent_id", nullable = false, unique = true) val agentId: UUID,
+    @Column(name = "agent_key", nullable = false, length = 60) val agentKey: String,
+    @Column(name = "sequence_no", nullable = false) val sequenceNo: Int,
+    @Column(name = "agent_markdown", nullable = false, columnDefinition = "text") val agentMarkdown: String,
+    @Column(name = "guide_markdown", nullable = false, columnDefinition = "text") val guideMarkdown: String,
+) : AuditedEntity()

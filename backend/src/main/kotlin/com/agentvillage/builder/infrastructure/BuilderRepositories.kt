@@ -45,3 +45,10 @@ interface BuilderGenerationJobRepository : JpaRepository<BuilderGenerationJob, U
 interface BuilderUsageRecordRepository : JpaRepository<BuilderUsageRecord, UUID> {
     fun findByOwnerIdAndIdempotencyKey(ownerId: UUID, idempotencyKey: String): BuilderUsageRecord?
 }
+interface BuilderAutomationTeamRepository : JpaRepository<BuilderAutomationTeam, UUID> {
+    fun findByWorkflowVersionId(workflowVersionId: UUID): BuilderAutomationTeam?
+    fun findAllByWorkspaceIdOrderByCreatedAtDesc(workspaceId: UUID): List<BuilderAutomationTeam>
+}
+interface BuilderAutomationTeamMemberRepository : JpaRepository<BuilderAutomationTeamMember, UUID> {
+    fun findAllByTeamIdOrderBySequenceNo(teamId: UUID): List<BuilderAutomationTeamMember>
+}

@@ -1,0 +1,51 @@
+id	category	source_url	concrete_expected	min_agents	concrete_instruction	vague_instruction
+TC01	회의록 요약	https://www.make.com/en/templates	DESIGN	1	수동으로 입력한 회의록을 핵심 결정사항과 할 일로 요약해서 화면에 표시하고 승인 없이 종료해줘.	회의 정리 업무를 자동화해줘.
+TC02	고객 피드백 분류	https://zapier.com/blog/business-automation/	DESIGN	1	수동으로 입력한 고객 피드백을 칭찬, 문의, 불만으로 분류해서 결과를 화면에 표시하고 승인 없이 종료해줘.	고객 피드백 처리를 자동화해줘.
+TC03	설문 주제 분석	https://zapier.com/blog/business-process-automation-examples/	DESIGN	1	입력으로 제공한 설문 답변에서 반복 주제와 개선 요구를 분석해 화면에 표시하고 승인 없이 종료해줘.	설문 분석을 자동화하고 싶어.
+TC04	이력서 요약	https://www.make.com/en/templates	DESIGN	1	수동으로 제공한 이력서 내용을 경력, 기술, 확인 필요 항목으로 요약하고 채용 담당자 승인 후 화면에 표시해줘.	채용 서류 검토를 자동화해줘.
+TC05	계약 조항 검토	https://learn.microsoft.com/en-us/power-automate/approvals-howto	DESIGN	2	수동으로 입력한 계약 조항을 분석 담당과 검토 담당이 차례로 분석하고 위험 조항 초안을 만든 뒤 법무 담당자 승인 후 화면에 표시해줘.	계약 검토 업무를 줄여줘.
+TC06	송장 정보 추출	https://www.make.com/en/templates	DESIGN	1	수동으로 입력한 송장 텍스트에서 공급자, 금액, 지급일을 추출해 화면에 표시하고 승인 없이 종료해줘.	송장 처리를 자동화해줘.
+TC07	경비 분류	https://www.make.com/en/templates	DESIGN	1	입력으로 제공한 경비 내역을 교통, 식비, 소프트웨어, 기타로 분류해 화면에 표시하고 승인 없이 종료해줘.	경비 업무를 자동화해줘.
+TC08	리드 자격 판정	https://www.hubspot.com/products/workflow-automation-guide	DESIGN	1	수동으로 입력한 상담 신청 내용을 고의도, 검토, 부적합 리드로 분류해 근거와 함께 화면에 표시하고 승인 없이 종료해줘.	영업 리드 처리를 자동화해줘.
+TC09	영업 통화 요약	https://zapier.com/blog/business-process-automation-examples/	DESIGN	1	붙여 넣은 영업 통화 기록을 고객 요구, 예산, 일정, 후속 조치로 요약해 화면에 표시하고 승인 없이 종료해줘.	영업 통화를 정리해줘.
+TC10	제안서 초안	https://www.hubspot.com/products/workflow-automation-guide	DESIGN	2	입력으로 제공한 고객 브리프를 분석 담당과 작성 담당이 차례로 처리해 제안서 초안을 만들고 영업 책임자 승인 후 화면에 표시해줘.	제안서 업무를 자동화해줘.
+TC11	채용 공고 작성	https://zapier.com/blog/business-process-automation-examples/	DESIGN	1	수동으로 제공한 직무 요건을 바탕으로 채용 공고 초안을 작성해 인사 담당자 승인 후 화면에 표시해줘.	채용 공고를 자동으로 만들어줘.
+TC12	신입사원 FAQ	https://asana.com/resources/asana-on-asana-employee-onboarding	DESIGN	2	Slack 신입사원 질문을 Notion 온보딩 FAQ에서 찾고 답변 초안을 만든 뒤 인사 담당자 승인 후 원래 Slack 스레드에 Mock 회신해줘.	신입사원 안내를 자동화해줘.
+TC13	IT 헬프데스크 FAQ	https://slack.com/resources/using-slack/slack-for-it-security-adoption-guide	DESIGN	2	Slack IT 문의를 Notion 기술지원 FAQ에서 찾아 해결 답변 초안을 만들고 IT 담당자 승인 후 원래 Slack 스레드에 Mock 회신해줘.	IT 문의 대응을 자동화해줘.
+TC14	고객지원 FAQ	https://zapier.com/blog/business-process-automation-examples/	DESIGN	2	Slack 고객 문의를 Notion 고객 FAQ에서 찾고 답변 초안을 만든 뒤 지원팀장 승인 후 원래 Slack 스레드에 Mock 회신해줘.	고객 문의 답변을 자동화해줘.
+TC15	장애 보고서 초안	https://slack.com/resources/using-slack/slack-for-it-security-adoption-guide	DESIGN	2	수동으로 입력한 장애 기록을 분석 담당과 작성 담당이 차례로 처리해 원인, 영향, 후속 조치 보고서 초안을 만들고 운영 책임자 승인 후 화면에 표시해줘.	장애 보고 업무를 자동화해줘.
+TC16	프로젝트 상태 보고	https://zapier.com/blog/zapier-automation-examples/	DESIGN	2	입력으로 제공한 프로젝트 업데이트를 분석 담당과 작성 담당이 처리해 진행률, 위험, 다음 행동 보고서 초안을 만들고 PM 승인 후 화면에 표시해줘.	프로젝트 보고를 자동화해줘.
+TC17	리뷰 감성 분류	https://zapier.com/blog/business-automation/	DESIGN	1	수동으로 입력한 제품 리뷰를 긍정, 중립, 부정으로 분류하고 핵심 근거를 화면에 표시한 뒤 승인 없이 종료해줘.	상품 리뷰를 분석해줘.
+TC18	문서 번역	https://www.make.com/en/templates	DESIGN	1	수동으로 입력한 영어 문장을 한국어로 번역해 화면에 표시하고 승인 없이 종료해줘.	번역 업무를 자동화해줘.
+TC19	문장 교정	https://www.make.com/en/templates	DESIGN	1	입력으로 제공한 한국어 문장을 맞춤법과 문체 기준으로 교정해 변경 이유와 함께 화면에 표시하고 승인 없이 종료해줘.	문서 교정을 자동화해줘.
+TC20	SOP 초안	https://zapier.com/blog/process-automation/	DESIGN	2	수동으로 제공한 작업 메모를 분석 담당과 작성 담당이 처리해 단계별 SOP 초안을 만들고 운영 담당자 승인 후 화면에 표시해줘.	업무 매뉴얼 작성을 자동화해줘.
+TC21	위험 등록부 작성	https://asana.com/resources/category/workflow-automation	DESIGN	2	입력으로 제공한 프로젝트 메모를 분석 담당과 검토 담당이 처리해 위험, 영향, 대응책 목록을 만들고 PM 승인 후 화면에 표시해줘.	프로젝트 위험 관리를 자동화해줘.
+TC22	자료 종합 요약	https://zapier.com/blog/ai-workflows/	DESIGN	2	수동으로 붙여 넣은 세 개의 자료를 분석 담당과 작성 담당이 차례로 처리해 공통점과 차이점을 요약하고 화면에 표시한 뒤 승인 없이 종료해줘.	자료 조사와 요약을 자동화해줘.
+TC23	이메일 답장 초안	https://learn.microsoft.com/en-us/power-automate/email-top-scenarios	DESIGN	1	수동으로 입력한 고객 이메일과 정책 문구를 바탕으로 답장 초안만 작성해 화면에 표시하고 담당자 승인 후 종료하되 실제 이메일은 보내지 마.	이메일 대응을 자동화해줘.
+TC24	소셜 문구 초안	https://www.make.com/en/templates	DESIGN	1	입력으로 제공한 캠페인 브리프를 바탕으로 소셜 게시물 문구 초안을 작성해 마케팅 담당자 승인 후 화면에 표시하고 실제 게시하지 마.	소셜 콘텐츠 업무를 자동화해줘.
+TC25	릴리스 노트 작성	https://zapier.com/blog/zapier-automation-examples/	DESIGN	2	수동으로 입력한 변경 목록을 분석 담당과 작성 담당이 처리해 사용자용 릴리스 노트 초안을 만들고 제품 담당자 승인 후 화면에 표시해줘.	릴리스 노트를 자동화해줘.
+TC26	네이버 뉴스 다이제스트	https://zapier.com/blog/ai-workflows/	REJECT	0	매일 오전 8시에 네이버 경제뉴스를 수집해 주식 보고서를 만들고 Slack 채널에 전송해줘.	뉴스 보고 업무를 자동화해줘.
+TC27	Gmail 첨부 저장	https://www.make.com/en/templates	REJECT	0	Gmail로 새 메일이 오면 첨부파일을 Google Drive 고객 폴더에 자동 저장해줘.	메일 첨부 관리를 자동화해줘.
+TC28	Forms 응답 Sheets 기록	https://learn.microsoft.com/en-us/power-automate/forms/popular-scenarios	REJECT	0	Microsoft Forms 응답이 제출되면 Google Sheets에 새 행으로 기록해줘.	설문 응답 처리를 자동화해줘.
+TC29	Calendar 일정 생성	https://learn.microsoft.com/en-us/power-automate/email-top-scenarios	REJECT	0	상담 신청이 들어오면 Google Calendar에 미팅을 만들고 참석자를 초대해줘.	일정 예약을 자동화해줘.
+TC30	CRM 리드 업데이트	https://www.hubspot.com/products/workflow-automation-guide	REJECT	0	웹 폼 리드가 들어오면 HubSpot 연락처를 만들고 담당 영업사원에게 배정해줘.	CRM 리드 관리를 자동화해줘.
+TC31	Jira 이슈 생성	https://slack.com/resources/using-slack/slack-for-it-security-adoption-guide	REJECT	0	Slack 장애 신고 메시지를 받으면 Jira에 우선순위 높은 이슈를 생성해줘.	개발 이슈 접수를 자동화해줘.
+TC32	GitHub 커밋 배포	https://www.make.com/en/templates	REJECT	0	코드 변경 요청을 받으면 GitHub에 커밋하고 운영 서버까지 자동 배포해줘.	개발 배포 업무를 자동화해줘.
+TC33	QuickBooks 송장 생성	https://zapier.com/blog/business-process-automation-examples/	REJECT	0	거래가 성사되면 QuickBooks 송장을 생성하고 고객에게 이메일로 보내줘.	청구 업무를 자동화해줘.
+TC34	Shopify 주문 알림	https://www.make.com/en/templates	REJECT	0	Shopify 새 주문이 생기면 주문 내용을 Slack 물류 채널에 실제 전송해줘.	주문 알림을 자동화해줘.
+TC35	재고 동기화	https://www.make.com/en/templates	REJECT	0	Shopify와 ERP의 상품 재고 수량을 양방향으로 자동 동기화해줘.	재고 관리를 자동화해줘.
+TC36	소셜 자동 게시	https://zapier.com/blog/business-process-automation-examples/	REJECT	0	블로그가 발행되면 Instagram, LinkedIn, X에 홍보 게시물을 자동 게시해줘.	콘텐츠 홍보를 자동화해줘.
+TC37	WhatsApp 자동 답변	https://www.make.com/en/templates	REJECT	0	WhatsApp Business에 새 문의가 오면 AI 답변을 실제로 자동 전송해줘.	메신저 문의 대응을 자동화해줘.
+TC38	Telegram 메시지 기록	https://www.make.com/en/templates	REJECT	0	Telegram 채널의 새 메시지를 Google Sheets에 자동 기록해줘.	채팅 기록을 자동화해줘.
+TC39	데이터베이스 ETL	https://n8n.io/workflows/	REJECT	0	Postgres 주문 데이터를 매일 MySQL 분석 테이블로 변환 적재해줘.	데이터 이관을 자동화해줘.
+TC40	경쟁사 웹 스크래핑	https://n8n.io/workflows/	REJECT	0	경쟁사 웹사이트 가격을 매일 스크래핑해서 변동 보고서를 만들어줘.	경쟁사 조사를 자동화해줘.
+TC41	날씨 경보	https://www.make.com/en/templates	REJECT	0	기상 API에서 폭우 예보가 나오면 현장 직원에게 Slack 경보를 실제 전송해줘.	날씨 알림을 자동화해줘.
+TC42	결제 실패 후속 조치	https://www.hubspot.com/products/workflow-automation-guide	REJECT	0	Stripe 결제가 실패하면 CRM 상태를 바꾸고 고객에게 재결제 이메일을 보내줘.	결제 후속 업무를 자동화해줘.
+TC43	전자서명 계약	https://zapier.com/blog/business-automation/	REJECT	0	계약이 승인되면 DocuSign 서명 요청을 만들고 고객에게 전송해줘.	계약 체결을 자동화해줘.
+TC44	로컬 폴더 저장	https://www.make.com/en/templates	REJECT	0	완성된 보고서를 내 컴퓨터 다운로드 폴더에 Word 파일로 자동 저장해줘.	파일 정리를 자동화해줘.
+TC45	SMS 발송	https://zapier.com/blog/zapier-automation-examples/	REJECT	0	예약 하루 전에 고객에게 Twilio SMS 알림을 자동 발송해줘.	고객 알림을 자동화해줘.
+TC46	Outlook 공유메일 처리	https://learn.microsoft.com/en-us/power-automate/email-top-scenarios	REJECT	0	Outlook 공유 사서함의 문의를 분류하고 담당자 이름으로 실제 답장을 보내줘.	공유 메일 처리를 자동화해줘.
+TC47	HRIS 온보딩	https://asana.com/resources/asana-on-asana-employee-onboarding	REJECT	0	신입사원 입사 확정 시 Workday에서 정보를 가져와 Okta 계정과 Asana 업무를 생성해줘.	온보딩 준비를 자동화해줘.
+TC48	보안 계정 프로비저닝	https://slack.com/resources/using-slack/slack-for-it-security-adoption-guide	REJECT	0	승인된 접근 요청을 받으면 Okta 그룹과 AWS IAM 권한을 자동 생성해줘.	접근 권한 업무를 자동화해줘.
+TC49	데이터 백업	https://n8n.io/workflows/	REJECT	0	운영 Postgres를 매일 백업해서 S3 버킷에 업로드하고 오래된 백업을 삭제해줘.	백업 업무를 자동화해줘.
+TC50	레거시 RPA 입력	https://zapier.com/blog/business-automation/	REJECT	0	엑셀 주문 목록을 읽어 레거시 ERP 화면에 키보드로 자동 입력해줘.	반복 입력 업무를 자동화해줘.

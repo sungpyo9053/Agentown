@@ -50,7 +50,17 @@ data class AutomationProposal(
     val integrations: List<String>,
     val approvalPoints: List<String>,
     val failurePolicy: String,
+    val graphPlan: WorkflowGraphPlan? = null,
 )
+
+data class WorkflowNodePlan(
+    val id: String,
+    val nodeType: String,
+    val label: String,
+    val config: Map<String, Any?> = emptyMap(),
+)
+data class WorkflowEdgePlan(val id: String, val source: String, val target: String, val condition: String = "success")
+data class WorkflowGraphPlan(val entryNodeId: String, val nodes: List<WorkflowNodePlan>, val edges: List<WorkflowEdgePlan>)
 
 data class FieldDefinition(val name: String, val type: String, val required: Boolean, val description: String)
 

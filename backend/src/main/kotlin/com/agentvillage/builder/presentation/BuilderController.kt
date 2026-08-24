@@ -9,6 +9,13 @@ import jakarta.validation.constraints.Size
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import java.util.UUID
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import org.springframework.http.ContentDisposition
+import org.springframework.http.HttpHeaders
+import org.springframework.http.MediaType
+import org.springframework.http.ResponseEntity
 
 data class BuilderMessageRequest(@field:NotBlank @field:Size(max = 4_000) val content: String)
 data class DesignDecisionRequest(val approve: Boolean)
@@ -50,6 +57,25 @@ class BuilderController(private val service: BuilderService, private val generat
 
     @GetMapping("/workflows/{workflowId}/graph")
     fun graph(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID) = service.workflowSnapshot(user.userId, workflowId).let { mapOf("graph" to it.graph, "validation" to it.validation, "currentVersionId" to it.currentVersionId) }
+
+    @GetMapping("/workflows/{workflowId}/package")
+    fun downloadPackage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID): ResponseEntity<ByteArray> {
+        val files = service.harnessPackage(user.userId, workflowId)
+        val bytes = ByteArrayOutputStream().use { output ->
+            ZipOutputStream(output).use { zip ->
+                files.toSortedMap().forEach { (path, content) ->
+                    zip.putNextEntry(ZipEntry(path))
+                    zip.write(content.toByteArray(Charsets.UTF_8))
+                    zip.closeEntry()
+                }
+            }
+            output.toByteArray()
+        }
+        return ResponseEntity.ok()
+            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename("agentown-workflow-$workflowId.zip").build().toString())
+            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+            .body(bytes)
+    }
 
     @GetMapping("/workflows/{workflowId}/versions")
     fun versions(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID) = service.workflowSnapshot(user.userId, workflowId).versions
