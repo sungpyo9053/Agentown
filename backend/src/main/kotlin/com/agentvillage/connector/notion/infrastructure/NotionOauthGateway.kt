@@ -21,6 +21,7 @@ data class NotionOauthResult(
 
 data class NotionBot(val id: String = "", val name: String? = null, val type: String = "", val bot: Map<String, Any?>? = null)
 data class NotionSearchItem(val id: String, val objectType: String, val title: String, val url: String?)
+data class NotionCreatedPage(val id: String, val url: String?)
 
 interface NotionOauthGateway {
     fun exchange(code: String, redirectUri: String): NotionOauthResult
@@ -28,6 +29,7 @@ interface NotionOauthGateway {
     fun revoke(accessToken: String)
     fun self(accessToken: String): NotionBot
     fun search(accessToken: String, query: String, pageSize: Int): List<NotionSearchItem>
+    fun createPage(accessToken: String, parentPageId: String, title: String, paragraphs: List<String>): NotionCreatedPage
 }
 
 class NotionTokenInvalidException : RuntimeException("Notion access token is invalid")
@@ -67,6 +69,22 @@ class HttpNotionOauthGateway(
             val title = extractTitle(item).ifBlank { "제목 없음" }
             NotionSearchItem(id, objectType, title, item["url"]?.toString())
         }.orEmpty()
+    }
+
+    override fun createPage(accessToken: String, parentPageId: String, title: String, paragraphs: List<String>): NotionCreatedPage = authorized {
+        val richText: (String) -> List<Map<String, Any>> = { value -> listOf(mapOf("type" to "text", "text" to mapOf("content" to value))) }
+        val children = paragraphs.map { text ->
+            mapOf("object" to "block", "type" to "paragraph", "paragraph" to mapOf("rich_text" to richText(text)))
+        }
+        val body = mapOf(
+            "parent" to mapOf("type" to "page_id", "page_id" to parentPageId),
+            "properties" to mapOf("title" to mapOf("type" to "title", "title" to richText(title))),
+            "children" to children,
+        )
+        val response = client.post().uri("/v1/pages").header(HttpHeaders.AUTHORIZATION, "Bearer $accessToken")
+            .header("Notion-Version", apiVersion).contentType(MediaType.APPLICATION_JSON).body(body)
+            .retrieve().body(Map::class.java) as? Map<*, *> ?: error("Notion page response was empty")
+        NotionCreatedPage(response["id"]?.toString() ?: error("Notion page id was empty"), response["url"]?.toString())
     }
 
     private fun token(body: Map<String, String>): NotionOauthResult {

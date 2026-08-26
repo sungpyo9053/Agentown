@@ -121,7 +121,7 @@ export default function AutomationBuilderPage() {
 
   return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
     <div className={`mb-5 border p-4 text-sm ${notionConnection.data?.connected ? "border-green-200 bg-green-50 text-green-900" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
-      <b>실제 커넥터:</b> Notion {notionConnection.data?.connected ? "읽기 연결 완료" : notionConnection.data?.configured ? "연결 가능" : "서버 앱 설정 대기"} · Slack {slackConnection.data?.connected ? "연결 완료" : "다음 단계"}
+      <b>실제 커넥터:</b> Notion {notionConnection.data?.connected ? "읽기·승인 쓰기 연결 완료" : notionConnection.data?.configured ? "읽기·승인 쓰기 연결 가능" : "서버 앱 설정 대기"} · Slack {slackConnection.data?.connected ? "연결 완료" : "다음 단계"}
       <a href="/settings/connections" className="ml-3 font-medium underline">업무 연결 관리</a>
       <p className="mt-1 text-xs opacity-75">현재 캔버스 실행은 계속 Mock Connector만 사용하며, 실제 외부 전송은 승인·재개 단계가 배포되기 전까지 발생하지 않습니다.</p>
     </div>

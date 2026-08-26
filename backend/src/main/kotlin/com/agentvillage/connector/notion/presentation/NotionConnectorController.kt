@@ -1,6 +1,7 @@
 package com.agentvillage.connector.notion.presentation
 
 import com.agentvillage.connector.notion.application.NotionConnectorService
+import com.agentvillage.connector.notion.application.NotionPagePreviewRequest
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.beans.factory.annotation.Value
@@ -26,6 +27,14 @@ class NotionConnectorController(
     }
     @PostMapping("/{connectionId}/verify") fun verify(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable connectionId: UUID, @RequestBody(required = false) body: Map<String, String>?) =
         service.verifyRead(user.userId, connectionId, body?.get("query").orEmpty())
+    @PostMapping("/{connectionId}/page-previews")
+    fun previewPage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable connectionId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: NotionPagePreviewRequest) =
+        service.previewPage(user.userId, connectionId, key, request)
+    @PostMapping("/page-writes/{requestId}/approve")
+    fun approvePage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable requestId: UUID, @RequestHeader("Idempotency-Key") key: String) =
+        service.approvePage(user.userId, requestId, key)
+    @GetMapping("/page-writes/{requestId}")
+    fun pageWrite(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable requestId: UUID) = service.pageWrite(user.userId, requestId)
     @DeleteMapping("/{connectionId}") @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
     fun revoke(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable connectionId: UUID) = service.revoke(user.userId, connectionId)
 }

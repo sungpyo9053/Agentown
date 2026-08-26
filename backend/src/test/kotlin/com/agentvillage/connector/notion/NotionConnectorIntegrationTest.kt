@@ -9,6 +9,8 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.whenever
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.mock.mockito.MockBean
@@ -77,6 +79,73 @@ class NotionConnectorIntegrationTest : IntegrationTestSupport() {
         assertThat(stored["encrypted_access_token"].toString()).doesNotContain("fresh-access")
         assertThat(stored["encrypted_refresh_token"].toString()).doesNotContain("refresh-2")
         assertThat(stored["last_verified_at"]).isNotNull
+    }
+
+    @Test fun `page write is previewed first approved once and workspace isolated`() {
+        val owner = identity("notion-write")
+        val other = identity("notion-write-other")
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("write-access", "write-refresh", "bot-3", "notion-workspace-3", "발행 공간"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-3'", UUID::class.java)!!
+        val previewBody = """{"parentPageId":"12345678901234567890123456789012","title":"주간 개발 검증서","paragraphs":["구현 완료","회귀 테스트 통과"]}"""
+
+        val response = mvc.perform(post("/api/connectors/notion/$connectionId/page-previews").with(user(owner)).with(csrf())
+            .header("Idempotency-Key", "preview-1").contentType(MediaType.APPLICATION_JSON).content(previewBody))
+            .andExpect(status().isOk).andExpect(jsonPath("$.status").value("PREVIEWED"))
+            .andReturn().response.contentAsString
+        val requestId = UUID.fromString(com.fasterxml.jackson.databind.ObjectMapper().readTree(response)["id"].asText())
+        verify(gateway, times(0)).createPage(any(), any(), any(), any())
+
+        mvc.perform(get("/api/connectors/notion/page-writes/$requestId").with(user(other)))
+            .andExpect(status().isNotFound)
+        mvc.perform(post("/api/connectors/notion/page-writes/$requestId/approve").with(user(other)).with(csrf()).header("Idempotency-Key", "approve-other"))
+            .andExpect(status().isNotFound)
+
+        whenever(gateway.createPage("write-access", "12345678901234567890123456789012", "주간 개발 검증서", listOf("구현 완료", "회귀 테스트 통과")))
+            .thenReturn(NotionCreatedPage("created-page-1", "https://notion.so/created-page-1"))
+        repeat(2) {
+            mvc.perform(post("/api/connectors/notion/page-writes/$requestId/approve").with(user(owner)).with(csrf()).header("Idempotency-Key", "approve-1"))
+                .andExpect(status().isOk).andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.notionPageId").value("created-page-1"))
+        }
+        verify(gateway, times(1)).createPage(any(), any(), any(), any())
+
+        mvc.perform(post("/api/connectors/notion/$connectionId/page-previews").with(user(owner)).with(csrf())
+            .header("Idempotency-Key", "preview-1").contentType(MediaType.APPLICATION_JSON).content(previewBody))
+            .andExpect(status().isOk).andExpect(jsonPath("$.id").value(requestId.toString()))
+    }
+
+    @Test fun `invalid page preview is rejected without external write`() {
+        val owner = identity("notion-invalid-write")
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("access", null, "bot-4", "notion-workspace-4", "검증 공간"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-4'", UUID::class.java)!!
+        mvc.perform(post("/api/connectors/notion/$connectionId/page-previews").with(user(owner)).with(csrf())
+            .header("Idempotency-Key", "invalid-preview").contentType(MediaType.APPLICATION_JSON)
+            .content("""{"parentPageId":"bad","title":"","paragraphs":[]}"""))
+            .andExpect(status().isBadRequest)
+        verify(gateway, times(0)).createPage(any(), any(), any(), any())
+    }
+
+    @Test fun `provider write failure is persisted for analysis`() {
+        val owner = identity("notion-failed-write")
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("failed-access", null, "bot-5", "notion-workspace-5", "장애 검증"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-5'", UUID::class.java)!!
+        val response = mvc.perform(post("/api/connectors/notion/$connectionId/page-previews").with(user(owner)).with(csrf())
+            .header("Idempotency-Key", "failed-preview").contentType(MediaType.APPLICATION_JSON)
+            .content("""{"parentPageId":"12345678901234567890123456789012","title":"실패 기록","paragraphs":["발행 실패를 기록합니다."]}"""))
+            .andExpect(status().isOk).andReturn().response.contentAsString
+        val requestId = UUID.fromString(com.fasterxml.jackson.databind.ObjectMapper().readTree(response)["id"].asText())
+        whenever(gateway.createPage(any(), any(), any(), any())).thenThrow(IllegalStateException("provider unavailable"))
+
+        mvc.perform(post("/api/connectors/notion/page-writes/$requestId/approve").with(user(owner)).with(csrf()).header("Idempotency-Key", "failed-approval"))
+            .andExpect(status().isOk).andExpect(jsonPath("$.status").value("FAILED"))
+            .andExpect(jsonPath("$.failureCode").value("NOTION_PAGE_CREATE_FAILED"))
+        val stored = jdbc.queryForMap("select status, failure_code, failure_message from notion_page_write_requests where id=?", requestId)
+        assertThat(stored["status"]).isEqualTo("FAILED")
+        assertThat(stored["failure_code"]).isEqualTo("NOTION_PAGE_CREATE_FAILED")
+        assertThat(stored["failure_message"].toString()).contains("provider unavailable")
     }
 
     private fun identity(prefix: String): AuthenticatedUser {
