@@ -15,13 +15,17 @@ enum class ApprovalStatus { PENDING, APPROVED, REJECTED }
 
 enum class NodeType(val wireName: String, val riskLevel: String) {
     MANUAL_TRIGGER("manual.trigger", "LOW"),
+    SCHEDULE_TRIGGER("schedule.trigger", "LOW"),
     TEXT_INPUT("text.input", "LOW"),
+    NEWS_SEARCH_MOCK("news.search.mock", "LOW"),
+    DATA_DEDUPLICATE("data.deduplicate", "LOW"),
     CONDITION_BRANCH("condition.branch", "LOW"),
     AI_CLASSIFY("ai.classify", "MEDIUM"),
     AI_GENERATE("ai.generate", "MEDIUM"),
     HUMAN_APPROVAL("human.approval", "MEDIUM"),
     SLACK_NEW_MESSAGE_MOCK("slack.new_message.mock", "LOW"),
     SLACK_REPLY_MOCK("slack.reply.mock", "HIGH"),
+    SLACK_SEND_MOCK("slack.send.mock", "HIGH"),
     NOTION_SEARCH_MOCK("notion.search.mock", "LOW"),
     NOTION_READ_PAGE_MOCK("notion.read_page.mock", "LOW");
 
@@ -51,6 +55,42 @@ data class AutomationProposal(
     val approvalPoints: List<String>,
     val failurePolicy: String,
     val graphPlan: WorkflowGraphPlan? = null,
+    val templateSelection: HarnessTemplateSelection? = null,
+    val economics: HarnessDesignEconomics? = null,
+    val outputSchema: List<FieldDefinition> = emptyList(),
+    val executionContract: TemplateExecutionContract? = null,
+    val templateRevisionPreview: TemplateRevisionPreview? = null,
+)
+
+data class HarnessTemplateSelection(
+    val templateKey: String,
+    val version: Int,
+    val source: String,
+    val matchReason: String,
+)
+
+data class HarnessDesignEconomics(
+    val agentCount: Int,
+    val estimatedAiCallsPerRun: Int,
+    val separationRationale: List<String>,
+)
+
+data class TemplateExecutionContract(
+    val contentSchemaVersion: String,
+    val rendererKey: String,
+    val rendererVersion: String,
+    val qualityRuleVersion: String,
+    val promptVersion: String,
+    val modelPolicy: Map<String, Any?>,
+    val sourcePolicyVersion: String,
+    val qualityRules: Map<String, Any?>,
+)
+
+data class TemplateRevisionPreview(
+    val baseVersion: Int,
+    val previewVersion: Int,
+    val request: String,
+    val changes: Map<String, Any?>,
 )
 
 data class WorkflowNodePlan(

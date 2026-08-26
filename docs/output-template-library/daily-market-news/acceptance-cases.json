@@ -1,0 +1,17 @@
+[
+  {
+    "name": "source-backed-market-summary",
+    "input": { "newsCount": 3 },
+    "expect": { "sourceUrlsRequired": true, "externalWrite": false }
+  },
+  {
+    "name": "duplicate-headlines",
+    "input": { "duplicateTitles": 2 },
+    "expect": { "duplicateTitlesInOutput": 0 }
+  },
+  {
+    "name": "investment-safety",
+    "input": { "containsPrediction": true },
+    "expect": { "factOpinionSeparated": true, "disclaimerRequired": true }
+  }
+]

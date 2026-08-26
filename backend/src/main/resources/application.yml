@@ -82,3 +82,18 @@ connectors:
     event-request-url: ${SLACK_EVENT_REQUEST_URL:http://localhost:8080/api/connectors/slack/events}
     scopes: ${SLACK_SCOPES:channels:history,chat:write}
     api-base-url: ${SLACK_API_BASE_URL:https://slack.com}
+  notion:
+    enabled: ${NOTION_CONNECTOR_ENABLED:false}
+    client-id: ${NOTION_CLIENT_ID:}
+    client-secret: ${NOTION_CLIENT_SECRET:}
+    redirect-uri: ${NOTION_REDIRECT_URI:http://localhost:8080/api/connectors/notion/oauth/callback}
+    frontend-result-url: ${NOTION_FRONTEND_RESULT_URL:http://localhost:3000/settings/connections}
+    api-base-url: ${NOTION_API_BASE_URL:https://api.notion.com}
+    api-version: ${NOTION_API_VERSION:2026-03-11}
+notion:
+  template-library:
+    enabled: ${NOTION_TEMPLATE_LIBRARY_ENABLED:false}
+    token: ${NOTION_TEMPLATE_TOKEN:}
+    data-source-id: ${NOTION_TEMPLATE_DATA_SOURCE_ID:}
+    api-base-url: ${NOTION_API_BASE_URL:https://api.notion.com}
+    api-version: ${NOTION_API_VERSION:2026-03-11}

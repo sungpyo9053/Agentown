@@ -8,6 +8,14 @@ import java.security.MessageDigest
 
 data class NodeSimulation(val output: Map<String, Any?>, val pauses: Boolean = false)
 
+private object FixedOutputRenderer {
+    fun render(rendererKey: String, input: Map<String, Any?>): String = when (rendererKey) {
+        "slack.market-news.v1" -> input["report"]?.toString() ?: input["result"]?.toString() ?: "시장 뉴스 보고서 생성 결과가 없습니다."
+        "article.plain-text.v1", "plain-text.v1" -> input["result"]?.toString() ?: input["draft"]?.toString().orEmpty()
+        else -> throw BadRequestException("OUTPUT_RENDERER_NOT_ALLOWED", "등록되지 않은 출력 렌더러입니다: $rendererKey")
+    }
+}
+
 interface WorkflowNodeContract {
     val type: NodeType
     val requiredPermissions: Set<String>
@@ -33,7 +41,17 @@ private class SimpleNodeContract(
 class WorkflowNodeCatalog {
     private val contracts = listOf(
         SimpleNodeContract(NodeType.MANUAL_TRIGGER) { _, input -> NodeSimulation(input) },
+        SimpleNodeContract(NodeType.SCHEDULE_TRIGGER, requiredConfig = setOf("cron", "timezone")) { config, input -> NodeSimulation(input + mapOf("scheduledFor" to config["cron"], "timezone" to config["timezone"])) },
         SimpleNodeContract(NodeType.TEXT_INPUT) { _, input -> NodeSimulation(input) },
+        SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query")) { config, input ->
+            NodeSimulation(input + ("newsItems" to listOf(
+                mapOf("title" to "주요 시장 뉴스", "summary" to "검증용 시장 뉴스 요약", "url" to "https://example.com/mock-news", "publishedAt" to "2026-08-26T08:00:00+09:00", "source" to config["source"]),
+            )))
+        },
+        SimpleNodeContract(NodeType.DATA_DEDUPLICATE, requiredConfig = setOf("key")) { _, input ->
+            val items = (input["newsItems"] as? List<*>)?.distinctBy { it.toString() }.orEmpty()
+            NodeSimulation(input + ("newsItems" to items) + ("deduplicatedCount" to items.size))
+        },
         SimpleNodeContract(NodeType.CONDITION_BRANCH, requiredConfig = setOf("expression")) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.AI_CLASSIFY, requiredConfig = setOf("categories")) { config, input -> NodeSimulation(input + ("category" to (config["categories"] as? List<*>)?.firstOrNull().toString())) },
         SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { config, input ->
@@ -44,6 +62,10 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.HUMAN_APPROVAL, requiredConfig = setOf("approver")) { _, input -> NodeSimulation(input, pauses = true) },
         SimpleNodeContract(NodeType.SLACK_NEW_MESSAGE_MOCK, setOf("slack:messages:read")) { _, input -> NodeSimulation(input + ("message" to (input["message"] ?: ""))) },
         SimpleNodeContract(NodeType.SLACK_REPLY_MOCK, setOf("slack:messages:write")) { _, input -> NodeSimulation(mapOf("wouldSend" to true, "message" to (input["draft"] ?: input["message"] ?: ""), "externalCallPerformed" to false)) },
+        SimpleNodeContract(NodeType.SLACK_SEND_MOCK, setOf("slack:messages:write"), setOf("channel", "rendererKey")) { config, input -> NodeSimulation(mapOf(
+            "wouldSend" to true, "channel" to config["channel"],
+            "message" to FixedOutputRenderer.render(config["rendererKey"].toString(), input), "externalCallPerformed" to false,
+        )) },
         SimpleNodeContract(NodeType.NOTION_SEARCH_MOCK, setOf("notion:read"), setOf("database")) { _, input -> NodeSimulation(input + ("notionResult" to "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다.")) },
         SimpleNodeContract(NodeType.NOTION_READ_PAGE_MOCK, setOf("notion:read"), setOf("pageId")) { _, input -> NodeSimulation(input) },
     ).associateBy { it.type.wireName }
@@ -76,7 +98,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (hasCycle(graph)) issues += ValidationIssue("CYCLE", "MVP 워크플로우에는 순환을 허용하지 않습니다.")
         val reachable = reachableFrom(graph, graph.entryNodeId)
         graph.nodes.filter { it.id !in reachable }.forEach { issues += ValidationIssue("UNREACHABLE_NODE", "시작점에서 도달할 수 없습니다.", it.id) }
-        graph.nodes.filter { it.nodeType == NodeType.SLACK_REPLY_MOCK.wireName }.forEach { reply ->
+        graph.nodes.filter { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName) }.forEach { reply ->
             if (pathExistsWithoutApproval(graph, graph.entryNodeId, reply.id)) {
                 issues += ValidationIssue("WRITE_REQUIRES_APPROVAL", "Slack 답변 전 모든 경로에 담당자 승인이 필요합니다.", reply.id)
             }
@@ -152,14 +174,16 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         val outputAndSteps = listOf(requirement.objective, requirement.outputs.joinToString(" "), requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
         val types = graph.nodes.map { it.nodeType }.toSet()
         val hasSlackTrigger = NodeType.SLACK_NEW_MESSAGE_MOCK.wireName in types
-        val hasSlackReply = NodeType.SLACK_REPLY_MOCK.wireName in types
+        val hasSlackReply = types.any { it == NodeType.SLACK_REPLY_MOCK.wireName || it == NodeType.SLACK_SEND_MOCK.wireName }
         val hasNotion = types.any { it == NodeType.NOTION_SEARCH_MOCK.wireName || it == NodeType.NOTION_READ_PAGE_MOCK.wireName }
+        val hasNews = NodeType.NEWS_SEARCH_MOCK.wireName in types
         val hasApproval = NodeType.HUMAN_APPROVAL.wireName in types
         val hasClassification = NodeType.AI_CLASSIFY.wireName in types
         val hasGeneration = NodeType.AI_GENERATE.wireName in types
         val hasManualTrigger = types.any { it == NodeType.MANUAL_TRIGGER.wireName || it == NodeType.TEXT_INPUT.wireName }
         val requestsSlack = containsAny(requested, "slack", "슬랙")
         val requestsNotion = containsAny(requested, "notion", "노션", "faq", "데이터베이스")
+        val requestsNews = containsAny(requested, "뉴스", "기사", "news", "rss")
         val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
         val requestsSlackOutbound = requestsSlack && containsAny(outputAndSteps, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
         val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
@@ -173,6 +197,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (requestsSlackInbound && !hasSlackTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 Slack 시작 조건이 그래프에 없습니다.")
         if (requestsSlackOutbound && !hasSlackReply) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Slack 결과 전달 단계가 그래프에 없습니다.")
         if (requestsNotion && !hasNotion) mismatch("MEANING_SOURCE_MISSING", "요구사항의 Notion/FAQ 자료 조회 단계가 그래프에 없습니다.")
+        if (requestsNews && !hasNews) mismatch("MEANING_SOURCE_MISSING", "요구사항의 뉴스 자료 수집 단계가 그래프에 없습니다.")
         if (requirement.humanApprovalRequired && !hasApproval) mismatch("MEANING_APPROVAL_MISSING", "요구사항의 사람 승인 단계가 그래프에 없습니다.")
         if (!requirement.humanApprovalRequired && hasApproval) mismatch("MEANING_UNREQUESTED_APPROVAL", "요구하지 않은 사람 승인 단계가 그래프에 추가되었습니다.")
         if (requestsManualTrigger && !hasManualTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 수동 시작 조건이 그래프에 없습니다.")
@@ -180,6 +205,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (requestsGeneration && !hasGeneration) mismatch("MEANING_GENERATION_MISSING", "요구사항의 생성 단계가 그래프에 없습니다.")
         if (!requestsSlack && (hasSlackTrigger || hasSlackReply)) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Slack 연동이 그래프에 추가되었습니다.")
         if (!requestsNotion && hasNotion) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Notion/FAQ 연동이 그래프에 추가되었습니다.")
+        if (!requestsNews && hasNews) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 뉴스 수집 단계가 그래프에 추가되었습니다.")
         if (!requestsClassification && hasClassification) mismatch("MEANING_UNREQUESTED_DECISION", "요구하지 않은 분류 단계가 그래프에 추가되었습니다.")
         if (!requestsGeneration && hasGeneration) mismatch("MEANING_UNREQUESTED_GENERATION", "요구하지 않은 생성 단계가 그래프에 추가되었습니다.")
 

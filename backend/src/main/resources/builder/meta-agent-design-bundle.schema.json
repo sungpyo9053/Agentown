@@ -57,7 +57,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
-                  "nodeType": { "type": "string", "enum": ["manual.trigger", "text.input", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "notion.search.mock", "notion.read_page.mock"] },
+                  "nodeType": { "type": "string", "enum": ["manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "data.deduplicate", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "notion.search.mock", "notion.read_page.mock"] },
                   "label": { "type": "string", "minLength": 1, "maxLength": 160 },
                   "config": {
                     "anyOf": [
@@ -97,6 +97,33 @@
                         "type": "object", "additionalProperties": false,
                         "properties": { "pageId": { "type": "string", "maxLength": 300 } },
                         "required": ["pageId"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                          "cron": { "type": "string", "maxLength": 100 },
+                          "timezone": { "type": "string", "maxLength": 100 }
+                        },
+                        "required": ["cron", "timezone"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                          "source": { "type": "string", "maxLength": 200 },
+                          "query": { "type": "string", "maxLength": 300 },
+                          "lookbackHours": { "type": "number", "minimum": 1, "maximum": 168 }
+                        },
+                        "required": ["source", "query"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "key": { "type": "string", "maxLength": 100 } },
+                        "required": ["key"]
+                      },
+                      {
+                        "type": "object", "additionalProperties": false,
+                        "properties": { "channel": { "type": "string", "maxLength": 160 } },
+                        "required": ["channel"]
                       }
                     ]
                   }

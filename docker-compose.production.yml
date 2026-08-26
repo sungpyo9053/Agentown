@@ -52,6 +52,15 @@ services:
       SLACK_FRONTEND_RESULT_URL: ${SLACK_FRONTEND_RESULT_URL:-https://${DOMAIN}/settings/connections}
       SLACK_EVENT_REQUEST_URL: ${SLACK_EVENT_REQUEST_URL:-https://${DOMAIN}/api/connectors/slack/events}
       SLACK_SCOPES: ${SLACK_SCOPES:-channels:history,chat:write}
+      NOTION_CONNECTOR_ENABLED: ${NOTION_CONNECTOR_ENABLED:-false}
+      NOTION_CLIENT_ID: ${NOTION_CLIENT_ID:-}
+      NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
+      NOTION_REDIRECT_URI: ${NOTION_REDIRECT_URI:-https://${DOMAIN}/api/connectors/notion/oauth/callback}
+      NOTION_FRONTEND_RESULT_URL: ${NOTION_FRONTEND_RESULT_URL:-https://${DOMAIN}/settings/connections}
+      NOTION_TEMPLATE_LIBRARY_ENABLED: ${NOTION_TEMPLATE_LIBRARY_ENABLED:-false}
+      NOTION_TEMPLATE_TOKEN: ${NOTION_TEMPLATE_TOKEN:-}
+      NOTION_TEMPLATE_DATA_SOURCE_ID: ${NOTION_TEMPLATE_DATA_SOURCE_ID:-}
+      NOTION_API_VERSION: ${NOTION_API_VERSION:-2026-03-11}
     volumes:
       - ./deploy/codex-auth:/home/app/.codex
     depends_on:

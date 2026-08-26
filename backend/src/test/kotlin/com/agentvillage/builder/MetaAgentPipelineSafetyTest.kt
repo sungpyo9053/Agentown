@@ -72,7 +72,7 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
-    fun `detailed writing result is normalized to the four employee standard team`() {
+    fun `detailed writing uses one structured writer unless independent review is requested`() {
         val mapper = jacksonObjectMapper()
         val deterministic = DeterministicMockMetaAgentModel(mapper)
         val model = mock<MetaAgentModel>()
@@ -103,11 +103,11 @@ class MetaAgentPipelineSafetyTest {
             "글쓰기 자동화를 수동으로 시작하고 사용자가 제공한 원문으로 초안을 작성해 담당자 승인 후 화면에 표시한다.",
         )
 
-        assertThat(result.agentDefinitions.map { it.key })
-            .containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        assertThat(result.agentDefinitions.map { it.key }).containsExactly("content-writer")
         assertThat(result.proposal.graphPlan!!.nodes.filter { it.nodeType == "ai.generate" }.map { it.config["agentKey"] })
-            .containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+            .containsExactly("content-writer")
         assertThat(result.proposal.graphPlan!!.nodes.last().nodeType).isEqualTo("human.approval")
+        assertThat(result.proposal.economics?.estimatedAiCallsPerRun).isEqualTo(1)
     }
 
     @Test
@@ -127,7 +127,7 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
-    fun `scheduled Naver news request is rejected instead of becoming Slack FAQ mock`() {
+    fun `scheduled news report selects built in template and one report agent`() {
         val mapper = jacksonObjectMapper()
         val deterministic = DeterministicMockMetaAgentModel(mapper)
         val runs = mock<MetaAgentRunRepository>()
@@ -135,16 +135,17 @@ class MetaAgentPipelineSafetyTest {
         val pipeline = StructuredMetaAgentPipeline(deterministic, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
         val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
 
-        assertThatThrownBy {
-            pipeline.generateDesign(
-                context,
-                "내 슬랙으로 매일 8시에 주식 경제 보고서를 보내줘. 네이버 경제뉴스를 수집하고 담당자 승인 후 로컬 저장해줘.",
-            )
-        }
-            .isInstanceOf(BadRequestException::class.java)
-            .hasMessageContaining("정기 예약 실행")
-            .hasMessageContaining("외부 뉴스 수집")
-            .hasMessageContaining("로컬 파일 저장")
-            .hasMessageContaining("요청을 거절하거나 다른 자동화로 바꾸지 않았으며")
+        val result = pipeline.generateDesign(
+            context,
+            "매일 오전 8시에 네이버 경제·주식 뉴스를 수집해 시장 영향 보고서를 만들고 담당자 승인 후 Slack #market-report 채널로 전송해줘.",
+        )
+
+        assertThat(result.clarificationQuestions).isEmpty()
+        assertThat(result.agentDefinitions.map { it.key }).containsExactly("market-news-reporter")
+        assertThat(result.proposal.templateSelection?.templateKey).isEqualTo("daily-market-news-report")
+        assertThat(result.proposal.economics?.estimatedAiCallsPerRun).isEqualTo(1)
+        assertThat(result.proposal.graphPlan!!.nodes.map { it.nodeType }).containsExactly(
+            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "human.approval", "slack.send.mock",
+        )
     }
 }

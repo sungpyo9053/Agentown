@@ -23,8 +23,27 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             put("manifest.json", pretty(linkedMapOf(
                 "format" to "agentown-harness-package/v1", "name" to bundle.proposal.name,
                 "agentCount" to bundle.agentDefinitions.size, "guideCount" to bundle.guideDefinitions.size,
+                "templateSelection" to bundle.proposal.templateSelection,
+                "economics" to bundle.proposal.economics,
                 "validationRequiredBeforeImport" to true,
             )))
+            put("schemas/final-output.schema.json", pretty(outputSchema(bundle.proposal.outputSchema)))
+            put("templates/output-template.json", pretty(linkedMapOf(
+                "templateSelection" to bundle.proposal.templateSelection,
+                "executionContract" to bundle.proposal.executionContract,
+                "contentSchema" to outputSchema(bundle.proposal.outputSchema),
+            )))
+            put("policies/permissions.json", pretty(linkedMapOf(
+                "arbitraryCodeAllowed" to false,
+                "secretsInWorkflowAllowed" to false,
+                "externalWritesRequireApproval" to true,
+            )))
+            put("policies/ai-budget.json", pretty(linkedMapOf(
+                "agentCount" to bundle.agentDefinitions.size,
+                "estimatedAiCallsPerRun" to (bundle.proposal.economics?.estimatedAiCallsPerRun ?: bundle.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType.startsWith("ai.") }),
+                "separationRationale" to bundle.proposal.economics?.separationRationale.orEmpty(),
+            )))
+            put("policies/quality-rules.json", pretty(bundle.proposal.executionContract?.qualityRules ?: emptyMap<String, Any>()))
             bundle.agentDefinitions.forEach { put("agents/${it.key}.md", agentMarkdown(it)) }
             bundle.guideDefinitions.forEach { put("guides/${it.key}.md", guideMarkdown(it)) }
         }
@@ -97,4 +116,18 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
     }
 
     private fun pretty(value: Any) = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value) + "\n"
+
+    private fun outputSchema(fields: List<com.agentvillage.builder.domain.FieldDefinition>): Map<String, Any> {
+        val properties = fields.associate { field -> field.name to mapOf(
+            "type" to when (field.type) { "array" -> "array"; "object" -> "object"; "number" -> "number"; "boolean" -> "boolean"; else -> "string" },
+            "description" to field.description,
+        ) }
+        return linkedMapOf(
+            "\$schema" to "https://json-schema.org/draft/2020-12/schema",
+            "type" to "object",
+            "additionalProperties" to false,
+            "properties" to properties,
+            "required" to fields.filter { it.required }.map { it.name },
+        )
+    }
 }

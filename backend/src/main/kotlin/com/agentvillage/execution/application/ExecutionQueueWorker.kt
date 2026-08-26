@@ -37,10 +37,11 @@ class ExecutionProcessor(
     private val downloadSemaphore = Semaphore(10)
 
     suspend fun process(id: UUID) {
+        // activeUsers limits fairness inside one application instance, but production can have
+        // multiple workers (and integration tests can have multiple Spring contexts). Claim the
+        // queued row atomically so only one worker may execute a workflow version.
+        if (executions.claimQueued(id, Instant.now()) != 1) return
         val execution = executions.findById(id).orElse(null) ?: return
-        if (execution.status != ExecutionStatus.QUEUED) return
-        execution.status = ExecutionStatus.RUNNING; execution.startedAt = execution.startedAt ?: Instant.now(); execution.heartbeatAt = Instant.now()
-        executions.save(execution)
         metrics.started()
         service.record(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))
         val plan = snapshots.read(execution.executionSnapshotJson)

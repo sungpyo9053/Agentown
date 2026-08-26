@@ -18,15 +18,7 @@ object BuilderMvpSupportPolicy {
     internal fun unsupportedCapabilities(text: String): List<String> {
         val normalized = text.lowercase()
         return buildList {
-            if (
-                Regex("\\d{1,2}\\s*시").containsMatchIn(normalized) ||
-                listOf("정기 실행", "예약 실행", "daily at", "weekly at", "schedule at").any(normalized::contains)
-            ) add("정기 예약 실행")
-            if (
-                listOf("rss", "네이버", "구글 뉴스", "google news", "news feed", "뉴스 수집", "기사 수집", "뉴스 크롤", "기사 크롤").any(normalized::contains)
-            ) {
-                add("외부 뉴스 수집")
-            }
+            capability(normalized, "음성·녹음 파일 전사", "녹음 파일", "음성 파일", "오디오 파일", "speech to text", "transcription")
             if (listOf("로컬저장", "로컬 저장", "내 컴퓨터", "파일로 저장", "다운로드", "폴더에 저장").any(normalized::contains)) {
                 add("로컬 파일 저장")
             }
@@ -35,7 +27,7 @@ object BuilderMvpSupportPolicy {
                 add("이메일 전송")
             }
             capability(normalized, "Google Workspace 쓰기", "google drive", "구글 드라이브", "google sheets", "구글 시트", "google calendar", "구글 캘린더", "microsoft forms")
-            capability(normalized, "CRM 쓰기", "hubspot", "salesforce", "crm 상태", "연락처를 만들")
+            capability(normalized, "CRM 쓰기", "hubspot", "salesforce", "crm 상태", "crm에", "crm으로", "crm 상담", "crm 반영", "연락처를 만들")
             capability(normalized, "개발 도구 쓰기·배포", "jira", "github", "커밋", "자동 배포", "운영 서버까지")
             capability(normalized, "회계·상거래 시스템 쓰기", "quickbooks", "shopify", "erp")
             val socialPublishNegated = listOf("실제 게시하지", "게시하지 마", "게시하지 않").any(normalized::contains)

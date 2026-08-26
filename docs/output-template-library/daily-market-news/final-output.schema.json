@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "marketSummary": { "type": "string", "maxLength": 500 },
+    "topNews": { "type": "array", "maxItems": 5, "items": { "type": "object" } },
+    "marketImpact": { "type": "array", "items": { "type": "object" } },
+    "watchlist": { "type": "array", "items": { "type": "object" } },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "uri" } },
+    "report": { "type": "string" }
+  },
+  "required": ["marketSummary", "topNews", "marketImpact", "watchlist", "risks", "sources", "report"]
+}

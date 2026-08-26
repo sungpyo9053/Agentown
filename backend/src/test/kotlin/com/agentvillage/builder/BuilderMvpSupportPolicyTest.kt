@@ -27,7 +27,7 @@ class BuilderMvpSupportPolicyTest {
     }
 
     @Test
-    fun `missing standard capability is reported without changing the user goal`() {
+    fun `supported schedule news and Slack mock still rejects unsupported local storage`() {
         val requirement = AutomationRequirement(
             objective = "슬랙으로 주식·경제 보고서를 오전 8시에 전송한다.",
             trigger = "오전 8시 정기 실행",
@@ -42,8 +42,7 @@ class BuilderMvpSupportPolicyTest {
         assertThatThrownBy { BuilderMvpSupportPolicy.requireSupported(requirement) }
             .isInstanceOf(BadRequestException::class.java)
             .hasMessageContaining("표준 노드 또는 연결")
-            .hasMessageContaining("정기 예약 실행")
-            .hasMessageContaining("외부 뉴스 수집")
+            .hasMessageContaining("로컬 파일 저장")
     }
 
     @Test

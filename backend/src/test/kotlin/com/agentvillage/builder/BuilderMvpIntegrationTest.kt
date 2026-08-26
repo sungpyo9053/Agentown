@@ -6,6 +6,11 @@ import com.agentvillage.agent.application.AgentService
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
+import com.agentvillage.builder.infrastructure.BuilderRunRepository
+import com.agentvillage.builder.infrastructure.BuilderWorkflowVersionRepository
+import com.agentvillage.builder.infrastructure.HarnessTemplateRepository
+import com.agentvillage.builder.infrastructure.HarnessTemplateVersionRepository
+import com.agentvillage.builder.domain.HarnessTemplateVersionState
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.common.exception.ConflictException
@@ -24,9 +29,13 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var requirements: BuilderRequirementRepository
     @Autowired lateinit var agents: AgentService
+    @Autowired lateinit var workflowVersions: BuilderWorkflowVersionRepository
+    @Autowired lateinit var builderRuns: BuilderRunRepository
+    @Autowired lateinit var outputTemplates: HarnessTemplateRepository
+    @Autowired lateinit var outputTemplateVersions: HarnessTemplateVersionRepository
 
     @Test
-    fun `approved writing harness imports four persisted employees into writing automation team`() {
+    fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))
         var snapshot = service.createConversation(owner.id, "writing-team-conversation-$suffix")
@@ -35,11 +44,11 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             "글쓰기 자동화를 수동으로 시작하고 사용자가 제공한 주제와 원문만 사용해 일반 독자용 한국어 블로그 초안을 작성한다. 콘텐츠 담당자 승인 후 화면에 표시한다.",
             "writing-team-message-$suffix",
         )
-        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
+        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("content-writer")
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "writing-team-design-$suffix")
         assertThat(service.harnessPackage(owner.id, snapshot.workflowId).keys).contains(
             "AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json",
-            "agents/source-analyst.md", "agents/content-planner.md", "agents/draft-writer.md", "agents/fact-editor.md",
+            "agents/content-writer.md", "schemas/final-output.schema.json", "policies/permissions.json", "policies/ai-budget.json",
         )
         var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("text" to "검증용 주제와 참고 원문"), "writing-team-run-$suffix")
         assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
@@ -51,9 +60,9 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         val team = service.activeAutomationTeams(owner.id).single()
         assertThat(team.category).isEqualTo("업무 자동화")
         assertThat(team.teamName).isEqualTo("글쓰기 자동화 팀")
-        assertThat(team.employees.map { it.agentKey }).containsExactly("source-analyst", "content-planner", "draft-writer", "fact-editor")
-        assertThat(team.employees.map { it.name }).containsExactly("자료 분석가", "콘텐츠 기획자", "초안 작성자", "팩트체커·편집자")
-        assertThat(agents.list(owner.id).filter { it.department == "글쓰기 자동화 팀" }).hasSize(4)
+        assertThat(team.employees.map { it.agentKey }).containsExactly("content-writer")
+        assertThat(team.employees.map { it.name }).containsExactly("콘텐츠 작성자")
+        assertThat(agents.list(owner.id).filter { it.department == "글쓰기 자동화 팀" }).hasSize(1)
     }
 
     @Test
@@ -83,6 +92,8 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             .doesNotContain("승인 라우팅", "게시 에이전트", "문의 분류")
         assertThat(snapshot.guideDefinitions.map { it.key }).containsExactly("slack-mock", "notion-mock")
         assertThat(snapshot.graph).isNull()
+        val generatedTemplate = outputTemplates.findByTemplateKey(snapshot.proposal!!.templateSelection!!.templateKey)!!
+        assertThat(outputTemplateVersions.findByTemplateIdAndVersionNo(generatedTemplate.id, 1)!!.state).isEqualTo(HarnessTemplateVersionState.PREVIEWED)
         val plannedNodeTypes = snapshot.proposal!!.graphPlan!!.nodes.map { it.nodeType }
 
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "design-approve-$suffix")
@@ -90,6 +101,9 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.graph?.nodes?.map { it.nodeType }).containsExactlyElementsOf(plannedNodeTypes)
         assertThat(snapshot.validation?.valid).isTrue()
         assertThat(snapshot.currentVersionId).isEqualTo(snapshot.approvedVersionId)
+        val pinnedTemplateVersionId = workflowVersions.findById(snapshot.currentVersionId!!).orElseThrow().templateVersionId
+        assertThat(pinnedTemplateVersionId).isNotNull()
+        assertThat(outputTemplateVersions.findById(pinnedTemplateVersionId!!).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.APPROVED)
 
         val firstVersion = snapshot.currentVersionId!!
         snapshot = service.applyPatch(owner.id, snapshot.workflowId, "Slack 답변 전 담당자 승인을 추가해줘.", firstVersion, snapshot.validation!!.graphHash, "patch-1-$suffix")
@@ -97,6 +111,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.currentVersionId).isNotEqualTo(firstVersion)
 
         var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "환불은 언제 처리되나요?", "token" to "must-not-persist"), "simulation-1-$suffix")
+        assertThat(builderRuns.findById(run.id).orElseThrow().templateVersionId).isEqualTo(pinnedTemplateVersionId)
         assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
         assertThat(run.steps.map { it.nodeType }).containsExactly("slack.new_message.mock", "notion.search.mock", "ai.generate", "human.approval")
         assertThat(run.steps.first().input["token"]).isEqualTo("***")
@@ -113,6 +128,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
 
         snapshot = service.activate(owner.id, workflowId, "activation-$suffix")
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.ACTIVE)
+        assertThat(outputTemplateVersions.findById(pinnedTemplateVersionId).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.ACTIVE)
         val teams = service.activeAutomationTeams(owner.id)
         assertThat(teams).hasSize(1)
         assertThat(teams.single().category).isEqualTo("업무 자동화")
@@ -171,22 +187,72 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
-    fun `writing automation with scheduled news is rejected instead of becoming FAQ workflow`() {
+    fun `scheduled news report compiles to one agent and safe mock delivery`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-$suffix@example.com", "password123", "writing_$suffix", "글쓰기 답변 검증"))
         val snapshot = service.createConversation(owner.id, "writing-conversation-$suffix")
 
-        assertThatThrownBy {
-            service.sendMessage(
-                owner.id,
-                snapshot.conversationId,
-                "내 슬랙으로 매일 8시에 주식 경제 보고서를 보내줘. 네이버 경제뉴스를 수집하고 담당자 승인 후 로컬 저장해줘.",
-                "writing-message-$suffix",
-            )
-        }
-            .isInstanceOf(BadRequestException::class.java)
-            .hasMessageContaining("정기 예약 실행")
-            .hasMessageContaining("외부 뉴스 수집")
+        val designed = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "매일 오전 8시에 네이버 경제·주식 뉴스를 수집해 시장 영향 보고서를 만들고 담당자 승인 후 Slack #market-report 채널로 전송해줘.",
+            "writing-message-$suffix",
+        )
+        assertThat(designed.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(designed.agentDefinitions.map { it.key }).containsExactly("market-news-reporter")
+        assertThat(designed.proposal?.templateSelection?.templateKey).isEqualTo("daily-market-news-report")
+        assertThat(designed.proposal?.economics?.estimatedAiCallsPerRun).isEqualTo(1)
+        assertThat(designed.proposal?.graphPlan?.nodes?.map { it.nodeType }).containsExactly(
+            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "human.approval", "slack.send.mock",
+        )
+    }
+
+    @Test
+    fun `output template revision previews approves switches and rolls back without mutating active version`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("template-version-$suffix@example.com", "password123", "template_version_$suffix", "템플릿 버전 검증"))
+        var snapshot = service.createConversation(owner.id, "template-version-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id, snapshot.conversationId,
+            "매일 오전 8시에 네이버 경제·주식 뉴스를 수집해 시장 영향 보고서를 만들고 담당자 승인 후 Slack #market-report 채널로 전송해줘.",
+            "template-version-message-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "template-version-design-v1-$suffix")
+        val workflowV1 = snapshot.currentVersionId!!
+        val templateV1 = workflowVersions.findById(workflowV1).orElseThrow().templateVersionId!!
+        var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "시장 뉴스"), "template-version-run-v1-$suffix")
+        run = service.decideExecution(owner.id, run.id, true, "template-version-run-approve-v1-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
+        snapshot = service.activate(owner.id, snapshot.workflowId, "template-version-activate-v1-$suffix")
+        assertThat(outputTemplateVersions.findById(templateV1).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.ACTIVE)
+
+        snapshot = service.applyPatch(
+            owner.id, snapshot.workflowId, "보고서에 숫자를 더 많이 보여줘.", snapshot.currentVersionId!!,
+            snapshot.validation!!.graphHash, "template-version-patch-v2-$suffix",
+        )
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.versions).hasSize(1)
+        assertThat(snapshot.proposal!!.templateSelection!!.version).isEqualTo(2)
+        val template = outputTemplates.findByTemplateKey("daily-market-news-report")!!
+        val templateV2 = outputTemplateVersions.findByTemplateIdAndVersionNo(template.id, 2)!!
+        assertThat(templateV2.state).isEqualTo(HarnessTemplateVersionState.PREVIEWED)
+        assertThat(templateV2.executionContract.toString()).contains("minimumNumericFacts=3")
+        assertThat(outputTemplateVersions.findById(templateV1).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.ACTIVE)
+
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "template-version-design-v2-$suffix")
+        assertThat(workflowVersions.findById(snapshot.currentVersionId!!).orElseThrow().templateVersionId).isEqualTo(templateV2.id)
+        assertThat(outputTemplateVersions.findById(templateV2.id).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.APPROVED)
+        assertThat(outputTemplateVersions.findById(templateV1).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.ACTIVE)
+
+        run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "시장 뉴스"), "template-version-run-v2-$suffix")
+        run = service.decideExecution(owner.id, run.id, true, "template-version-run-approve-v2-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
+        snapshot = service.activate(owner.id, snapshot.workflowId, "template-version-activate-v2-$suffix")
+        assertThat(outputTemplateVersions.findById(templateV2.id).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.ACTIVE)
+        assertThat(outputTemplateVersions.findById(templateV1).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.APPROVED)
+
+        snapshot = service.restoreVersion(owner.id, snapshot.workflowId, workflowV1, "template-version-rollback-$suffix")
+        assertThat(workflowVersions.findById(snapshot.currentVersionId!!).orElseThrow().templateVersionId).isEqualTo(templateV1)
     }
 
     @Test
@@ -223,8 +289,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "실행"), "legacy-run-$suffix")
         }
             .isInstanceOf(BadRequestException::class.java)
-            .hasMessageContaining("정기 예약 실행")
-            .hasMessageContaining("외부 뉴스 수집")
+            .hasMessageContaining("뉴스 자료 수집 단계가 그래프에 없습니다")
     }
 
     @Test

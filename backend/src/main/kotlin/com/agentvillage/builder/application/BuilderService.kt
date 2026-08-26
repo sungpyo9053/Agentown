@@ -13,9 +13,26 @@ import java.time.Instant
 import java.util.UUID
 
 data class BuilderMessageView(val id: UUID, val role: String, val content: String, val workflowVersionId: UUID?, val createdAt: Instant)
-data class WorkflowVersionView(val id: UUID, val versionNo: Int, val graphHash: String, val changeSummary: String, val approved: Boolean, val createdAt: Instant)
+data class WorkflowVersionView(
+    val id: UUID,
+    val versionNo: Int,
+    val graphHash: String,
+    val changeSummary: String,
+    val approved: Boolean,
+    val outputTemplateVersionId: UUID?,
+    val createdAt: Instant,
+)
 data class StepRunView(val nodeId: String, val nodeType: String, val sequenceNo: Int, val status: BuilderStepStatus, val input: Map<String, Any?>, val output: Map<String, Any?>?, val errorMessage: String?)
-data class RunView(val id: UUID, val status: BuilderRunStatus, val currentNodeId: String?, val output: Map<String, Any?>?, val requirementMatched: Boolean?, val steps: List<StepRunView>, val pendingApprovalId: UUID?)
+data class RunView(
+    val id: UUID,
+    val status: BuilderRunStatus,
+    val currentNodeId: String?,
+    val outputTemplateVersionId: UUID?,
+    val output: Map<String, Any?>?,
+    val requirementMatched: Boolean?,
+    val steps: List<StepRunView>,
+    val pendingApprovalId: UUID?,
+)
 data class BuilderSnapshot(
     val workspaceId: UUID,
     val conversationId: UUID,
@@ -55,6 +72,7 @@ class BuilderService(
     private val catalog: WorkflowNodeCatalog,
     private val teamDeployments: AutomationTeamDeploymentService,
     private val packageRenderer: HarnessPackageRenderer,
+    private val templateCatalog: HarnessTemplateCatalogService,
     private val mapper: ObjectMapper,
 ) {
     @Transactional
@@ -76,7 +94,7 @@ class BuilderService(
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
-        if (workflow.currentVersionId != null && isPatchInstruction(instruction)) {
+        if (workflow.currentVersionId != null && (isPatchInstruction(instruction) || isOutputTemplatePatch(instruction))) {
             applyNaturalPatch(context, instruction, message.id)
             return snapshot(ownerId, conversationId)
         }
@@ -125,6 +143,7 @@ class BuilderService(
             it.agentDefinitionsJson = mapper.convertValue(agents, listMapType())
             it.guideDefinitionsJson = mapper.convertValue(guides, listMapType())
         } ?: proposals.save(BuilderProposalEntity(conversationId = context.conversation.id, proposalJson = mapper.convertValue(proposal, mapType()), agentDefinitionsJson = mapper.convertValue(agents, listMapType()), guideDefinitionsJson = mapper.convertValue(guides, listMapType())))
+        templateCatalog.preview(bundle)
         context.workflow.name = proposal.name
         if (context.workflow.status == WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.PROPOSAL_READY) else transition(context.workflow, WorkflowStatus.PROPOSAL_READY)
         transition(context.workflow, WorkflowStatus.WAITING_DESIGN_APPROVAL)
@@ -182,6 +201,33 @@ class BuilderService(
     private fun applyNaturalPatch(context: OwnedContext, instruction: String, sourceMessageId: UUID) {
         val current = currentVersion(context.workflow)
         val graph = graph(current)
+        if (isOutputTemplatePatch(instruction)) {
+            val baseTemplateVersionId = current.templateVersionId
+                ?: throw ConflictException("OUTPUT_TEMPLATE_VERSION_REQUIRED", "현재 Workflow에 출력 템플릿 버전이 없습니다.")
+            val derived = templateCatalog.derivePreview(baseTemplateVersionId, instruction)
+            val proposalEntity = proposals.findByConversationId(context.conversation.id)
+                ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
+            val proposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+            val selection = requireNotNull(proposal.templateSelection)
+            val contract = mapper.convertValue(derived.executionContract, TemplateExecutionContract::class.java)
+            proposalEntity.proposalJson = mapper.convertValue(proposal.copy(
+                templateSelection = selection.copy(version = derived.versionNo, source = "GENERATED", matchReason = "기존 출력 템플릿을 자연어 요청으로 복제·수정"),
+                executionContract = contract,
+                templateRevisionPreview = TemplateRevisionPreview(
+                    baseVersion = derived.versionNo - 1,
+                    previewVersion = derived.versionNo,
+                    request = instruction,
+                    changes = contract.qualityRules.filter { (key, value) -> proposal.executionContract?.qualityRules?.get(key) != value },
+                ),
+            ), mapType())
+            context.workflow.status = WorkflowStatus.WAITING_DESIGN_APPROVAL
+            messages.save(BuilderMessage(
+                conversationId = context.conversation.id, role = "ASSISTANT",
+                content = "출력 템플릿 v${derived.versionNo} 미리보기를 만들었습니다. 기존 v${derived.versionNo - 1}과 비교해 승인하면 새 Workflow Version으로 전환합니다: $instruction",
+                workflowVersionId = current.id,
+            ))
+            return
+        }
         if (!isPatchInstruction(instruction)) throw BadRequestException("UNSUPPORTED_GRAPH_PATCH", "MVP에서는 'Slack 답변 전 담당자 승인 추가' 수정만 지원합니다.")
         if (graph.nodes.any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }) {
             val version = saveVersion(context.workflow, graph, "담당자 승인 노드 확인 및 유지", approved = true)
@@ -224,7 +270,7 @@ class BuilderService(
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 복원할 수 없습니다.")
         messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
         val target = versions.findByIdAndWorkflowId(versionId, workflowId) ?: throw NotFoundException("WORKFLOW_VERSION_NOT_FOUND", "버전을 찾을 수 없습니다.")
-        val restored = saveVersion(context.workflow, graph(target), "버전 ${target.versionNo} 복원", approved = false)
+        val restored = saveVersion(context.workflow, graph(target), "버전 ${target.versionNo} 복원", approved = false, templateOverride = target)
         context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
         messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "버전 ${target.versionNo}을 새 버전 ${restored.versionNo}으로 복원했습니다.", workflowVersionId = restored.id, idempotencyKey = idempotencyKey))
         return snapshot(ownerId, context.conversation.id)
@@ -242,7 +288,10 @@ class BuilderService(
         val graph = graph(version)
         requireValidDesign(graph, design.requirement, design.proposal, design.agents, cumulativeInstruction(context.conversation.id))
         context.workflow.status = WorkflowStatus.SIMULATING
-        val run = runs.save(BuilderRun(workspaceId = context.workspace.id, workflowId = workflowId, workflowVersionId = version.id, inputJson = mask(input), idempotencyKey = idempotencyKey))
+        val run = runs.save(BuilderRun(
+            workspaceId = context.workspace.id, workflowId = workflowId, workflowVersionId = version.id,
+            templateVersionId = version.templateVersionId, inputJson = mask(input), idempotencyKey = idempotencyKey,
+        ))
         pipeline.record(context.pipeline(), "simulate_workflow", input.size, graph.nodes.size)
         executeFrom(context, run, graph, graph.entryNodeId, input)
         return runView(run)
@@ -331,7 +380,7 @@ class BuilderService(
             if (requirement != null && proposal != null) validator.validate(it, requirement, proposal, agents, cumulativeInstruction(conversationId))
             else validator.validate(it)
         }
-        return BuilderSnapshot(context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions, proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation, version?.id, context.workflow.approvedVersionId, messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) }, versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.createdAt) })
+        return BuilderSnapshot(context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions, proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation, version?.id, context.workflow.approvedVersionId, messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) }, versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) })
     }
 
     @Transactional(readOnly = true)
@@ -372,6 +421,7 @@ class BuilderService(
             workflowVersionId = version.id, workflowName = context.workflow.name,
             objective = design.requirement.objective, agents = design.agents, guides = design.guides,
         )
+        requireNotNull(version.templateVersionId) { "Output template version is required" }.also(templateCatalog::activate)
         approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.ACTIVATION, idempotencyKey = idempotencyKey, status = ApprovalStatus.APPROVED, decidedBy = ownerId, decidedAt = Instant.now()))
         transition(context.workflow, WorkflowStatus.ACTIVE)
         messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "Workflow Version ${version.versionNo}을 우리 회사의 업무 자동화 팀으로 배치했습니다.", workflowVersionId = version.id))
@@ -423,10 +473,22 @@ class BuilderService(
         )
     }
 
-    private fun saveVersion(workflow: BuilderWorkflow, graph: WorkflowGraph, summary: String, approved: Boolean): BuilderWorkflowVersion {
+    private fun saveVersion(workflow: BuilderWorkflow, graph: WorkflowGraph, summary: String, approved: Boolean, templateOverride: BuilderWorkflowVersion? = null): BuilderWorkflowVersion {
         val previous = workflow.currentVersionId
         val nextNo = versions.findAllByWorkflowIdOrderByVersionNoDesc(workflow.id).firstOrNull()?.versionNo?.plus(1) ?: 1
-        val entity = versions.save(BuilderWorkflowVersion(workflowId = workflow.id, versionNo = nextNo, parentVersionId = previous, graphJson = mapper.convertValue(graph, mapType()), graphHash = validator.hash(graph), changeSummary = summary, approved = approved))
+        val pinned = if (templateOverride == null) {
+            val design = storedDesign(workflow.conversationId)
+            templateCatalog.pin(MetaAgentDesignBundle(design.requirement, emptyList(), design.proposal, design.agents, design.guides))
+        } else null
+        val templateVersionId = templateOverride?.templateVersionId ?: pinned?.id
+            ?: throw ConflictException("OUTPUT_TEMPLATE_VERSION_REQUIRED", "승인된 출력 템플릿 버전이 필요합니다.")
+        val executionContract = templateOverride?.executionContractJson ?: requireNotNull(pinned).executionContract
+        val entity = versions.save(BuilderWorkflowVersion(
+            workflowId = workflow.id, versionNo = nextNo, parentVersionId = previous,
+            templateVersionId = templateVersionId, executionContractJson = executionContract,
+            graphJson = mapper.convertValue(graph, mapType()), graphHash = validator.hash(graph),
+            changeSummary = summary, approved = approved,
+        ))
         workflow.currentVersionId = entity.id
         return entity
     }
@@ -484,6 +546,7 @@ class BuilderService(
         (value.contains("승인") || value.contains("담당자") || value.contains("확인")) &&
             (value.contains("Slack", true) || value.contains("슬랙") || value.contains("전송") || value.contains("답변")) &&
             (value.contains("추가") || value.contains("전") || value.contains("바꿔") || value.contains("경우"))
+    private fun isOutputTemplatePatch(value: String) = listOf("숫자를 더", "너무 길", "짧게", "관심 종목", "호재", "악재").any(value::contains)
     private fun requireIdempotency(key: String) { if (key.isBlank() || key.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.") }
     private fun mask(value: Map<String, Any?>): Map<String, Any?> = value.mapValues { (key, item) -> if (key.contains("token", true) || key.contains("secret", true) || key.contains("password", true)) "***" else item }
 
@@ -511,7 +574,7 @@ class BuilderService(
 
     private fun runView(run: BuilderRun): RunView {
         val steps = stepRuns.findAllByRunIdOrderBySequenceNo(run.id).map { StepRunView(it.nodeId, it.nodeType, it.sequenceNo, it.status, it.inputJson, it.outputJson, it.errorMessage) }
-        return RunView(run.id, run.status, run.currentNodeId, run.outputJson, run.requirementMatched, steps, approvals.findByRunIdAndStatus(run.id, ApprovalStatus.PENDING)?.id)
+        return RunView(run.id, run.status, run.currentNodeId, run.templateVersionId, run.outputJson, run.requirementMatched, steps, approvals.findByRunIdAndStatus(run.id, ApprovalStatus.PENDING)?.id)
     }
 
     private fun mapType() = object : TypeReference<Map<String, Any?>>() {}

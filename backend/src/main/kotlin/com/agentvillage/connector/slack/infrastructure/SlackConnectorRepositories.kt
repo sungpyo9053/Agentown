@@ -12,6 +12,7 @@ interface ConnectorOauthStateRepository : JpaRepository<ConnectorOauthState, UUI
 }
 interface ConnectorConnectionRepository : JpaRepository<ConnectorConnection, UUID> {
     fun findAllByWorkspaceIdOrderByCreatedAtDesc(workspaceId: UUID): List<ConnectorConnection>
+    fun findAllByWorkspaceIdAndProviderOrderByCreatedAtDesc(workspaceId: UUID, provider: ConnectorProvider): List<ConnectorConnection>
     fun findByWorkspaceIdAndProviderAndExternalAccountId(workspaceId: UUID, provider: ConnectorProvider, externalAccountId: String): ConnectorConnection?
     fun findFirstByProviderAndExternalAccountIdAndStatus(provider: ConnectorProvider, externalAccountId: String, status: ConnectorStatus): ConnectorConnection?
     fun findByIdAndWorkspaceId(id: UUID, workspaceId: UUID): ConnectorConnection?

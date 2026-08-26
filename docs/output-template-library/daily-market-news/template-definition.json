@@ -1,0 +1,33 @@
+{
+  "templateSelection": {
+    "templateKey": "daily-market-news-report",
+    "version": 1,
+    "source": "NOTION",
+    "matchReason": "경제 또는 주식 뉴스 영향 보고서"
+  },
+  "contentSchema": [
+    { "name": "marketSummary", "type": "string", "required": true, "description": "시장 핵심 요약" },
+    { "name": "topNews", "type": "array", "required": true, "description": "주요 뉴스와 출처" },
+    { "name": "marketImpact", "type": "array", "required": true, "description": "사실과 해석을 구분한 예상 영향" },
+    { "name": "watchlist", "type": "array", "required": true, "description": "관찰할 업종 또는 종목과 이유" },
+    { "name": "risks", "type": "array", "required": true, "description": "불확실성과 위험 요인" },
+    { "name": "sources", "type": "array", "required": true, "description": "사용한 기사 URL" },
+    { "name": "report", "type": "string", "required": true, "description": "채널 렌더링 전 구조화 보고서" }
+  ],
+  "executionContract": {
+    "contentSchemaVersion": "1.0",
+    "rendererKey": "slack.market-news",
+    "rendererVersion": "1",
+    "qualityRuleVersion": "1",
+    "promptVersion": "market-impact-report-v1",
+    "modelPolicy": { "mode": "STRUCTURED", "maxCallsPerRun": 1, "temperature": 0 },
+    "sourcePolicyVersion": "news-evidence-24h-v1",
+    "qualityRules": {
+      "sourceRequired": true,
+      "factOpinionSeparation": true,
+      "maxNewsItems": 5,
+      "duplicateTitlesAllowed": false,
+      "investmentDisclaimerRequired": true
+    }
+  }
+}

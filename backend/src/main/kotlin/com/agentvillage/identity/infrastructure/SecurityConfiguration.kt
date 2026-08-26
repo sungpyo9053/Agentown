@@ -81,7 +81,7 @@ class SecurityConfiguration {
             .securityContext { it.securityContextRepository(HttpSessionSecurityContextRepository()) }
             .authorizeHttpRequests { requests ->
                 requests
-                    .requestMatchers("/actuator/health/**", "/api/auth/signup", "/api/auth/login", "/api/auth/csrf", "/api/auth/availability", "/api/auth/email/**", "/api/auth/password/temporary", "/api/runner/**", "/api/connectors/slack/oauth/callback", "/api/connectors/slack/events").permitAll()
+                    .requestMatchers("/actuator/health/**", "/api/auth/signup", "/api/auth/login", "/api/auth/csrf", "/api/auth/availability", "/api/auth/email/**", "/api/auth/password/temporary", "/api/runner/**", "/api/connectors/slack/oauth/callback", "/api/connectors/slack/events", "/api/connectors/notion/oauth/callback").permitAll()
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
                     .requestMatchers(HttpMethod.GET, "/api/mini-homes/me").authenticated()
                     .requestMatchers(HttpMethod.GET, "/api/mini-homes/*").permitAll()

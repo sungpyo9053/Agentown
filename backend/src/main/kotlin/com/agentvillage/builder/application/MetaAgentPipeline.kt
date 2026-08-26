@@ -227,7 +227,7 @@ class StructuredMetaAgentPipeline(
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
-        val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "article", "content", "writing")
+        val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "보고서", "article", "content", "writing", "report")
             .any(instruction.lowercase()::contains)
         val scheduled = Regex("\\d{1,2}시").containsMatchIn(instruction) ||
             Regex("매일\\s*(아침|오전|오후|밤|새벽|\\d)").containsMatchIn(instruction) ||
@@ -260,27 +260,60 @@ class StructuredMetaAgentPipeline(
             proposal = bundle.proposal.copy(graphPlan = bundle.proposal.graphPlan?.let(::normalizeGraphPlan)),
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
-        return if (writingAutomation && questions.isEmpty()) standardizeWritingTeam(normalized, instruction) else normalized
+        if (questions.isNotEmpty()) return normalized
+        val standardized = when {
+            scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
+            writingAutomation -> standardizeWritingTeam(normalized, instruction)
+            else -> normalized
+        }
+        val aiCalls = standardized.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
+        return standardized.copy(proposal = standardized.proposal.copy(
+            templateSelection = standardized.proposal.templateSelection ?: HarnessTemplateSelection(
+                templateKey = "generated-${instruction.hashCode().toUInt().toString(16)}",
+                version = 1,
+                source = "GENERATED",
+                matchReason = "승인된 기본 템플릿과 정확히 일치하지 않아 구조화 계약 안에서 초안을 생성",
+            ),
+            economics = HarnessDesignEconomics(
+                agentCount = standardized.agentDefinitions.size,
+                estimatedAiCallsPerRun = aiCalls,
+                separationRationale = if (standardized.agentDefinitions.size <= 1) listOf("판단 작업을 한 번의 구조화 AI 호출로 통합") else listOf("서로 독립적인 판단 계약이 필요함"),
+            ),
+            outputSchema = standardized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty(),
+            executionContract = standardized.proposal.executionContract ?: TemplateExecutionContract(
+                contentSchemaVersion = "1.0",
+                rendererKey = "plain-text",
+                rendererVersion = "1",
+                qualityRuleVersion = "1",
+                promptVersion = "1",
+                modelPolicy = mapOf("mode" to "STRUCTURED", "maxCallsPerRun" to aiCalls, "temperature" to 0),
+                sourcePolicyVersion = "1",
+                qualityRules = mapOf("evidenceRequired" to true, "arbitraryFieldsAllowed" to false),
+            ),
+        ))
     }
 
     private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
-        val agents = listOf(
-            writingAgent("source-analyst", "자료 분석가", "입력 자료에서 사실, 의견, 근거와 부족한 항목을 분석한다.", "analysis"),
-            writingAgent("content-planner", "콘텐츠 기획자", "독자와 목적에 맞는 제목, 요약, 본문 구조를 설계한다.", "plan"),
-            writingAgent("draft-writer", "초안 작성자", "확정된 근거와 기획만 사용해 요청 형식의 초안을 작성한다.", "draft"),
-            writingAgent("fact-editor", "팩트체커·편집자", "초안의 근거, 사실과 의견 구분, 문체와 구조를 검수한다.", "result"),
-        )
+        val explicitSeparation = listOf("분석 담당과", "분석 담당이", "작성 담당과", "작성 담당이").count(instruction::contains) >= 2
+        val agents = if (explicitSeparation) listOf(
+            writingAgent("content-analyst", "콘텐츠 분석자", "입력 자료에서 사실, 수치, 쟁점과 누락 정보를 구조화한다.", "analysis"),
+            writingAgent("content-writer", "콘텐츠 작성자", "분석 결과만 근거로 목적과 독자에 맞는 초안을 작성하고 자체 점검한다.", "result"),
+        ) else listOf(writingAgent(
+            "content-writer", "콘텐츠 작성자",
+            "입력 자료의 사실과 근거를 분석하고, 독자와 목적에 맞는 구조를 잡아 초안을 작성한 뒤 자체 점검 결과를 함께 반환한다.",
+            "result",
+        ))
         val plan = bundle.proposal.graphPlan ?: return bundle.copy(agentDefinitions = agents)
         val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
         val firstAi = plan.nodes.indexOfFirst { it.nodeType in aiTypes }.let { if (it < 0) plan.nodes.indexOfFirst { node -> node.nodeType == NodeType.HUMAN_APPROVAL.wireName }.let { approval -> if (approval < 0) plan.nodes.size else approval } else it }
         val retained = plan.nodes.filterNot { it.nodeType in aiTypes }.toMutableList()
         val insertionIndex = plan.nodes.take(firstAi).count { it.nodeType !in aiTypes }
-        val writingNodes = listOf(
-            WorkflowNodePlan("source-analysis", NodeType.AI_GENERATE.wireName, "자료 분석", mapOf("instruction" to "사용자 제공 자료의 사실과 근거를 분석", "agentKey" to "source-analyst")),
-            WorkflowNodePlan("content-plan", NodeType.AI_GENERATE.wireName, "콘텐츠 기획", mapOf("instruction" to "독자와 목적에 맞는 제목과 본문 구조를 기획", "agentKey" to "content-planner")),
-            WorkflowNodePlan("draft-write", NodeType.AI_GENERATE.wireName, "초안 작성", mapOf("instruction" to instruction, "agentKey" to "draft-writer")),
-            WorkflowNodePlan("fact-edit", NodeType.AI_GENERATE.wireName, "팩트체크와 편집", mapOf("instruction" to "근거와 품질 기준에 따라 초안을 검수", "agentKey" to "fact-editor")),
-        )
+        val writingNodes = if (explicitSeparation) listOf(
+            WorkflowNodePlan("content-analyze", NodeType.AI_GENERATE.wireName, "입력 자료 분석", mapOf("instruction" to "입력 자료의 사실과 쟁점을 구조화", "agentKey" to "content-analyst")),
+            WorkflowNodePlan("content-write", NodeType.AI_GENERATE.wireName, "분석 근거로 초안 작성", mapOf("instruction" to instruction, "agentKey" to "content-writer")),
+        ) else listOf(WorkflowNodePlan(
+            "content-write", NodeType.AI_GENERATE.wireName, "분석·구성·작성·자체 점검", mapOf("instruction" to instruction, "agentKey" to "content-writer"),
+        ))
         retained.addAll(insertionIndex.coerceIn(0, retained.size), writingNodes)
         val normalizedPlan = WorkflowGraphPlan(
             entryNodeId = retained.firstOrNull()?.id ?: plan.entryNodeId,
@@ -295,9 +328,82 @@ class StructuredMetaAgentPipeline(
             )))
         return bundle.copy(
             requirement = bundle.requirement.copy(steps = retained.map { it.label }),
-            proposal = bundle.proposal.copy(capabilities = retained.map { it.label }, graphPlan = normalizedPlan),
+            proposal = bundle.proposal.copy(
+                capabilities = retained.map { it.label }, graphPlan = normalizedPlan,
+                templateSelection = HarnessTemplateSelection("structured-writing", 1, "BUILT_IN", "구조화 글쓰기 요청과 일치"),
+                executionContract = TemplateExecutionContract(
+                    contentSchemaVersion = "1.0", rendererKey = "article.plain-text", rendererVersion = "1",
+                    qualityRuleVersion = "1", promptVersion = "1",
+                    modelPolicy = mapOf("mode" to "STRUCTURED", "maxCallsPerRun" to 1, "temperature" to 0),
+                    sourcePolicyVersion = "user-input-only-v1",
+                    qualityRules = mapOf("evidenceRequired" to true, "factOpinionSeparation" to true, "maxLength" to 5000),
+                ),
+            ),
             agentDefinitions = agents,
             guideDefinitions = guides,
+        )
+    }
+
+    private fun standardizeDailyNewsReport(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val source = listOf("네이버", "Google News", "구글 뉴스", "RSS").firstOrNull { instruction.contains(it, true) } ?: "사용자 지정 뉴스 소스"
+        val hour = Regex("(\\d{1,2})\\s*시").find(instruction)?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(0, 23) ?: 8
+        val channel = Regex("#[A-Za-z0-9_-]+").find(instruction)?.value ?: "사용자 지정 Slack 채널"
+        val agent = AgentDefinition(
+            key = "market-news-reporter",
+            name = "시장 뉴스 보고서 작성자",
+            role = "중복 제거된 경제·주식 뉴스를 근거로 시장 영향 보고서를 한 번의 구조화 호출로 작성한다.",
+            inputSchema = listOf(FieldDefinition("newsItems", "array", true, "제목, 요약, URL, 발행 시각, 출처가 포함된 뉴스 목록")),
+            outputSchema = listOf(
+                FieldDefinition("marketSummary", "string", true, "시장 핵심 요약"),
+                FieldDefinition("topNews", "array", true, "주요 뉴스와 출처"),
+                FieldDefinition("marketImpact", "array", true, "사실과 해석을 구분한 예상 영향"),
+                FieldDefinition("watchlist", "array", true, "관찰할 업종 또는 종목과 이유"),
+                FieldDefinition("risks", "array", true, "불확실성과 위험 요인"),
+                FieldDefinition("sources", "array", true, "사용한 기사 URL"),
+                FieldDefinition("report", "string", true, "Slack 전송용 최종 보고서"),
+            ),
+            behaviorRules = listOf("기사에 있는 사실과 분석을 구분한다", "중복 기사를 하나의 이슈로 묶는다", "모든 핵심 주장에 출처를 연결한다"),
+            forbiddenRules = listOf("기사에 없는 사실을 만들지 않는다", "수익을 보장하거나 매수·매도를 지시하지 않는다", "직접 외부 전송하지 않는다"),
+            evidenceRequirements = listOf("기사 제목, URL, 발행 시각, 출처", "영향 분석에 사용한 근거 문장"),
+        )
+        val nodes = listOf(
+            WorkflowNodePlan("daily-schedule", NodeType.SCHEDULE_TRIGGER.wireName, "매일 ${hour}시 실행", mapOf("cron" to "0 0 $hour * * *", "timezone" to "Asia/Seoul")),
+            WorkflowNodePlan("news-search", NodeType.NEWS_SEARCH_MOCK.wireName, "$source 뉴스 수집 (Mock)", mapOf("source" to source, "query" to "경제 주식 시장", "lookbackHours" to 24)),
+            WorkflowNodePlan("deduplicate", NodeType.DATA_DEDUPLICATE.wireName, "중복 뉴스 제거", mapOf("key" to "canonicalUrl")),
+            WorkflowNodePlan("write-report", NodeType.AI_GENERATE.wireName, "시장 영향 보고서 작성", mapOf("instruction" to "승인된 출력 스키마로 일일 시장 영향 보고서 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("approval", NodeType.HUMAN_APPROVAL.wireName, "담당자 승인", mapOf("approver" to "담당자")),
+            WorkflowNodePlan("slack-send", NodeType.SLACK_SEND_MOCK.wireName, "$channel 전송 (Mock)", mapOf("channel" to channel, "rendererKey" to "slack.market-news.v1")),
+        )
+        val guide = GuideDefinition("daily-news-settings", "일일 뉴스 보고서 설정", "실행 시간, 뉴스 소스, Slack 채널과 승인자를 설정합니다.", listOf(
+            GuideField("schedule", "실행 시간", "text", true, false, "매일 실행할 시간과 시간대"),
+            GuideField("newsSource", "뉴스 소스", "text", true, false, "허용된 뉴스 API, RSS 또는 사이트"),
+            GuideField("query", "검색 주제", "text", true, false, "예: 경제 주식 시장"),
+            GuideField("slackChannel", "Slack 채널", "text", true, false, "보고서를 받을 채널"),
+            GuideField("approver", "승인자", "text", true, false, "전송 전 보고서를 검토할 담당자"),
+        ))
+        return bundle.copy(
+            requirement = bundle.requirement.copy(
+                trigger = "매일 ${hour}시 예약 실행", inputs = listOf("최근 24시간 경제·주식 뉴스"), outputs = listOf("승인된 시장 영향 보고서"),
+                steps = nodes.map { it.label }, decisions = listOf("뉴스 관련성", "시장 영향", "담당자 승인"), humanApprovalRequired = true,
+            ),
+            proposal = bundle.proposal.copy(
+                name = "일일 주식 뉴스 영향 보고서", summary = "뉴스를 수집·중복 제거하고 AI 호출 한 번으로 보고서를 작성해 승인 후 Slack으로 전달합니다.",
+                capabilities = nodes.map { it.label }, integrations = listOf("News Mock", "Slack Mock"), approvalPoints = listOf("Slack 전송 직전"),
+                graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) -> WorkflowEdgePlan("edge-${index + 1}", from.id, to.id) }),
+                templateSelection = HarnessTemplateSelection("daily-market-news-report", 1, "BUILT_IN", "예약 뉴스 분석과 Slack 보고서 전달 요청이 일치"),
+                executionContract = TemplateExecutionContract(
+                    contentSchemaVersion = "1.0", rendererKey = "slack.market-news", rendererVersion = "1",
+                    qualityRuleVersion = "1", promptVersion = "market-impact-report-v1",
+                    modelPolicy = mapOf("mode" to "STRUCTURED", "maxCallsPerRun" to 1, "temperature" to 0),
+                    sourcePolicyVersion = "news-evidence-24h-v1",
+                    qualityRules = mapOf(
+                        "sourceRequired" to true, "factOpinionSeparation" to true, "maxNewsItems" to 5,
+                        "duplicateTitlesAllowed" to false, "investmentDisclaimerRequired" to true,
+                    ),
+                ),
+            ),
+            agentDefinitions = listOf(agent),
+            guideDefinitions = listOf(guide),
         )
     }
 

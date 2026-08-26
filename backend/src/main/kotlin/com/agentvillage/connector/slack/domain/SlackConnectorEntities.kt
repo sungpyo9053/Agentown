@@ -7,7 +7,7 @@ import org.hibernate.type.SqlTypes
 import java.time.Instant
 import java.util.UUID
 
-enum class ConnectorProvider { SLACK }
+enum class ConnectorProvider { SLACK, NOTION }
 enum class ConnectorStatus { ACTIVE, REVOKED, INVALID }
 enum class ConnectorEventStatus { RECEIVED, IGNORED }
 
@@ -30,10 +30,12 @@ class ConnectorConnection(
     @Column(name = "external_account_id", nullable = false, length = 120) val externalAccountId: String,
     @Column(name = "display_name", nullable = false, length = 200) var displayName: String,
     @Column(name = "encrypted_access_token", nullable = false, columnDefinition = "text") var encryptedAccessToken: String,
+    @Column(name = "encrypted_refresh_token", columnDefinition = "text") var encryptedRefreshToken: String? = null,
     @Column(name = "key_version", nullable = false, length = 30) var keyVersion: String,
     @JdbcTypeCode(SqlTypes.JSON) @Column(nullable = false, columnDefinition = "jsonb") var scopes: List<String>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "metadata_json", nullable = false, columnDefinition = "jsonb") var metadata: Map<String, Any?>,
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) var status: ConnectorStatus = ConnectorStatus.ACTIVE,
+    @Column(name = "last_verified_at") var lastVerifiedAt: Instant? = null,
 ) : AuditedEntity()
 
 @Entity @Table(name = "connector_events")

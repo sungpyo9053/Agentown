@@ -60,8 +60,8 @@ class AutomationIntentCorpusTest : IntegrationTestSupport() {
             .withFailMessage(results.filterNot { it.passed }.joinToString("\n") { "${it.id} ${it.category}: expected=${it.expected} actual=${it.actual} code=${it.errorCode} detail=${it.detail}" })
             .isEmpty()
         assertThat(results.count { it.actual == "DESIGN" }).isEqualTo(25)
-        assertThat(results.count { it.actual == "CLARIFY" }).isEqualTo(50)
-        assertThat(results.count { it.actual == "CAPABILITY_REQUIRED" }).isEqualTo(25)
+        assertThat(results.count { it.actual == "CLARIFY" }).isEqualTo(51)
+        assertThat(results.count { it.actual == "CAPABILITY_REQUIRED" }).isEqualTo(24)
     }
 
     private fun evaluate(id: String, row: CorpusRow, variant: String, expected: String, instruction: String, minAgents: Int): CaseResult {
