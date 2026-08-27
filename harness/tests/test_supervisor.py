@@ -39,6 +39,31 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text()), {"checkpoint": "VERIFYING", "count": 2})
         self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
+    def test_private_release_environment_loads_allowlisted_values_without_overriding(self):
+        private = self.root / "release.env"
+        private.write_text(
+            "AGENTOWN_RELEASE_CONTROL_URL=https://control.example\n"
+            "export AGENTOWN_RELEASE_AGENT_TOKEN='private-token'\n",
+            encoding="utf-8",
+        )
+        private.chmod(0o600)
+        with patch.dict(os.environ, {"AGENTOWN_RELEASE_CONTROL_URL": "https://override.example"}, clear=True):
+            loaded = supervisor.load_private_environment(private)
+            self.assertEqual(loaded, ["AGENTOWN_RELEASE_AGENT_TOKEN"])
+            self.assertEqual(os.environ["AGENTOWN_RELEASE_CONTROL_URL"], "https://override.example")
+            self.assertEqual(os.environ["AGENTOWN_RELEASE_AGENT_TOKEN"], "private-token")
+
+    def test_private_release_environment_rejects_insecure_permissions_and_unknown_keys(self):
+        private = self.root / "release.env"
+        private.write_text("AGENTOWN_RELEASE_AGENT_TOKEN=value\n", encoding="utf-8")
+        private.chmod(0o644)
+        with self.assertRaises(supervisor.SupervisorError):
+            supervisor.load_private_environment(private)
+        private.chmod(0o600)
+        private.write_text("UNSAFE_UNRELATED_SECRET=value\n", encoding="utf-8")
+        with self.assertRaises(supervisor.SupervisorError):
+            supervisor.load_private_environment(private)
+
     def test_fresh_lock_blocks_second_supervisor(self):
         self.lock.write_text(json.dumps({"pid": os.getpid(), "acquired_epoch": time.time()}))
         with self.assertRaises(supervisor.SupervisorError):

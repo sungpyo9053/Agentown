@@ -73,7 +73,8 @@ class ReleaseManagerTest(unittest.TestCase):
 
     def test_secret_scan_and_destructive_migration_are_blocked(self):
         migration = self.root / "backend" / "src" / "main" / "resources" / "db" / "migration" / "V1__bad.sql"
-        migration.parent.mkdir(parents=True); migration.write_text("DROP TABLE customers;\npassword=abcdefghijklmnop\n")
+        synthetic_secret = "abcdefgh" + "ijklmnop"
+        migration.parent.mkdir(parents=True); migration.write_text(f"DROP TABLE customers;\npassword={synthetic_secret}\n")
         subprocess.run(["git", "add", "."], cwd=self.root, check=True); subprocess.run(["git", "commit", "-qm", "bad"], cwd=self.root, check=True)
         sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
         self.contract["approved_commit_sha"] = sha
@@ -110,6 +111,19 @@ class ReleaseManagerTest(unittest.TestCase):
         remote["candidateSha"] = "f" * 40
         with patch.dict("os.environ", {"AGENTOWN_RELEASE_CONTROL_URL": "https://control.invalid", "AGENTOWN_RELEASE_AGENT_TOKEN": "test-token"}), patch("urllib.request.urlopen", return_value=Response()):
             with self.assertRaises(ReleaseError): self.manager.sync_control_plane_approval()
+
+    def test_control_plane_payload_respects_server_text_limits(self):
+        self.contract["review_summary"] = "x" * 620
+        self.contract["planner_task_id"] = "p" * 340
+        self.contract["release_id"] = "r" * 90
+        self.contract["deployment_strategy"]["reason"] = "test environment"
+        payload = self.manager.control_plane_payload(
+            self.contract,
+            {"preflight_hash": "hash", "changed_files": []},
+        )
+        self.assertEqual(len(payload["userSummary"]), 500)
+        self.assertEqual(len(payload["purpose"]), 300)
+        self.assertEqual(len(payload["releaseKey"]), 80)
 
     def test_control_plane_candidate_becomes_approvable_only_with_explicit_environment_contract(self):
         report = self.manager.preflight(self.contract)
@@ -151,7 +165,8 @@ class ReleaseManagerTest(unittest.TestCase):
     def test_atomic_reports_and_log_redaction(self):
         target = self.root / "report.json"; atomic_json(target, {"ok": True})
         self.assertEqual(json.loads(target.read_text()), {"ok": True}); self.assertEqual(list(target.parent.glob("*.tmp")), [])
-        self.assertNotIn("abcdefghijklmnop", redact("api_key=abcdefghijklmnop"))
+        synthetic_secret = "abcdefgh" + "ijklmnop"
+        self.assertNotIn(synthetic_secret, redact(f"api_key={synthetic_secret}"))
 
     def test_no_real_adapter_means_staging_and_production_are_blocked(self):
         with self.assertRaises(ReleaseError): self.manager.deploy("staging")

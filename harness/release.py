@@ -69,6 +69,11 @@ def redact(value: str) -> str:
     return result
 
 
+def bounded_text(value: Any, maximum: int, fallback: str) -> str:
+    text = str(value or fallback).strip()
+    return text[:maximum]
+
+
 def run_fake_deploy_command(command: list[str], expected_sha: str, timeout_seconds: float = 5, control_path: Path | None = None) -> dict[str, Any]:
     """Test-only process adapter used to prove timeout and pause/stop behavior."""
     process = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -142,8 +147,9 @@ class ReleaseManager:
         )
         staging_passed = contract.get("status") == "RELEASE_APPROVAL_REQUIRED"
         return {
-            "releaseKey": contract["release_id"], "purpose": contract["planner_task_id"],
-            "userSummary": contract.get("review_summary") or "승인된 개발 변경을 운영에 반영합니다.",
+            "releaseKey": bounded_text(contract["release_id"], 80, "release"),
+            "purpose": bounded_text(contract["planner_task_id"], 300, "승인된 개발 작업"),
+            "userSummary": bounded_text(contract.get("review_summary"), 500, "승인된 개발 변경을 운영에 반영합니다."),
             "currentSha": contract.get("previous_release_sha"), "candidateSha": contract["approved_commit_sha"],
             "includedTaskCount": 1, "riskLevel": "HIGH" if migrations else "MEDIUM", "hasMigration": bool(migrations),
             "stagingStatus": "PASSED" if staging_passed else "NOT_CONFIGURED",

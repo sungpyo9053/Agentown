@@ -31,6 +31,13 @@ BACKGROUND_LABEL = "com.agentown.development-supervisor"
 NIGHTLY_LABEL = "com.agentown.nightly-release-first"
 LAUNCHD_PLIST_PATH = ROOT / "product" / ".autonomous-supervisor.launchd.plist"
 NIGHTLY_PLIST_PATH = ROOT / "product" / ".agentown-nightly.launchd.plist"
+PRIVATE_ENV_PATH = Path.home() / ".config" / "agentown" / "release.env"
+PRIVATE_ENV_ALLOWLIST = {
+    "AGENTOWN_RELEASE_AGENT_TOKEN",
+    "AGENTOWN_RELEASE_CONTROL_URL",
+    "AGENTOWN_RELEASE_ENVIRONMENT_CONFIGURED",
+    "AGENTOWN_RELEASE_DEPLOY_COMMAND",
+}
 DEFAULT_BRANCHES = {"main", "master"}
 ALLOWED_VERIFY = ("python3 -m unittest tools.tests", "./gradlew", "npm --prefix frontend")
 REQUIRED_EXECUTABLES = ("npm", "node", "java", "git", "codex")
@@ -64,6 +71,40 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def load_private_environment(path: Path = PRIVATE_ENV_PATH) -> list[str]:
+    """Load only release-control settings from a private, owner-only env file.
+
+    launchd jobs intentionally do not embed credentials in their plist. Existing
+    process environment values win so an operator can make an explicit override.
+    """
+    if not path.is_file():
+        return []
+    if path.stat().st_mode & 0o077:
+        raise SupervisorError(f"private release environment must be mode 600: {path}")
+    loaded: list[str] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            raise SupervisorError(f"invalid private release environment line {line_number}")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in PRIVATE_ENV_ALLOWLIST:
+            raise SupervisorError(f"unsupported private release environment key: {key}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if not value:
+            raise SupervisorError(f"empty private release environment value: {key}")
+        if key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
 
 
 def config() -> dict[str, Any]:
@@ -1006,6 +1047,7 @@ def print_status() -> None:
 
 
 def main() -> int:
+    load_private_environment()
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start"); start.add_argument("--background", action="store_true"); start.add_argument("--max-cycles", type=int); start.add_argument("--max-runtime-seconds", type=int)
