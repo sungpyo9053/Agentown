@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const externalBaseUrl = process.env.PLAYWRIGHT_BASE_URL;
+const localBaseUrl = "http://127.0.0.1:3100";
+const localBackendUrl = "http://127.0.0.1:8180";
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -8,9 +12,25 @@ export default defineConfig({
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   expect: { timeout: 15_000 },
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000",
+    baseURL: externalBaseUrl ?? localBaseUrl,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
+  webServer: externalBaseUrl
+    ? undefined
+    : [
+        {
+          command: "cd .. && exec env DB_URL=jdbc:postgresql://127.0.0.1:5433/agent_village DB_USERNAME=agent_village DB_PASSWORD=agent_village_local LLM_MASTER_KEY=VGhpcy1pcy1hLXRlc3Qta2V5LWZvci1hZXMtMjU2ISE= EMAIL_PROVIDER=stub EMAIL_EXPOSE_DEVELOPMENT_VALUES=true CORS_ALLOWED_ORIGINS=http://127.0.0.1:3100 BUILDER_META_AGENT_MODE=mock RATE_LIMIT_ENABLED=false ./gradlew :backend:bootRun --args='--server.address=127.0.0.1 --server.port=8180'",
+          url: `${localBackendUrl}/actuator/health`,
+          reuseExistingServer: false,
+          timeout: 180_000,
+        },
+        {
+          command: "API_INTERNAL_URL=http://127.0.0.1:8180 npm run build && mkdir -p .next/standalone/.next && cp -R public .next/standalone/ && cp -R .next/static .next/standalone/.next/ && exec env API_INTERNAL_URL=http://127.0.0.1:8180 HOSTNAME=127.0.0.1 PORT=3100 node .next/standalone/server.js",
+          url: localBaseUrl,
+          reuseExistingServer: false,
+          timeout: 180_000,
+        },
+      ],
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

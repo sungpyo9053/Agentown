@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+const backendUrl = process.env.E2E_BACKEND_URL ?? "http://127.0.0.1:8180";
+
 test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 동작한다", async ({ page }) => {
   test.setTimeout(120_000);
   const suffix = `${Date.now()}`.slice(-10);
@@ -29,7 +31,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   const runnerToken = await page.locator("code").textContent();
   expect(runnerToken).toBeTruthy();
   const runnerHeaders = { "X-Runner-Token": runnerToken! };
-  const heartbeat = await page.request.post("http://127.0.0.1:8080/api/runner/heartbeat", { headers: runnerHeaders });
+  const heartbeat = await page.request.post(`${backendUrl}/api/runner/heartbeat`, { headers: runnerHeaders });
   expect(heartbeat.ok()).toBeTruthy();
   await page.getByText("고급 옵션: API 키로 서버에서 바로 실행").click();
   await page.getByLabel("API 공급자").selectOption("ANTHROPIC");
@@ -60,7 +62,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await expect(page.getByText("불변 버전을 발행했습니다.")).toBeVisible();
   const harnessEditUrl = page.url();
 
-  const freshHeartbeat = await page.request.post("http://127.0.0.1:8080/api/runner/heartbeat", { headers: runnerHeaders });
+  const freshHeartbeat = await page.request.post(`${backendUrl}/api/runner/heartbeat`, { headers: runnerHeaders });
   expect(freshHeartbeat.ok()).toBeTruthy();
   await page.goto("/dashboard");
   await expect(page.getByRole("heading", { name: "AI 직원에게 실제 업무 지시" })).toBeVisible();
@@ -71,7 +73,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await page.getByRole("button", { name: "실제 AI 직원 업무 시작" }).click();
   await expect(page).toHaveURL(/\/executions\/[^/]+$/);
 
-  const claim = await page.request.post("http://127.0.0.1:8080/api/runner/jobs/claim", { headers: runnerHeaders });
+  const claim = await page.request.post(`${backendUrl}/api/runner/jobs/claim`, { headers: runnerHeaders });
   expect(claim.ok()).toBeTruthy();
   const job = await claim.json() as { executionId: string; agents: Array<{ stepKey: string; agentId: string; name: string }> };
   const realOutput: Record<string, unknown> = {};
@@ -79,7 +81,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
     const agent = job.agents[index];
     const stage = { result: `실제 Runner fixture ${index + 1}: ${agent.name} 작업 완료` };
     for (const eventType of ["STEP_STARTED", "MODEL_REQUEST_SENT", "STEP_OUTPUT_CREATED", "STEP_COMPLETED"]) {
-      const progress = await page.request.post(`http://127.0.0.1:8080/api/runner/jobs/${job.executionId}/events`, {
+      const progress = await page.request.post(`${backendUrl}/api/runner/jobs/${job.executionId}/events`, {
         headers: runnerHeaders,
         data: { eventType, agentId: agent.agentId, stepKey: agent.stepKey, output: eventType === "STEP_OUTPUT_CREATED" ? stage : undefined },
       });
@@ -88,7 +90,7 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
     realOutput[agent.stepKey] = stage;
     realOutput.result = stage.result;
   }
-  const complete = await page.request.post(`http://127.0.0.1:8080/api/runner/jobs/${job.executionId}/complete`, {
+  const complete = await page.request.post(`${backendUrl}/api/runner/jobs/${job.executionId}/complete`, {
     headers: runnerHeaders,
     data: { output: realOutput },
   });
@@ -129,4 +131,49 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   for await (const chunk of stream) html += chunk.toString();
   expect(html).toContain("<!doctype html>");
   expect(html).toContain("Agentown 실행 테스트");
+});
+
+test("timeout 실행은 보존된 진행 상황과 안전한 다음 행동을 설명한다", async ({ page }) => {
+  const now = new Date().toISOString();
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (path === "/api/executions/timeout-fixture/events") {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
+    } else if (path === "/api/executions/timeout-fixture/history") {
+      await json([{ id: "event-1", sequenceNo: 1, eventType: "EXECUTION_TIMEOUT_RECOVERED", payload: { automaticRetry: false }, createdAt: now }]);
+    } else if (path === "/api/executions/timeout-fixture") {
+      await json({
+        execution: {
+          id: "timeout-fixture", harnessId: "harness-timeout", status: "TIMEOUT", executionMode: "CLOUD_API",
+          inputJson: {}, errorCode: "WORKER_LEASE_EXPIRED",
+          errorMessage: "작업자 응답이 끊겨 실행을 안전하게 종료했습니다. 진행 중이던 단계는 자동 재실행하지 않습니다.",
+          finishedAt: now,
+        },
+        steps: [
+          { id: "step-1", stepKey: "research", status: "SUCCEEDED", outputJson: { result: "보존된 조사 결과" } },
+          { id: "step-2", stepKey: "external-write", status: "TIMEOUT" },
+        ],
+      });
+    } else if (path === "/api/harnesses/harness-timeout") {
+      await json({ harness: { id: "harness-timeout", name: "Timeout 복구 회사", resultFormat: "MARKDOWN" }, steps: [] });
+    } else if (path === "/api/agents") {
+      await json([]);
+    } else if (path === "/api/mini-homes/me") {
+      await json({ title: "복구 검증 회사", backgroundKey: "office", items: [] });
+    } else if (path === "/api/auth/me") {
+      await json({ displayName: "복구 사용자", handle: "recovery", role: "USER" });
+    } else {
+      await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+    }
+  });
+
+  await page.goto("/executions/timeout-fixture");
+  await expect(page.getByText("실행이 안전하게 종료되었습니다")).toBeVisible();
+  await expect(page.getByText("작업자의 응답이 일정 시간 동안 없어 실행이 멈춘 것으로 판단했습니다.")).toBeVisible();
+  await expect(page.getByText("보존된 조사 결과")).toBeVisible();
+  await expect(page.getByText("완료 여부를 확인할 수 없어 자동 재실행하지 않았습니다.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "하네스를 확인하고 새 실행 만들기" }))
+    .toHaveAttribute("href", "/harnesses/harness-timeout/edit");
+  await expect(page.getByText("시간 초과 복구 · 안전 종료")).toBeVisible();
 });
