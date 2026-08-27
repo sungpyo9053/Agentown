@@ -79,6 +79,13 @@ class IdentityService(
     }
 
     @Transactional(readOnly = true)
+    override fun findByEmail(email: String): UserIdentity? {
+        val user = users.findByEmailIgnoreCase(email.trim()) ?: return null
+        val profile = profiles.findById(user.id).orElse(null) ?: return null
+        return user.toIdentity(profile)
+    }
+
+    @Transactional(readOnly = true)
     fun publicProfile(handle: String): PublicProfile? {
         val user = users.findByHandle(handle.lowercase(Locale.ROOT)) ?: return null
         val profile = profiles.findById(user.id).orElse(null) ?: return null

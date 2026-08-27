@@ -17,6 +17,10 @@ spring:
     enabled: true
   session:
     timeout: 7d
+release:
+  commit-sha: ${RELEASE_COMMIT_SHA:unknown}
+  artifact: ${RELEASE_ARTIFACT:local-development}
+  agent-token: ${RELEASE_AGENT_TOKEN:}
 server:
   servlet:
     session:

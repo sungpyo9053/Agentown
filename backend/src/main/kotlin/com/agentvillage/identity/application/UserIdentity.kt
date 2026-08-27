@@ -14,4 +14,5 @@ data class UserIdentity(
 interface UserDirectory {
     fun require(userId: UUID): UserIdentity
     fun findByHandle(handle: String): UserIdentity?
+    fun findByEmail(email: String): UserIdentity?
 }
