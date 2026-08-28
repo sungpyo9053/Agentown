@@ -69,7 +69,29 @@ class ExecutionService(
     }
     @Transactional(readOnly = true) fun get(id: UUID, ownerId: UUID) = ExecutionView(requireOwned(id, ownerId), executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id))
     @Transactional(readOnly = true) fun list(ownerId: UUID) = executions.findTop20ByOwnerIdOrderByCreatedAtDesc(ownerId)
-    @Transactional fun cancel(id: UUID, ownerId: UUID): Execution { val e = requireOwned(id, ownerId); e.status = ExecutionStatus.CANCELLED; e.finishedAt = Instant.now(); record(id, "EXECUTION_FAILED", null, mapOf("status" to "CANCELLED")); metrics.completed(e.startedAt, "CANCELLED"); return e }
+    @Transactional
+    fun cancel(id: UUID, ownerId: UUID): Execution {
+        val execution = executions.findByIdForUpdate(id)
+            ?.takeIf { it.ownerId == ownerId }
+            ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
+        if (execution.status !in CANCELLABLE_STATUSES) {
+            throw ConflictException("EXECUTION_NOT_CANCELLABLE", "이미 종료된 실행은 취소할 수 없습니다.")
+        }
+
+        val finishedAt = Instant.now()
+        execution.status = ExecutionStatus.CANCELLED
+        execution.currentStepKey = null
+        execution.finishedAt = finishedAt
+        executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id)
+            .filter { it.status in UNFINISHED_STEP_STATUSES }
+            .forEach {
+                it.status = StepStatus.CANCELLED
+                it.finishedAt = finishedAt
+            }
+        record(id, "EXECUTION_FAILED", null, mapOf("status" to "CANCELLED"))
+        metrics.completed(execution.startedAt, "CANCELLED")
+        return execution
+    }
     @Transactional fun approve(id: UUID, ownerId: UUID): Execution {
         val e = requireOwned(id, ownerId)
         if (e.status != ExecutionStatus.WAITING_APPROVAL) throw ConflictException("EXECUTION_NOT_WAITING_APPROVAL", "승인 대기 중인 실행이 아닙니다.")
@@ -134,5 +156,19 @@ class ExecutionService(
             stream.publish(event)
         }
         return event
+    }
+
+    private companion object {
+        val CANCELLABLE_STATUSES = setOf(
+            ExecutionStatus.QUEUED,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING_RUNNER,
+            ExecutionStatus.WAITING_APPROVAL,
+        )
+        val UNFINISHED_STEP_STATUSES = setOf(
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            StepStatus.WAITING_APPROVAL,
+        )
     }
 }
