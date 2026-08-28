@@ -40,6 +40,7 @@ PRIVATE_ENV_ALLOWLIST = {
 }
 DEFAULT_BRANCHES = {"main", "master"}
 ALLOWED_VERIFY = ("python3 -m unittest tools.tests", "./gradlew", "npm --prefix frontend")
+ALLOWED_VERIFY_ENV = {"PLAYWRIGHT_MOCKED_UI": {"true"}}
 REQUIRED_EXECUTABLES = ("npm", "node", "java", "git", "codex")
 CHECKPOINT_STATUSES = {"STARTING", "PLANNING", "IMPLEMENTING", "VERIFYING", "REVIEWING", "REPORTING", "RETRY_WAIT"}
 
@@ -437,6 +438,24 @@ def validate_task_contract(task: dict[str, Any]) -> None:
             raise SupervisorError(f"Planner task contains unsafe commit scope: {raw}")
 
 
+def parse_verification_command(raw: str) -> tuple[list[str], dict[str, str]]:
+    """Parse a verifier command without invoking a shell.
+
+    A tiny allowlist supports explicit test-mode flags while rejecting arbitrary
+    environment injection, pipes, redirects, and external commands.
+    """
+    tokens = shlex.split(raw)
+    environment: dict[str, str] = {}
+    while tokens and "=" in tokens[0]:
+        key, value = tokens.pop(0).split("=", 1)
+        if value not in ALLOWED_VERIFY_ENV.get(key, set()):
+            raise SupervisorError("Autonomous task contains unsupported verification environment")
+        environment[key] = value
+    if not tokens or not " ".join(tokens).startswith(ALLOWED_VERIFY):
+        raise SupervisorError("Autonomous task contains live or unsupported verification; defer it as a separate human-gated task")
+    return tokens, environment
+
+
 def validate_bounded_task_contract(task: dict[str, Any], cfg: dict[str, Any]) -> None:
     validate_task_contract(task)
     limits = {
@@ -448,9 +467,8 @@ def validate_bounded_task_contract(task: dict[str, Any], cfg: dict[str, Any]) ->
         values = task.get(field, [])
         if not isinstance(values, list) or len(values) > limit:
             raise SupervisorError(f"Planner task {field} exceeds bounded task limit {limit}")
-    unsafe_verification = [command for command in task.get("verification_required", []) if not command.startswith(ALLOWED_VERIFY)]
-    if unsafe_verification:
-        raise SupervisorError("Autonomous task contains live or unsupported verification; defer it as a separate human-gated task")
+    for command in task.get("verification_required", []):
+        parse_verification_command(command)
 
 
 def verification_failure_type(output: str, exit_code: int | None) -> str:
@@ -550,15 +568,19 @@ def verify(task: dict[str, Any], run_dir: Path, cfg: dict[str, Any]) -> dict[str
     results = []
     deadline = time.monotonic() + cfg["verification_timeout_seconds"]
     for raw in task["verification_required"]:
-        if not raw.startswith(ALLOWED_VERIFY):
+        try:
+            argv, environment_overrides = parse_verification_command(raw)
+        except SupervisorError:
             results.append({"command": raw, "status": "UNVERIFIED", "exit_code": None, "output": "Command is outside the verifier allowlist or requires live human authorization."})
             continue
         remaining = max(1, int(deadline - time.monotonic()))
         try:
             with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stream:
+                command_environment = runtime_environment(cfg)
+                command_environment.update(environment_overrides)
                 process = subprocess.Popen(
-                    shlex.split(raw), cwd=ROOT, text=True, stdout=stream,
-                    stderr=subprocess.STDOUT, start_new_session=True, env=runtime_environment(cfg),
+                    argv, cwd=ROOT, text=True, stdout=stream,
+                    stderr=subprocess.STDOUT, start_new_session=True, env=command_environment,
                 )
                 command_deadline = time.monotonic() + remaining
                 while process.poll() is None:
@@ -611,6 +633,7 @@ def planner_task_prompt(state: dict[str, Any]) -> str:
 Do not edit files. Select exactly one highest-impact safe service blocker. Do not choose deployment, OAuth authorization, payments, secrets, destructive migration, or a product decision requiring a human.
 Keep the task small enough for one 30-60 minute implementation: at most 6 acceptance criteria, 6 local automated verification commands, and 12 exact repository-relative commit_scope paths. Do not include live, production, OAuth, or manually observed verification in an autonomous task; record that as a separate deferred human gate.
 Return a new task JSON matching contracts/task.schema.json with status DISCOVERED, iteration 1, max_iterations at most 3, explicit evidence paths, an exact repository-relative commit_scope, and verification commands from the repository.
+Always provide `release_title_ko` and `user_change_summary_ko` as natural Korean text for non-technical users. Do not copy the technical review summary into either field.
 
 CURRENT STATE:\n{json.dumps(state, ensure_ascii=False)}
 """
@@ -685,13 +708,23 @@ def commit_cycle(task: dict[str, Any], run_dir: Path, cfg: dict[str, Any]) -> st
     def in_contract_scope(path: str) -> bool:
         return any(path == scope.rstrip("/") or (scope.endswith("/") and path.startswith(scope)) for scope in normalized_scope)
 
-    dirty_declared_outside_scope = sorted(path for path in paths if path in declared_paths and not in_contract_scope(path))
+    operational_evidence = {
+        (run_dir / name).relative_to(ROOT).as_posix()
+        for name in (
+            "implementation-report.json",
+            "verification-report.json",
+            "planner-review.json",
+            "notion-report.md",
+        )
+    }
+    declared_product_paths = declared_paths - operational_evidence
+    dirty_declared_outside_scope = sorted(path for path in paths if path in declared_product_paths and not in_contract_scope(path))
     if dirty_declared_outside_scope:
         raise SupervisorError(f"implementation report declares dirty files outside task commit_scope: {', '.join(dirty_declared_outside_scope)}")
     protected = set(cfg.get("protected_paths", []))
     prefixes = tuple(cfg.get("protected_prefixes", []))
     suffixes = tuple(cfg.get("protected_suffixes", []))
-    attributable = sorted(path for path in paths if path in declared_paths and in_contract_scope(path) and path not in protected and not path.startswith(prefixes) and not path.endswith(suffixes))
+    attributable = sorted(path for path in paths if path in declared_product_paths and in_contract_scope(path) and path not in protected and not path.startswith(prefixes) and not path.endswith(suffixes))
     if attributable:
         git("add", "--", *attributable)
     staged = git("diff", "--cached", "--name-only").stdout.splitlines()

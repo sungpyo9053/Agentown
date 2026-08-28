@@ -155,6 +155,20 @@ class SupervisorTest(unittest.TestCase):
             report = supervisor.verify(task, run, cfg)
         self.assertEqual(report["commands"][0]["status"], "UNVERIFIED")
 
+    def test_verifier_accepts_only_allowlisted_test_environment_without_shell(self):
+        argv, environment = supervisor.parse_verification_command(
+            "PLAYWRIGHT_MOCKED_UI=true npm --prefix frontend run test:e2e -- e2e/test.spec.ts"
+        )
+        self.assertEqual(argv[0:4], ["npm", "--prefix", "frontend", "run"])
+        self.assertEqual(environment, {"PLAYWRIGHT_MOCKED_UI": "true"})
+        for command in (
+            "PLAYWRIGHT_MOCKED_UI=false npm --prefix frontend run test:e2e",
+            "UNSAFE_TOKEN=value npm --prefix frontend run test:e2e",
+            "PLAYWRIGHT_MOCKED_UI=true curl https://example.com",
+        ):
+            with self.assertRaises(supervisor.SupervisorError):
+                supervisor.parse_verification_command(command)
+
     def test_verifier_honors_stop_during_active_command(self):
         run = self.root / "runs" / "run-verify-stop"
         run.mkdir()
@@ -208,6 +222,23 @@ class SupervisorTest(unittest.TestCase):
         parsed = json.loads(schema.read_text())
         self.assertNotIn("uniqueItems", parsed["properties"]["commit_scope"])
         self.assertNotIn("pattern", parsed["properties"]["commit_scope"]["items"])
+
+    def test_task_schema_requires_every_declared_property_for_strict_codex_output(self):
+        schema = Path(__file__).resolve().parents[2] / "contracts" / "task.schema.json"
+
+        def assert_strict_object(value):
+            if not isinstance(value, dict):
+                return
+            if value.get("type") == "object" and "properties" in value:
+                self.assertEqual(set(value["properties"]), set(value.get("required", [])))
+            for child in value.values():
+                if isinstance(child, dict):
+                    assert_strict_object(child)
+                elif isinstance(child, list):
+                    for item in child:
+                        assert_strict_object(item)
+
+        assert_strict_object(json.loads(schema.read_text()))
 
     def test_planner_task_commit_scope_is_validated_after_schema_decode(self):
         supervisor.validate_task_contract({"commit_scope": ["backend/src/main.kt"]})
@@ -475,7 +506,9 @@ class SupervisorTest(unittest.TestCase):
         (repo / "unrelated.txt").write_text("preserve me\n", encoding="utf-8")
         run_dir = repo / "runs" / "run-1"
         run_dir.mkdir(parents=True)
-        supervisor.atomic_json(run_dir / "implementation-report.json", {"changed_files": ["approved.txt"]})
+        supervisor.atomic_json(run_dir / "implementation-report.json", {
+            "changed_files": ["approved.txt", "runs/run-1/implementation-report.json"],
+        })
 
         with patch.object(supervisor, "ROOT", repo):
             commit = supervisor.commit_cycle(
@@ -591,6 +624,17 @@ class SupervisorTest(unittest.TestCase):
             result = supervisor.run_nightly_release_first({"max_cycles": 1, "max_runtime_seconds": 60}, 1, 60, Manager())
         run.assert_called_once()
         self.assertEqual(result["release_check"], "NO_CANDIDATE")
+
+    def test_nightly_already_released_candidate_continues_development_without_redeploy(self):
+        class Manager:
+            def load(self): return {"release_id": "release-1"}
+            def sync_control_plane_approval(self):
+                return {"status": "RELEASED", "contract": {"release_id": "release-1", "status": "RELEASED"}}
+            def deploy(self, target): raise AssertionError("released candidate must not deploy twice")
+        with patch.object(supervisor.Supervisor, "run", return_value={"supervisor_status": "COMPLETED"}) as run:
+            result = supervisor.run_nightly_release_first({"max_cycles": 1, "max_runtime_seconds": 60}, 1, 60, Manager())
+        run.assert_called_once()
+        self.assertEqual(result["release_check"], "RELEASED")
 
     def test_nightly_future_scheduled_release_is_checked_before_development(self):
         class Manager:
