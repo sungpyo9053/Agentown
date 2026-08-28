@@ -35,6 +35,8 @@ class ReleaseManagerTest(unittest.TestCase):
             "status": "NOT_READY", "created_at": "now", "started_at": None, "completed_at": None, "failure_reason": None,
             "uncertain_outcome": False, "previous_release_sha": None, "deployed_release_sha": None, "evidence_paths": []
         }
+        self.contract["release_title_ko"] = "운영 배포 검토 개선"
+        self.contract["user_change_summary_ko"] = "운영자가 검증된 변경사항을 한국어로 확인하고 배포 여부를 결정할 수 있습니다."
         atomic_json(self.active, self.contract)
         self.manager = ReleaseManager(self.root, self.active)
 
@@ -112,6 +114,36 @@ class ReleaseManagerTest(unittest.TestCase):
         with patch.dict("os.environ", {"AGENTOWN_RELEASE_CONTROL_URL": "https://control.invalid", "AGENTOWN_RELEASE_AGENT_TOKEN": "test-token"}), patch("urllib.request.urlopen", return_value=Response()):
             with self.assertRaises(ReleaseError): self.manager.sync_control_plane_approval()
 
+    def test_released_control_plane_state_is_synced_before_stale_preflight_check(self):
+        self.contract.update({"preflight_hash": "local-old-hash", "status": "RELEASE_APPROVAL_REQUIRED"})
+        atomic_json(self.active, self.contract)
+        remote = {
+            "releaseKey": "release-1", "candidateSha": self.sha, "preflightHash": "server-release-hash",
+            "status": "RELEASED", "actualDeployedSha": self.sha, "uncertainOutcome": False,
+            "updatedAt": "2026-08-28T01:00:00Z",
+            "detail": {"productionVerification": {
+                "observedSha": self.sha, "healthPassed": True, "readinessPassed": True,
+                "apiSmokePassed": True, "journeyE2ePassed": True, "migrationPassed": True,
+                "errorRateNormal": True, "uncertainOutcome": False,
+            }},
+        }
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return None
+            def read(self): return json.dumps(remote).encode()
+        environment = {"AGENTOWN_RELEASE_CONTROL_URL": "https://control.invalid", "AGENTOWN_RELEASE_AGENT_TOKEN": "test-token"}
+        with patch.dict("os.environ", environment), patch("urllib.request.urlopen", return_value=Response()):
+            synced = self.manager.sync_control_plane_approval()
+        self.assertEqual(synced["status"], "RELEASED")
+        self.assertEqual(synced["contract"]["deployed_release_sha"], self.sha)
+        self.assertEqual(synced["contract"]["preflight_hash"], "server-release-hash")
+        self.assertEqual(synced["contract"]["control_plane"]["sync_status"], "RELEASED_SYNCED")
+
+        remote["actualDeployedSha"] = "f" * 40
+        with patch.dict("os.environ", environment), patch("urllib.request.urlopen", return_value=Response()):
+            with self.assertRaises(ReleaseError):
+                self.manager.sync_control_plane_approval()
+
     def test_control_plane_payload_respects_server_text_limits(self):
         self.contract["review_summary"] = "x" * 620
         self.contract["planner_task_id"] = "p" * 340
@@ -121,9 +153,47 @@ class ReleaseManagerTest(unittest.TestCase):
             self.contract,
             {"preflight_hash": "hash", "changed_files": []},
         )
-        self.assertEqual(len(payload["userSummary"]), 500)
-        self.assertEqual(len(payload["purpose"]), 300)
+        self.assertEqual(payload["userSummary"], self.contract["user_change_summary_ko"])
+        self.assertEqual(payload["purpose"], self.contract["release_title_ko"])
         self.assertEqual(len(payload["releaseKey"]), 80)
+
+    def test_control_plane_payload_preserves_batch_task_count(self):
+        self.contract.update({
+            "release_title_ko": "승인된 개발 세 건",
+            "user_change_summary_ko": "검증된 변경 세 건을 한 번에 검토할 수 있습니다.",
+            "included_task_count": 3,
+        })
+        self.contract["deployment_strategy"]["reason"] = "test environment"
+        payload = self.manager.control_plane_payload(
+            self.contract,
+            {"preflight_hash": "hash", "changed_files": []},
+        )
+        self.assertEqual(payload["includedTaskCount"], 3)
+
+    def test_control_plane_payload_rejects_missing_or_english_user_change_text(self):
+        self.contract["user_change_summary_ko"] = "All verification checks passed."
+        with self.assertRaises(ReleaseError):
+            self.manager.control_plane_payload(self.contract, {"preflight_hash": "hash", "changed_files": []})
+
+    def test_candidate_requires_separate_korean_user_facing_contract(self):
+        task = {
+            "task_id": "release-copy-fix",
+            "evidence_paths": [],
+            "release_title_ko": "배포 설명 한국어화",
+            "user_change_summary_ko": "운영자가 사용자 변화를 자연스러운 한국어 문장으로 확인할 수 있습니다.",
+        }
+        candidate = self.manager.create_candidate(
+            "run-1", self.sha, "test", task, {"verdict": "APPROVED", "summary": "technical review"},
+            "runs/run-1/verification-report.json", None,
+        )
+        self.assertEqual(candidate["release_title_ko"], task["release_title_ko"])
+        self.assertEqual(candidate["user_change_summary_ko"], task["user_change_summary_ko"])
+        task.pop("user_change_summary_ko")
+        with self.assertRaises(ReleaseError):
+            self.manager.create_candidate(
+                "run-2", self.sha, "test", task, {"verdict": "APPROVED", "summary": "technical review"},
+                "runs/run-1/verification-report.json", None,
+            )
 
     def test_control_plane_candidate_becomes_approvable_only_with_explicit_environment_contract(self):
         report = self.manager.preflight(self.contract)

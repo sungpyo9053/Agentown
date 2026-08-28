@@ -25,6 +25,7 @@ SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 DESTRUCTIVE_SQL = re.compile(r"(?im)^\s*(drop\s+(table|column|schema)|truncate\s+|alter\s+table.+drop\s+|delete\s+from\s+\S+\s*;)")
+HANGUL = re.compile(r"[가-힣]")
 
 
 class ReleaseError(RuntimeError):
@@ -74,6 +75,13 @@ def bounded_text(value: Any, maximum: int, fallback: str) -> str:
     return text[:maximum]
 
 
+def korean_release_text(value: Any, field: str, minimum: int, maximum: int) -> str:
+    text = str(value or "").strip()
+    if len(text) < minimum or len(text) > maximum or len(HANGUL.findall(text)) < 3:
+        raise ReleaseError(f"{field} must be a complete Korean user-facing text between {minimum} and {maximum} characters")
+    return text
+
+
 def run_fake_deploy_command(command: list[str], expected_sha: str, timeout_seconds: float = 5, control_path: Path | None = None) -> dict[str, Any]:
     """Test-only process adapter used to prove timeout and pause/stop behavior."""
     process = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -115,6 +123,8 @@ class ReleaseManager:
     def create_candidate(self, run_id: str, sha: str, branch: str, task: dict[str, Any], review: dict[str, Any], verification_path: str, previous_sha: str | None) -> dict[str, Any]:
         if review.get("verdict") != "APPROVED":
             raise ReleaseError("only a Planner APPROVED task may create a release candidate")
+        release_title_ko = korean_release_text(task.get("release_title_ko"), "release_title_ko", 5, 300)
+        user_change_summary_ko = korean_release_text(task.get("user_change_summary_ko"), "user_change_summary_ko", 10, 500)
         release_id = f"release-{run_id}"
         evidence = list(dict.fromkeys(task.get("evidence_paths", []) + [verification_path, f"runs/{run_id}/planner-review.json", f"runs/{run_id}/implementation-report.json"]))
         contract = {
@@ -130,17 +140,23 @@ class ReleaseManager:
             "failure_reason": "Actual deployment environment contract is not configured.", "uncertain_outcome": False,
             "previous_release_sha": previous_sha, "deployed_release_sha": None, "evidence_paths": evidence,
             "control_plane": {"approval_source": "ADMIN_UI_ONLY", "admin_email": "admin@reviewdr.kr", "sync_status": "NOT_CONFIGURED"},
+            "release_title_ko": release_title_ko,
+            "user_change_summary_ko": user_change_summary_ko,
+            "included_task_count": int(task.get("included_task_count", 1)),
+            "included_task_ids": task.get("included_task_ids", [task["task_id"]]),
             "review_summary": review.get("summary"),
         }
         self.save(contract)
         atomic_json(self.report_dir(release_id) / "release-contract.json", contract)
-        summary = f"""# Release {release_id}\n\n- candidate SHA: `{sha}`\n- previous SHA: `{previous_sha or 'unknown'}`\n- Planner task: `{task['task_id']}`\n- Planner verdict: `APPROVED`\n- production deployment: **not performed**\n- control plane: admin@reviewdr.kr UI approval only\n\n## User change\n\n{task.get('service_impact', task.get('goal', ''))}\n\n## Validation\n\n{review.get('summary', 'See verification report.')}\n\n## Blocker\n\nNo isolated staging, revision query, rollback contract, or least-privilege deployment credential is configured.\n"""
+        summary = f"""# Release {release_id}\n\n- candidate SHA: `{sha}`\n- previous SHA: `{previous_sha or 'unknown'}`\n- Planner task: `{task['task_id']}`\n- Planner verdict: `APPROVED`\n- production deployment: **not performed**\n- control plane: admin@reviewdr.kr UI approval only\n\n## 사용자 변화\n\n{user_change_summary_ko}\n\n## 기술 검증\n\n{review.get('summary', 'See verification report.')}\n\n## Blocker\n\nNo isolated staging, revision query, rollback contract, or least-privilege deployment credential is configured.\n"""
         (self.report_dir(release_id) / "release-summary.md").write_text(summary, encoding="utf-8")
         return contract
 
     def control_plane_payload(self, contract: dict[str, Any], preflight: dict[str, Any]) -> dict[str, Any]:
         files = preflight.get("changed_files", [])
         migrations = [path for path in files if "/db/migration/" in path]
+        release_title_ko = korean_release_text(contract.get("release_title_ko"), "release_title_ko", 5, 300)
+        user_change_summary_ko = korean_release_text(contract.get("user_change_summary_ko"), "user_change_summary_ko", 10, 500)
         environment_configured = (
             os.getenv("AGENTOWN_RELEASE_ENVIRONMENT_CONFIGURED", "").lower() == "true"
             and contract.get("deployment_strategy", {}).get("mode") not in {None, "DRY_RUN_ONLY"}
@@ -148,15 +164,15 @@ class ReleaseManager:
         staging_passed = contract.get("status") == "RELEASE_APPROVAL_REQUIRED"
         return {
             "releaseKey": bounded_text(contract["release_id"], 80, "release"),
-            "purpose": bounded_text(contract["planner_task_id"], 300, "승인된 개발 작업"),
-            "userSummary": bounded_text(contract.get("review_summary"), 500, "승인된 개발 변경을 운영에 반영합니다."),
+            "purpose": release_title_ko,
+            "userSummary": user_change_summary_ko,
             "currentSha": contract.get("previous_release_sha"), "candidateSha": contract["approved_commit_sha"],
-            "includedTaskCount": 1, "riskLevel": "HIGH" if migrations else "MEDIUM", "hasMigration": bool(migrations),
+            "includedTaskCount": int(contract.get("included_task_count", 1)), "riskLevel": "HIGH" if migrations else "MEDIUM", "hasMigration": bool(migrations),
             "stagingStatus": "PASSED" if staging_passed else "NOT_CONFIGURED",
             "preflightHash": preflight["preflight_hash"],
             "detail": {
                 "environmentContract": {"configured": environment_configured, "reason": None if environment_configured else contract["deployment_strategy"]["reason"]},
-                "userChanges": [contract.get("review_summary") or contract["planner_task_id"]],
+                "userChanges": [user_change_summary_ko],
                 "systemChanges": ["Planner 승인 commit만 Release 후보로 취급", "관리자 UI 승인에 SHA와 preflight hash 결속"],
                 "technicalChanges": files, "files": files, "plannerDecision": contract["planner_decision"],
                 "verificationCommands": [], "stagingResults": {"status": "PASSED" if staging_passed else "NOT_CONFIGURED"},
@@ -204,6 +220,33 @@ class ReleaseManager:
             raise ReleaseError(f"Release Control Plane approval sync failed without exposing credentials: {type(error).__name__}") from error
         if remote.get("releaseKey") != contract["release_id"] or remote.get("candidateSha") != contract["approved_commit_sha"]:
             raise ReleaseError("Release Control Plane candidate identity does not match the local release")
+        if remote.get("status") == "RELEASED":
+            deployed_sha = remote.get("actualDeployedSha")
+            if deployed_sha != contract["approved_commit_sha"]:
+                raise ReleaseError("Released production SHA does not match the local approved release")
+            if remote.get("uncertainOutcome") is True:
+                raise ReleaseError("Released production outcome is marked uncertain")
+            verification = (remote.get("detail") or {}).get("productionVerification")
+            if verification:
+                required_checks = (
+                    "healthPassed", "readinessPassed", "apiSmokePassed",
+                    "journeyE2ePassed", "migrationPassed", "errorRateNormal",
+                )
+                if verification.get("observedSha") != contract["approved_commit_sha"] or not all(
+                    verification.get(check) is True for check in required_checks
+                ) or verification.get("uncertainOutcome") is True:
+                    raise ReleaseError("Released production verification does not match the local approved release")
+            contract.update({
+                "status": "RELEASED",
+                "deployed_release_sha": deployed_sha,
+                "completed_at": remote.get("updatedAt") or now(),
+                "uncertain_outcome": False,
+                "failure_reason": None,
+                "preflight_hash": remote.get("preflightHash") or contract.get("preflight_hash"),
+            })
+            contract.setdefault("control_plane", {})["sync_status"] = "RELEASED_SYNCED"
+            self.save(contract)
+            return {"status": "RELEASED", "contract": contract}
         if remote.get("preflightHash") != contract.get("preflight_hash"):
             self._clear_local_approval(contract, "Admin preflight hash differs from the local candidate; approval is stale.")
             raise ReleaseError("Release Control Plane preflight hash does not match the local release")
