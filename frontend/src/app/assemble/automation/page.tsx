@@ -30,12 +30,15 @@ type Snapshot = {
   messages: Array<{ id: string; role: string; content: string; workflowVersionId?: string; createdAt: string }>;
   versions: Array<{ id: string; versionNo: number; graphHash: string; changeSummary: string; approved: boolean; outputTemplateVersionId?: string; createdAt: string }>;
 };
-type Run = { id: string; status: string; currentNodeId?: string; outputTemplateVersionId?: string; output?: Record<string, unknown>; requirementMatched?: boolean; pendingApprovalId?: string; steps: Array<{ nodeId: string; nodeType: string; sequenceNo: number; status: string; input: Record<string, unknown>; output?: Record<string, unknown>; errorMessage?: string }> };
-type Tab = "design" | "canvas" | "simulation";
+type Run = { id: string; status: string; mode: "SIMULATION" | "PRODUCTION"; currentNodeId?: string; outputTemplateVersionId?: string; output?: Record<string, unknown>; requirementMatched?: boolean; pendingApprovalId?: string; attemptCount: number; failureCode?: string; failureMessage?: string; steps: Array<{ nodeId: string; nodeType: string; sequenceNo: number; status: string; input: Record<string, unknown>; output?: Record<string, unknown>; errorMessage?: string }> };
+type Tab = "design" | "canvas" | "simulation" | "production";
 type GenerationJob = { id: string; conversationId: string; workflowId: string; status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; stage: string; estimatedSeconds: number; elapsedSeconds: number; remainingSeconds: number; errorCode?: string; errorMessage?: string };
 type ConversationSummary = { conversationId: string; workflowId: string; title: string; status: string; currentVersionNo?: number; updatedAt: string };
 type SlackStatus = { configured: boolean; connected: boolean };
-type NotionStatus = { configured: boolean; connected: boolean };
+type NotionConnection = { id: string; workspaceName: string; status: string };
+type NotionStatus = { configured: boolean; connected: boolean; connections: NotionConnection[] };
+type NotionVerification = { accessibleItems: Array<{ id: string; objectType: string; title: string; url?: string }> };
+type WorkflowVersion = Snapshot["versions"][number];
 
 const storageKey = "agentown.builder.conversation.v1";
 const sampleRequest = "저는 회사에서 고객 문의를 담당하고 있습니다. Slack의 #customer-support 채널에 문의가 올라오면, Notion의 고객 FAQ 데이터베이스에서 관련 내용을 찾아 답변 초안을 만들고 있습니다. 답변은 바로 보내지 말고 제가 검토하고 승인한 경우에만 해당 Slack 메시지의 스레드로 전송되게 자동화하고 싶습니다.";
@@ -53,14 +56,27 @@ export default function AutomationBuilderPage() {
   const [run, setRun] = useState<Run>();
   const [selectedNode, setSelectedNode] = useState<WorkflowNode>();
   const [generationJobId, setGenerationJobId] = useState<string>();
+  const [productionRun, setProductionRun] = useState<Run>();
+  const [productionInput, setProductionInput] = useState("");
+  const [notionConnectionId, setNotionConnectionId] = useState("");
+  const [productionNotionConnectionId, setProductionNotionConnectionId] = useState("");
+  const [notionParentPageId, setNotionParentPageId] = useState("");
+  const [notionTargets, setNotionTargets] = useState<NotionVerification["accessibleItems"]>([]);
 
   useEffect(() => { setConversationId(window.localStorage.getItem(storageKey) ?? undefined); }, []);
   const snapshotQuery = useQuery({ queryKey: ["builder", conversationId], queryFn: () => api<Snapshot>(`/builder/conversations/${conversationId}`), enabled: Boolean(conversationId) });
   const snapshot = snapshotQuery.data;
   const history = useQuery({ queryKey: ["builder-conversations"], queryFn: () => api<ConversationSummary[]>("/builder/conversations") });
   const slackConnection = useQuery({ queryKey: ["slack-connection"], queryFn: () => api<SlackStatus>("/connectors/slack") });
-  const notionConnection = useQuery({ queryKey: ["notion-connection"], queryFn: () => api<NotionStatus>("/connectors/notion") });
+  const notionConnection = useQuery({
+    queryKey: ["notion-connection"],
+    queryFn: () => api<NotionStatus>("/connectors/notion"),
+    refetchInterval: productionRun?.failureCode === "NOTION_CONNECTION_EXPIRED" ? 1500 : false,
+  });
   const generation = useQuery({ queryKey: ["builder-generation", generationJobId], queryFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}`), enabled: Boolean(generationJobId), refetchInterval: query => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(query.state.data?.status ?? "") ? false : 1500 });
+  const productionPolling = useQuery({ queryKey: ["builder-production", productionRun?.id], queryFn: () => api<Run>(`/builder/production-runs/${productionRun!.id}`), enabled: Boolean(productionRun?.id) && ["QUEUED", "GENERATING", "PUBLISHING"].includes(productionRun?.status ?? ""), refetchInterval: 1500 });
+  useEffect(() => { if (productionPolling.data) setProductionRun(productionPolling.data); }, [productionPolling.data]);
+  useEffect(() => { const first = notionConnection.data?.connections.find(item => item.status === "ACTIVE"); if (first && !notionConnectionId) setNotionConnectionId(first.id); }, [notionConnection.data, notionConnectionId]);
   useEffect(() => {
     if (!snapshot?.graph) return;
     const suggested = sampleSimulationInput(snapshot.graph);
@@ -101,6 +117,32 @@ export default function AutomationBuilderPage() {
   });
   const cancelGeneration = useMutation({ mutationFn: () => api<GenerationJob>(`/builder/generation-jobs/${generationJobId}/cancel`, { method: "POST", headers: { "Idempotency-Key": key("cancel-generation") }, body: "{}" }), onSuccess: next => queryClient.setQueryData(["builder-generation", next.id], next) });
   const stopWorkflow = useMutation({ mutationFn: () => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/stop`, { method: "POST", headers: { "Idempotency-Key": key("stop-workflow") }, body: "{}" }), onSuccess: store });
+  const restoreVersion = useMutation({
+    mutationFn: (versionId: string) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/versions/${versionId}/restore`, { method: "POST", headers: { "Idempotency-Key": key("restore-version") }, body: "{}" }),
+    onSuccess: (next) => {
+      store(next);
+      setRun(undefined);
+      setProductionRun(undefined);
+      setProductionNotionConnectionId("");
+      setSelectedNode(undefined);
+      setTab("canvas");
+    },
+  });
+  const searchNotionTargets = useMutation({ mutationFn: () => api<NotionVerification>(`/connectors/notion/${notionConnectionId}/verify`, { method: "POST", body: JSON.stringify({ query: "" }) }), onSuccess: data => setNotionTargets(data.accessibleItems.filter(item => item.objectType === "page")) });
+  const startProduction = useMutation({
+    mutationFn: async () => ({
+      run: await api<Run>(`/builder/workflows/${snapshot!.workflowId}/production-runs`, { method: "POST", headers: { "Idempotency-Key": key("production-run") }, body: JSON.stringify({ input: { text: productionInput }, notionConnectionId, notionParentPageId }) }),
+      notionConnectionId,
+    }),
+    onSuccess: next => {
+      setProductionRun(next.run);
+      setProductionNotionConnectionId(next.notionConnectionId);
+      setTab("production");
+      if (next.run.failureCode === "NOTION_CONNECTION_EXPIRED") queryClient.invalidateQueries({ queryKey: ["notion-connection"] });
+    },
+  });
+  const decideProduction = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/builder/production-runs/${productionRun!.id}/approval`, { method: "POST", headers: { "Idempotency-Key": key("production-approval") }, body: JSON.stringify({ approve }) }), onSuccess: setProductionRun });
+  const retryProduction = useMutation({ mutationFn: () => api<Run>(`/builder/production-runs/${productionRun!.id}/retry`, { method: "POST", headers: { "Idempotency-Key": key("production-retry") }, body: "{}" }), onSuccess: setProductionRun });
 
   function submit(event: FormEvent) {
     event.preventDefault(); if (!message.trim()) return;
@@ -115,19 +157,19 @@ export default function AutomationBuilderPage() {
   const onNodeClick: NodeMouseHandler = (_, node) => setSelectedNode(snapshot?.graph?.nodes.find((item) => item.id === node.id));
   const generationPending = Boolean(generationJobId) && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(generation.data?.status ?? "");
   const validationInvalid = snapshot?.validation?.valid === false;
-  const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending || stopWorkflow.isPending;
-  const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || stopWorkflow.error || cancelGeneration.error || snapshotQuery.error;
+  const pending = create.isPending || send.isPending || generationPending || decideDesign.isPending || patch.isPending || simulate.isPending || approveRun.isPending || activate.isPending || stopWorkflow.isPending || restoreVersion.isPending || startProduction.isPending || decideProduction.isPending || retryProduction.isPending;
+  const error = create.error || send.error || (generation.data?.status === "FAILED" ? new Error(generation.data.errorMessage ?? "분석에 실패했습니다.") : null) || decideDesign.error || patch.error || simulate.error || approveRun.error || activate.error || stopWorkflow.error || restoreVersion.error || cancelGeneration.error || startProduction.error || decideProduction.error || retryProduction.error || searchNotionTargets.error || snapshotQuery.error;
   const generationProgress = generation.data ? Math.min(95, Math.max(8, generation.data.elapsedSeconds / generation.data.estimatedSeconds * 100)) : 0;
 
   return <AppShell kicker="ASSEMBLE · BUILDER" title="업무 자동화">
     <div className={`mb-5 border p-4 text-sm ${notionConnection.data?.connected ? "border-green-200 bg-green-50 text-green-900" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
       <b>실제 커넥터:</b> Notion {notionConnection.data?.connected ? "읽기·승인 쓰기 연결 완료" : notionConnection.data?.configured ? "읽기·승인 쓰기 연결 가능" : "서버 앱 설정 대기"} · Slack {slackConnection.data?.connected ? "연결 완료" : "다음 단계"}
       <a href="/settings/connections" className="ml-3 font-medium underline">업무 연결 관리</a>
-      <p className="mt-1 text-xs opacity-75">현재 캔버스 실행은 계속 Mock Connector만 사용하며, 실제 외부 전송은 승인·재개 단계가 배포되기 전까지 발생하지 않습니다.</p>
+      <p className="mt-1 text-xs opacity-75">시뮬레이션은 외부 호출 없이 실행됩니다. ACTIVE Workflow의 실제 실행은 결과 미리보기와 별도 승인 후에만 연결된 Notion에 발행됩니다.</p>
     </div>
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
-      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">ACTUAL CODEX DESIGN · SLACK/NOTION MOCK</p><p className="mt-1 text-sm text-mute">실제 Codex가 설계하고, 외부 쓰기 없이 Mock Connector로 안전하게 시뮬레이션합니다.</p></div>
-      <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
+      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">ACTUAL CODEX DESIGN · APPROVED NOTION EXECUTION</p><p className="mt-1 text-sm text-mute">설계와 시뮬레이션은 안전하게 검증하고, 배치된 Workflow는 승인 후 실제 Notion 결과를 발행합니다.</p></div>
+      <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); setProductionRun(undefined); setProductionNotionConnectionId(""); setTab("design"); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" onClick={() => { window.localStorage.removeItem(storageKey); setConversationId(undefined); setRun(undefined); setProductionRun(undefined); setProductionNotionConnectionId(""); setTab("design"); create.mutate(); }} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium">새 자동화</button></div>
     </div>
 
     {generation.data && generation.data.status !== "SUCCEEDED" && (
@@ -148,16 +190,27 @@ export default function AutomationBuilderPage() {
       </div>
     )}
 
-    <nav aria-label="Builder 화면" className="mb-5 grid grid-cols-3 border border-hairline bg-white p-1">
+    <nav aria-label="Builder 화면" className="mb-5 grid grid-cols-4 border border-hairline bg-white p-1">
       <TabButton active={tab === "design"} onClick={() => setTab("design")} icon={MessageSquare} label="설계 · 대화" />
       <TabButton active={tab === "canvas"} onClick={() => setTab("canvas")} icon={Workflow} label="전체 캔버스" disabled={!snapshot?.graph} />
       <TabButton active={tab === "simulation"} onClick={() => setTab("simulation")} icon={CirclePlay} label="시뮬레이션" disabled={!snapshot?.graph} />
+      <TabButton active={tab === "production"} onClick={() => setTab("production")} icon={Rocket} label="실제 실행" disabled={snapshot?.status !== "ACTIVE"} />
     </nav>
 
     {error && <div role="alert" className="mb-5 flex gap-2 border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="h-5 w-5 shrink-0" />{error.message}</div>}
     {validationInvalid && <div role="alert" className="mb-5 border border-red-200 bg-red-50 p-5 text-red-900"><div className="flex gap-2 text-sm font-medium"><AlertTriangle className="h-5 w-5 shrink-0" />요구사항과 실행 그래프가 일치하지 않습니다.</div><ul className="mt-3 space-y-1 pl-7 text-xs leading-5">{snapshot.validation!.issues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId ?? index}`}>{issue.message}</li>)}</ul></div>}
 
     {snapshot?.status === "STOPPED" && <div className="mb-5 border border-hairline bg-cloud p-5 text-sm text-charcoal"><b>중지된 자동화입니다.</b><p className="mt-1 text-xs text-mute">Version과 로그는 조회할 수 있지만 수정·시뮬레이션·회사 배치는 차단됩니다.</p></div>}
+    {snapshot?.versions.length ? <VersionHistory
+      versions={snapshot.versions}
+      currentVersionId={snapshot.currentVersionId}
+      approvedVersionId={snapshot.approvedVersionId}
+      workflowStopped={snapshot.status === "STOPPED"}
+      pending={restoreVersion.isPending}
+      restore={(version) => {
+        if (window.confirm(`Version ${version.versionNo}을 복원할까요? 선택한 버전은 수정하거나 다시 활성화하지 않습니다. 동일한 설계를 새 검토 버전으로 만들며, 시뮬레이션과 승인을 다시 진행해야 합니다.`)) restoreVersion.mutate(version.id);
+      }}
+    /> : null}
     {tab === "design" && <DesignTab snapshot={snapshot} message={message} setMessage={setMessage} submit={submit} pending={pending || snapshot?.status === "STOPPED"} decide={(approve) => decideDesign.mutate(approve)} />}
     {tab === "canvas" && snapshot?.graph && <section data-testid="builder-canvas" className="relative h-[680px] overflow-hidden border border-hairline bg-[#f6f6f3]">
       <ReactFlow nodes={flowNodes} edges={flowEdges} onNodeClick={onNodeClick} fitView fitViewOptions={{ padding: .2 }} minZoom={.35} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false}>
@@ -171,7 +224,44 @@ export default function AutomationBuilderPage() {
       </aside>}
     </section>}
     {tab === "simulation" && snapshot?.graph && <SimulationTab graph={snapshot.graph} input={simulationInput} setInput={setSimulationInput} run={run} pending={pending} validationInvalid={validationInvalid} start={() => simulate.mutate()} decide={(approve) => approveRun.mutate(approve)} active={snapshot.status === "ACTIVE"} deploy={() => activate.mutate()} />}
+    {tab === "production" && snapshot?.status === "ACTIVE" && <ProductionTab
+      connections={notionConnection.data?.connections ?? []} connectionId={notionConnectionId} setConnectionId={setNotionConnectionId}
+      runConnectionId={productionNotionConnectionId}
+      targets={notionTargets} parentPageId={notionParentPageId} setParentPageId={setNotionParentPageId} loadTargets={() => searchNotionTargets.mutate()}
+      input={productionInput} setInput={setProductionInput} run={productionRun} pending={pending}
+      start={() => startProduction.mutate()} decide={(approve) => decideProduction.mutate(approve)} retry={() => retryProduction.mutate()} />}
   </AppShell>;
+}
+
+function ProductionTab({ connections, connectionId, setConnectionId, runConnectionId, targets, parentPageId, setParentPageId, loadTargets, input, setInput, run, pending, start, decide, retry }: {
+  connections: NotionConnection[]; connectionId: string; setConnectionId: (value: string) => void; targets: NotionVerification["accessibleItems"];
+  runConnectionId: string;
+  parentPageId: string; setParentPageId: (value: string) => void; loadTargets: () => void; input: string; setInput: (value: string) => void;
+  run?: Run; pending: boolean; start: () => void; decide: (approve: boolean) => void; retry: () => void;
+}) {
+  const preview = run?.output as { title?: string; paragraphs?: string[]; evidence?: string[]; notionUrl?: string } | undefined;
+  const notionConnectionExpired = run?.failureCode === "NOTION_CONNECTION_EXPIRED";
+  const expiredConnectionReconnected = notionConnectionExpired && connections.some(item => item.id === runConnectionId && item.status === "ACTIVE");
+  return <div className="grid gap-5 lg:grid-cols-[380px_minmax(0,1fr)]">
+    <section className="border border-hairline bg-white p-5"><p className="text-xs font-semibold tracking-[.12em] text-coral">PRODUCTION INPUT</p><h2 className="mt-2 text-lg font-medium">실제 Notion 업무 실행</h2>
+      <label className="mt-5 block text-xs font-medium">Notion 연결<select aria-label="Notion 연결" value={connectionId} onChange={event => { setConnectionId(event.target.value); setParentPageId(""); }} className="mt-1 w-full border border-hairline bg-white p-3 text-sm"><option value="">연결 선택</option>{connections.filter(item => item.status === "ACTIVE").map(item => <option key={item.id} value={item.id}>{item.workspaceName}</option>)}</select></label>
+      <button type="button" disabled={!connectionId || pending} onClick={loadTargets} className="mt-2 w-full rounded-pill border border-ink px-4 py-2 text-xs disabled:opacity-40">공유 페이지 불러오기</button>
+      {targets.length > 0 ? <label className="mt-3 block text-xs font-medium">발행할 상위 페이지<select aria-label="Notion 상위 페이지" value={parentPageId} onChange={event => setParentPageId(event.target.value)} className="mt-1 w-full border border-hairline bg-white p-3 text-sm"><option value="">페이지 선택</option>{targets.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label> : <label className="mt-3 block text-xs font-medium">상위 페이지 ID<input value={parentPageId} onChange={event => setParentPageId(event.target.value)} placeholder="Notion에서 공유한 상위 페이지 ID" className="mt-1 w-full border border-hairline p-3 text-sm" /></label>}
+      <label className="mt-4 block text-xs font-medium">업무 입력<textarea aria-label="실제 업무 입력" value={input} onChange={event => setInput(event.target.value)} rows={8} placeholder="회의록 원문, 보고서 자료, 캠페인 문구 등 실제 입력을 넣으세요." className="mt-1 w-full border border-hairline p-3 text-sm leading-6" /></label>
+      <button onClick={start} disabled={pending || !connectionId || !parentPageId || !input.trim()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-pill bg-ink px-5 py-3 text-sm text-white disabled:opacity-40"><Play className="h-4 w-4" />실제 결과 생성</button>
+      <p className="mt-3 text-xs leading-5 text-mute">생성 단계에서는 외부 쓰기가 없습니다. 결과를 확인하고 별도로 승인한 경우에만 Notion 페이지를 한 번 생성합니다.</p>
+    </section>
+    <section className="border border-hairline bg-white p-5"><div className="flex items-center justify-between"><h2 className="text-lg font-medium">실제 실행 기록</h2><StatusBadge status={run?.status ?? "NOT_STARTED"} /></div>
+      {!run ? <div className="py-28 text-center text-sm text-mute">실제 업무 입력으로 결과를 생성하면 미리보기와 StepRun이 표시됩니다.</div> : <div className="mt-5 space-y-4">
+        {preview?.title && <article className="border border-hairline bg-cloud p-5"><p className="text-xs font-semibold text-coral">발행 미리보기</p><h3 className="mt-2 text-xl font-medium">{preview.title}</h3><div className="mt-4 space-y-2 text-sm leading-6">{preview.paragraphs?.map((text, index) => <p key={index}>{text}</p>)}</div>{preview.evidence?.length ? <div className="mt-4 border-t border-hairline pt-3 text-xs text-mute">근거: {preview.evidence.join(" · ")}</div> : null}</article>}
+        <div className="space-y-2">{run.steps.map((step, index) => <article key={`${step.nodeId}-${step.sequenceNo}`} className="flex gap-3 border border-hairline p-3"><span className="text-xs text-mute">{index + 1}</span><div><p className="text-sm font-medium">{step.nodeType}</p><p className="text-xs text-mute">{step.status}{step.errorMessage ? ` · ${step.errorMessage}` : ""}</p></div></article>)}</div>
+        {run.status === "WAITING_APPROVAL" && <div className="border border-amber-200 bg-amber-50 p-5"><p className="text-sm font-medium">실제 Notion 발행 승인 필요</p><p className="mt-1 text-xs text-mute">위 결과를 확인하세요. 승인 전에는 페이지가 생성되지 않았습니다.</p><div className="mt-4 grid grid-cols-2 gap-2"><button onClick={() => decide(false)} disabled={pending} className="rounded-pill border border-hairline py-2 text-sm">거절</button><button onClick={() => decide(true)} disabled={pending} className="rounded-pill bg-coral py-2 text-sm text-white">승인하고 실제 발행</button></div></div>}
+        {run.status === "FAILED" && <div className="border border-red-200 bg-red-50 p-5 text-sm text-red-800"><b>{notionConnectionExpired ? expiredConnectionReconnected ? "Notion 다시 연결 완료" : "Notion 다시 연결 필요" : run.failureCode}</b><p className="mt-1 text-xs">{run.failureMessage}</p>{notionConnectionExpired && !expiredConnectionReconnected ? <div className="mt-3"><p className="text-xs font-medium">이 실행과 미리보기는 보존되었습니다. 지금 재시도하지 말고 Notion을 다시 연결한 뒤 돌아와 재시도하세요.</p><a href="/settings/connections" className="mt-3 inline-block rounded-pill border border-red-300 bg-white px-4 py-2 text-xs font-medium">업무 연결에서 Notion 다시 연결</a></div> : <button onClick={retry} disabled={pending || run.attemptCount >= 3} className="mt-3 rounded-pill border border-red-300 bg-white px-4 py-2 text-xs disabled:opacity-40">재시도 ({run.attemptCount}/3)</button>}</div>}
+        {run.status === "AMBIGUOUS" && <div className="border border-amber-300 bg-amber-50 p-5 text-sm text-amber-950"><b>Notion 결과 확인 필요</b><p className="mt-1 text-xs">{run.failureMessage}</p><p className="mt-3 text-xs font-medium">중복 페이지 방지를 위해 이 실행은 재시도할 수 없습니다. 선택한 Notion 상위 페이지를 먼저 확인하세요.</p></div>}
+        {run.status === "SUCCEEDED" && <div className="border border-green-200 bg-green-50 p-5 text-sm text-green-900"><b>실제 업무 완료</b><p className="mt-1 text-xs">Notion 페이지 생성과 실행 이력이 저장되었습니다.</p>{preview?.notionUrl && <a href={preview.notionUrl} target="_blank" rel="noreferrer" className="mt-3 inline-block font-medium underline">생성된 Notion 페이지 열기</a>}</div>}
+      </div>}
+    </section>
+  </div>;
 }
 
 function DesignTab({ snapshot, message, setMessage, submit, pending, decide }: { snapshot?: Snapshot; message: string; setMessage: (value: string) => void; submit: (event: FormEvent) => void; pending: boolean; decide: (approve: boolean) => void }) {
@@ -216,9 +306,26 @@ function SimulationTab({ graph, input, setInput, run, pending, validationInvalid
 }
 
 function NodeCard({ node }: { node: WorkflowNode }) { return <div className="p-4 text-left"><p className="text-[10px] font-semibold uppercase tracking-[.12em] text-coral">{node.nodeType}</p><p className="mt-2 text-sm font-medium text-ink">{node.label}</p><p className="mt-2 text-[11px] text-mute">클릭하여 설정 보기</p></div>; }
+function VersionHistory({ versions, currentVersionId, approvedVersionId, workflowStopped, pending, restore }: { versions: WorkflowVersion[]; currentVersionId?: string; approvedVersionId?: string; workflowStopped: boolean; pending: boolean; restore: (version: WorkflowVersion) => void }) {
+  const ordered = [...versions].sort((left, right) => right.versionNo - left.versionNo);
+  const currentVersionNo = ordered.find(version => version.id === currentVersionId)?.versionNo;
+  return <section aria-labelledby="workflow-version-history" className="mb-5 border border-hairline bg-white p-5">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="workflow-version-history" className="text-lg font-medium">버전 기록</h2><p className="mt-1 text-xs leading-5 text-mute">이전 설계는 그대로 보존됩니다. 복원하면 검토가 필요한 새 버전이 만들어지며 시뮬레이션과 승인을 다시 진행해야 합니다.</p></div><span className="text-xs text-mute">최신순 · {ordered.length}개</span></div>
+    <ol className="mt-4 space-y-2">{ordered.map(version => {
+      const current = version.id === currentVersionId;
+      const approved = version.approved || version.id === approvedVersionId;
+      const eligible = currentVersionNo !== undefined && version.versionNo < currentVersionNo && !workflowStopped;
+      return <li key={version.id} data-testid={`workflow-version-${version.versionNo}`} className={`flex flex-wrap items-center justify-between gap-3 border p-4 ${current ? "border-coral bg-orange-50" : "border-hairline"}`}>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">Version {version.versionNo}</p>{current && <span className="rounded-pill bg-coral px-2 py-1 text-[10px] font-semibold text-white">현재 버전</span>}{approved && <span className="rounded-pill border border-green-300 bg-green-50 px-2 py-1 text-[10px] font-semibold text-green-800">승인됨</span>}</div><p className="mt-1 text-xs text-charcoal">{version.changeSummary}</p><time dateTime={version.createdAt} className="mt-1 block text-[11px] text-mute">{formatVersionTime(version.createdAt)}</time></div>
+        {current ? <span className="text-xs font-medium text-coral">현재 검토 버전</span> : <button type="button" disabled={!eligible || pending} onClick={() => restore(version)} className="rounded-pill border border-ink px-4 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40">Version {version.versionNo} 복원</button>}
+      </li>;
+    })}</ol>
+  </section>;
+}
 function StatusBadge({ status }: { status: string }) { return <span className="rounded-pill border border-hairline bg-cloud px-3 py-1.5 text-[11px] font-semibold tracking-wide text-charcoal">{status}</span>; }
 function TabButton({ active, onClick, icon: Icon, label, disabled }: { active: boolean; onClick: () => void; icon: typeof Workflow; label: string; disabled?: boolean }) { return <button type="button" onClick={onClick} disabled={disabled} className={`flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-30 ${active ? "bg-ink text-white" : "text-charcoal hover:bg-cloud"}`}><Icon className="h-4 w-4" />{label}</button>; }
 function Card({ title, icon: Icon, children }: { title: string; icon: typeof Workflow; children: React.ReactNode }) { return <article className="border border-hairline bg-white p-5"><div className="mb-4 flex items-center gap-2"><Icon className="h-4 w-4 text-coral" /><h2 className="text-sm font-medium">{title}</h2></div>{children}</article>; }
 function FlowPills({ items }: { items: string[] }) { return <div className="mt-4 flex flex-wrap items-center gap-1">{items.map((item, index) => <span key={item} className="flex items-center gap-1 text-xs"><span className="border border-hairline bg-cloud px-2 py-1.5">{item}</span>{index < items.length - 1 && <ChevronRight className="h-3 w-3 text-mute" />}</span>)}</div>; }
 function sampleSimulationInput(graph: WorkflowGraph) { const types = new Set(graph.nodes.map((node) => node.nodeType)); return types.has("slack.new_message.mock") && types.has("notion.search.mock") ? faqSampleInput : genericSampleInput; }
 function stageLabel(stage: string) { return ({ REQUEST_ACCEPTED: "요청 접수", CODEX_ANALYZING: "업무 분석·에이전트 설계", STRUCTURE_VALIDATING: "구조화 결과 검증", DESIGN_SAVING: "설계 저장", COMPLETED: "완료", FAILED: "실패" } as Record<string, string>)[stage] ?? stage; }
+function formatVersionTime(createdAt: string) { return new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(createdAt)); }
