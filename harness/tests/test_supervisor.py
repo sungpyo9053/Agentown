@@ -161,6 +161,11 @@ class SupervisorTest(unittest.TestCase):
         )
         self.assertEqual(argv[0:4], ["npm", "--prefix", "frontend", "run"])
         self.assertEqual(environment, {"PLAYWRIGHT_MOCKED_UI": "true"})
+        diff_argv, diff_environment = supervisor.parse_verification_command(
+            "git diff --check -- backend/src/test/kotlin/com/example/FixtureTest.kt"
+        )
+        self.assertEqual(diff_argv[:3], ["git", "diff", "--check"])
+        self.assertEqual(diff_environment, {})
         for command in (
             "PLAYWRIGHT_MOCKED_UI=false npm --prefix frontend run test:e2e",
             "UNSAFE_TOKEN=value npm --prefix frontend run test:e2e",
