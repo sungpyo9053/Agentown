@@ -32,11 +32,18 @@ NIGHTLY_LABEL = "com.agentown.nightly-release-first"
 LAUNCHD_PLIST_PATH = ROOT / "product" / ".autonomous-supervisor.launchd.plist"
 NIGHTLY_PLIST_PATH = ROOT / "product" / ".agentown-nightly.launchd.plist"
 PRIVATE_ENV_PATH = Path.home() / ".config" / "agentown" / "release.env"
+INFRA_ENV_PATH = Path.home() / ".config" / "agentown" / "release.infrastructure.env"
 PRIVATE_ENV_ALLOWLIST = {
     "AGENTOWN_RELEASE_AGENT_TOKEN",
     "AGENTOWN_RELEASE_CONTROL_URL",
     "AGENTOWN_RELEASE_ENVIRONMENT_CONFIGURED",
     "AGENTOWN_RELEASE_DEPLOY_COMMAND",
+    "AGENTOWN_RELEASE_WORKTREE",
+    "AGENTOWN_RELEASE_SSH_KEY",
+    "AGENTOWN_RELEASE_SSH_USER",
+    "AGENTOWN_STAGING_HOST",
+    "AGENTOWN_PRODUCTION_HOST",
+    "AGENTOWN_PRODUCTION_PUBLIC_URL",
 }
 DEFAULT_BRANCHES = {"main", "master"}
 ALLOWED_VERIFY = ("python3 -m unittest tools.tests", "./gradlew", "npm --prefix frontend")
@@ -752,7 +759,11 @@ def create_release_candidate(task: dict[str, Any], review: dict[str, Any], run_d
     verification["commit_sha"] = commit_sha
     atomic_json(verification_path, verification)
     previous = git("rev-parse", f"{commit_sha}^").stdout.strip()
-    manager = ReleaseManager(ROOT)
+    try:
+        from harness.deploy_adapter import configured_release_manager
+    except ModuleNotFoundError:
+        from deploy_adapter import configured_release_manager
+    manager = configured_release_manager(ROOT)
     contract = manager.create_candidate(run_dir.name, commit_sha, branch, task, review, str(verification_path.relative_to(ROOT)), previous)
     preflight = manager.preflight(contract)
     contract["preflight_hash"] = preflight["preflight_hash"]
@@ -1047,7 +1058,11 @@ def run_nightly_release_first(cfg: dict[str, Any], max_cycles: int, max_runtime_
             from harness.release import ReleaseManager
         except ModuleNotFoundError:
             from release import ReleaseManager
-        manager = ReleaseManager(ROOT)
+        try:
+            from harness.deploy_adapter import configured_release_manager
+        except ModuleNotFoundError:
+            from deploy_adapter import configured_release_manager
+        manager = configured_release_manager(ROOT)
     release = manager.load()
     release_check = "NO_CANDIDATE"
     if release.get("release_id") not in {None, "none"}:
@@ -1081,6 +1096,7 @@ def print_status() -> None:
 
 def main() -> int:
     load_private_environment()
+    load_private_environment(INFRA_ENV_PATH)
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start"); start.add_argument("--background", action="store_true"); start.add_argument("--max-cycles", type=int); start.add_argument("--max-runtime-seconds", type=int)
@@ -1103,9 +1119,13 @@ def main() -> int:
                 from harness.release import ReleaseError, ReleaseManager
             except ModuleNotFoundError:
                 from release import ReleaseError, ReleaseManager
-            manager = ReleaseManager(ROOT)
+            try:
+                from harness.deploy_adapter import configured_release_manager
+            except ModuleNotFoundError:
+                from deploy_adapter import configured_release_manager
+            manager = configured_release_manager(ROOT)
             if args.command == "release-status": print(json.dumps(manager.load(), ensure_ascii=False, indent=2)); return 0
-            if args.command == "release-plan": print(json.dumps({"contract": manager.load(), "actual_deployment_enabled": False, "reason": "No isolated staging/revision/rollback/credential contract is configured."}, ensure_ascii=False, indent=2)); return 0
+            if args.command == "release-plan": print(json.dumps({"contract": manager.load(), "actual_deployment_enabled": os.getenv("AGENTOWN_RELEASE_ENVIRONMENT_CONFIGURED", "").lower() == "true", "reason": "Exact-SHA SSH adapter with revision, health, smoke, and application rollback is configured."}, ensure_ascii=False, indent=2)); return 0
             if args.command == "release-dry-run": print(json.dumps(manager.dry_run(), ensure_ascii=False, indent=2)); return 0
             if args.command == "release-logs": print((ROOT / "runs" / "release.log").read_text(encoding="utf-8")[-20000:] if (ROOT / "runs" / "release.log").exists() else "no release logs"); return 0
             if args.command == "release-approve": raise ReleaseError("production approval is accepted only from the admin@reviewdr.kr Releases page; CLI approval is disabled")

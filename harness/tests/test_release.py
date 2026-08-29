@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from harness.deploy_adapter import SshReleaseAdapter
 from harness.release import ReleaseError, ReleaseManager, atomic_json, redact, run_fake_deploy_command
 
 
@@ -68,6 +69,27 @@ class ReleaseManagerTest(unittest.TestCase):
         report = self.manager.preflight(self.contract)
         checks = {item["id"]: item for item in report["checks"]}
         self.assertTrue(checks["clean_worktree"]["passed"])
+
+    def test_clean_dedicated_source_worktree_is_independent_from_operational_root(self):
+        with tempfile.TemporaryDirectory() as raw:
+            operational = Path(raw)
+            source = operational / "source"
+            subprocess.run(["git", "clone", "-q", str(self.root), str(source)], check=True)
+            (operational / "contracts").mkdir(parents=True)
+            (operational / "runs" / "run-1").mkdir(parents=True)
+            active = operational / "contracts" / "active-release.json"
+            verification = operational / "runs" / "run-1" / "verification-report.json"
+            atomic_json(active, self.contract)
+            atomic_json(verification, {"commit_sha": self.sha, "commands": [{"command": "test", "status": "PASSED"}]})
+            (operational / "dirty-user-file.txt").write_text("preserved\n")
+            manager = ReleaseManager(operational, active, source_root=source)
+            report = manager.preflight(self.contract)
+            checks = {item["id"]: item for item in report["checks"]}
+            self.assertTrue(checks["clean_worktree"]["passed"])
+            (source / "app.txt").write_text("dirty source\n")
+            report = manager.preflight(self.contract)
+            checks = {item["id"]: item for item in report["checks"]}
+            self.assertFalse(checks["clean_worktree"]["passed"])
 
     def test_failed_verification_is_blocked(self):
         atomic_json(self.verification, {"commit_sha": self.sha, "commands": [{"command": "test", "status": "FAILED"}]})
@@ -252,6 +274,34 @@ class ReleaseManagerTest(unittest.TestCase):
         control = self.root / "stop.json"; atomic_json(control, {"command": "STOP"})
         stopped = run_fake_deploy_command(["/bin/sh", "-c", "sleep 30"], self.sha, control_path=control)
         self.assertEqual(stopped["failure"], "STOP")
+
+
+class SshReleaseAdapterTest(unittest.TestCase):
+    def test_adapter_requires_clean_exact_sha_worktree(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "source"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "release@test.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Release Test"], cwd=root, check=True)
+            (root / "app.txt").write_text("safe\n")
+            subprocess.run(["git", "add", "app.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "safe"], cwd=root, check=True)
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            key = Path(raw) / "release.pem"
+            key.write_text("test-only\n")
+            environment = {
+                "AGENTOWN_RELEASE_SSH_KEY": str(key), "AGENTOWN_STAGING_HOST": "staging.invalid",
+                "AGENTOWN_PRODUCTION_HOST": "production.invalid",
+            }
+            with patch.dict("os.environ", environment):
+                adapter = SshReleaseAdapter(root, root)
+                adapter.validate("staging", sha)
+                with self.assertRaises(ReleaseError):
+                    adapter.validate("staging", "f" * 40)
+                (root / "app.txt").write_text("dirty\n")
+                with self.assertRaises(ReleaseError):
+                    adapter.validate("staging", sha)
 
 
 if __name__ == "__main__": unittest.main()

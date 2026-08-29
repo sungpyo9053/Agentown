@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_village}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_village}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
+      DB_USERNAME: ${POSTGRES_USER:-agent_village}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
+      LLM_MASTER_KEYS: ${LLM_MASTER_KEYS:?Set versioned LLM_MASTER_KEYS}
+      COOKIE_SECURE: "false"
+      CORS_ALLOWED_ORIGINS: http://localhost
+      RATE_LIMIT_ENABLED: "false"
+      EXECUTION_STUB_ENABLED: "true"
+      EMAIL_PROVIDER: stub
+      EMAIL_EXPOSE_DEVELOPMENT_VALUES: "false"
+      BUILDER_META_AGENT_MODE: mock
+      RELEASE_COMMIT_SHA: ${RELEASE_COMMIT_SHA:?Set RELEASE_COMMIT_SHA}
+      RELEASE_ARTIFACT: lightsail-git-archive
+      SLACK_CONNECTOR_ENABLED: "false"
+      NOTION_CONNECTOR_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        API_INTERNAL_URL: http://backend:8080
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres_data:

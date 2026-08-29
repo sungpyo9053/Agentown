@@ -109,8 +109,9 @@ def run_fake_deploy_command(command: list[str], expected_sha: str, timeout_secon
 
 
 class ReleaseManager:
-    def __init__(self, root: Path = ROOT, active_path: Path | None = None, deploy_adapter: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None):
+    def __init__(self, root: Path = ROOT, active_path: Path | None = None, deploy_adapter: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None, source_root: Path | None = None):
         self.root = root
+        self.source_root = source_root or root
         self.active_path = active_path or root / "contracts" / "active-release.json"
         self.deploy_adapter = deploy_adapter
 
@@ -127,12 +128,18 @@ class ReleaseManager:
         user_change_summary_ko = korean_release_text(task.get("user_change_summary_ko"), "user_change_summary_ko", 10, 500)
         release_id = f"release-{run_id}"
         evidence = list(dict.fromkeys(task.get("evidence_paths", []) + [verification_path, f"runs/{run_id}/planner-review.json", f"runs/{run_id}/implementation-report.json"]))
+        environment_configured = os.getenv("AGENTOWN_RELEASE_ENVIRONMENT_CONFIGURED", "").lower() == "true"
+        strategy = (
+            {"mode": "SSH_LIGHTSAIL", "reason": "Isolated staging, exact revision checks, smoke tests, and application rollback are configured."}
+            if environment_configured else
+            {"mode": "DRY_RUN_ONLY", "reason": "No isolated staging, revision query, rollback contract, or least-privilege deployment credential is configured."}
+        )
         contract = {
             "release_id": release_id, "application": "agentown", "environment": "STAGING", "approved_commit_sha": sha,
             "source_branch": branch, "planner_task_id": task["task_id"], "planner_decision": "APPROVED", "verification_report": verification_path,
             "artifact_identity": {"type": "git-commit", "commit_sha": sha},
             "migration_plan": {"classification": "AUTO_PREFLIGHT", "requires_database_restore": False},
-            "deployment_strategy": {"mode": "DRY_RUN_ONLY", "reason": "No isolated staging, revision query, rollback contract, or least-privilege deployment credential is configured."},
+            "deployment_strategy": strategy,
             "smoke_tests": ["/api/version SHA equality", "/actuator/health", "frontend login page", "Builder mock E2E"],
             "rollback_plan": {"application": "rebuild explicitly recorded previous SHA", "database": "forward-only migration; recovery requires HUMAN_DECISION_REQUIRED"},
             "requires_human_approval": True, "approved_by": None, "approved_at": None, "scheduled_at": None, "preflight_hash": None,
@@ -289,7 +296,7 @@ class ReleaseManager:
 
     def changed_files(self, sha: str, previous_sha: str | None) -> list[str]:
         args = ["diff-tree", "--no-commit-id", "--name-only", "-r", sha] if not previous_sha else ["diff", "--name-only", f"{previous_sha}..{sha}"]
-        result = git(self.root, *args)
+        result = git(self.source_root, *args)
         if result.returncode != 0:
             raise ReleaseError("Unable to resolve approved commit diff")
         return [line for line in result.stdout.splitlines() if line]
@@ -297,7 +304,7 @@ class ReleaseManager:
     def preflight(self, contract: dict[str, Any], require_clean: bool = True) -> dict[str, Any]:
         checks: list[dict[str, Any]] = []
         sha = contract["approved_commit_sha"]
-        exists = git(self.root, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+        exists = git(self.source_root, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
         checks.append({"id": "commit_exists", "passed": exists})
         checks.append({"id": "planner_approved", "passed": contract.get("planner_decision") == "APPROVED"})
         report_path = self.root / contract.get("verification_report", "")
@@ -307,11 +314,14 @@ class ReleaseManager:
         checks.append({"id": "verification_passed", "passed": verification_ok})
         linked_sha = verification.get("commit_sha")
         checks.append({"id": "verification_sha_matches", "passed": linked_sha == sha})
-        status_lines = git(self.root, "status", "--porcelain=v1", "-uall").stdout.splitlines()
-        operational_paths = {
-            str(self.active_path.relative_to(self.root)),
-            contract.get("verification_report", ""),
-        }
+        status_lines = git(self.source_root, "status", "--porcelain=v1", "-uall").stdout.splitlines()
+        active_relative = ""
+        if self.source_root == self.root:
+            try:
+                active_relative = str(self.active_path.relative_to(self.root))
+            except ValueError:
+                pass
+        operational_paths = {active_relative, contract.get("verification_report", "")}
         release_id = contract["release_id"]
         run_id = release_id[len("release-"):] if release_id.startswith("release-") else release_id
         for evidence in contract.get("evidence_paths", []):
@@ -326,14 +336,14 @@ class ReleaseManager:
             dirty_paths.append(path)
         dirty = bool(dirty_paths)
         checks.append({"id": "clean_worktree", "passed": not dirty if require_clean else True, "observed_dirty": dirty, "dirty_paths": dirty_paths[:100]})
-        show = git(self.root, "show", "--format=", "--no-ext-diff", sha)
+        show = git(self.source_root, "show", "--format=", "--no-ext-diff", sha)
         secret_ok = show.returncode == 0 and not any(pattern.search(show.stdout) for pattern in SECRET_PATTERNS)
         checks.append({"id": "secret_scan", "passed": secret_ok})
         files = self.changed_files(sha, contract.get("previous_release_sha")) if exists else []
         migrations = [name for name in files if "/db/migration/" in name]
         destructive = []
         for name in migrations:
-            content = git(self.root, "show", f"{sha}:{name}")
+            content = git(self.source_root, "show", f"{sha}:{name}")
             if content.returncode == 0 and DESTRUCTIVE_SQL.search(content.stdout):
                 destructive.append(name)
         checks.append({"id": "migration_compatible", "passed": not destructive, "migration_files": migrations, "destructive_files": destructive})
@@ -386,6 +396,9 @@ class ReleaseManager:
                 contract.update({"approved_by": None, "approved_at": None, "scheduled_at": None, "status": "HUMAN_DECISION_REQUIRED", "failure_reason": "Scheduled preflight changed or failed; admin approval was invalidated."})
                 self.save(contract)
                 raise ReleaseError("scheduled preflight changed or failed; production approval was invalidated")
+        contract["status"] = "STAGING_DEPLOYING" if target == "staging" else "PRODUCTION_DEPLOYING"
+        contract["started_at"] = utc_now()
+        self.save(contract)
         result = self.deploy_adapter(target, contract)
         observed = result.get("observed_sha")
         uncertain = bool(result.get("uncertain_outcome"))
@@ -397,7 +410,24 @@ class ReleaseManager:
         contract["completed_at"] = utc_now()
         self.save(contract)
         atomic_json(self.report_dir(contract["release_id"]) / f"{target}-deployment-report.json", {**result, "success": success, "recorded_at": utc_now()})
-        return {"success": success, "contract": contract, "result": result}
+        atomic_json(self.report_dir(contract["release_id"]) / f"{target}-verification-report.json", {
+            "release_id": contract["release_id"], "expected_sha": contract["approved_commit_sha"],
+            "observed_sha": observed, "smoke_passed": result.get("smoke_passed") is True,
+            "uncertain_outcome": uncertain, "checks": result.get("checks", {}), "passed": success,
+            "verified_at": utc_now(),
+        })
+        control_plane = None
+        if success and target == "staging":
+            latest = self.preflight(contract)
+            contract["preflight_hash"] = latest["preflight_hash"]
+            try:
+                control_plane = self.publish_control_plane(contract, latest)
+                contract.setdefault("control_plane", {})["sync_status"] = "PUBLISHED_STAGING_PASSED"
+            except ReleaseError as error:
+                contract.setdefault("control_plane", {})["sync_status"] = "PUBLISH_FAILED"
+                result["control_plane_failure"] = str(error)
+            self.save(contract)
+        return {"success": success, "contract": contract, "result": result, "control_plane": control_plane}
 
     def rollback(self) -> dict[str, Any]:
         contract = self.load()
@@ -409,7 +439,7 @@ class ReleaseManager:
         if self.deploy_adapter is None or not contract.get("previous_release_sha"):
             raise ReleaseError("safe application rollback adapter or previous SHA is unavailable")
         result = self.deploy_adapter("rollback", contract)
-        contract["status"] = "ROLLED_BACK" if result.get("observed_sha") == contract["previous_release_sha"] and result.get("smoke_passed") else "FAILED_SAFE"
+        contract["status"] = "ROLLED_BACK" if result.get("exit_code") == 0 and result.get("observed_sha") == contract["previous_release_sha"] and result.get("smoke_passed") and not result.get("uncertain_outcome") else "FAILED_SAFE"
         self.save(contract)
         atomic_json(self.report_dir(contract["release_id"]) / "rollback-report.json", {**result, "recorded_at": utc_now()})
         return contract
