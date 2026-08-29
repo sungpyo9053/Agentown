@@ -23,7 +23,7 @@ class SshReleaseAdapter:
         self.root = root
         self.source_root = source_root
         self.runner = runner
-        self.user = os.environ.get("AGENTOWN_RELEASE_SSH_USER", "ubuntu")
+        self.user = os.environ.get("AGENTOWN_RELEASE_SSH_USER", "agentown-release")
         self.key = Path(os.environ.get("AGENTOWN_RELEASE_SSH_KEY", ""))
         self.hosts = {
             "staging": os.environ.get("AGENTOWN_STAGING_HOST", ""),
@@ -48,15 +48,7 @@ class SshReleaseAdapter:
 
     def _verify(self, target: str, host: str, sha: str) -> dict[str, Any]:
         project = "agentown-staging" if target == "staging" else "agentown"
-        script = (
-            f"set -e; "
-            f"observed=$(sudo docker exec {project}-backend-1 wget -q -O - http://localhost:8080/api/version); "
-            f"health=$(sudo docker exec {project}-backend-1 wget -q -O - http://localhost:8080/actuator/health); "
-            f"sudo docker exec {project}-frontend-1 node -e \"fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"; "
-            f"sudo docker inspect {project}-postgres-1 --format '{{{{.State.Health.Status}}}}'; "
-            f"printf '\\n%s\\n%s\\n' \"$observed\" \"$health\""
-        )
-        checked = self._run(self._ssh_base(host) + [script], 90)
+        checked = self._run(self._ssh_base(host) + [f"sudo /usr/local/sbin/agentown-release-verify {project}"], 90)
         observed_sha = None
         health_passed = False
         if checked.returncode == 0:
@@ -107,15 +99,14 @@ class SshReleaseAdapter:
             archived = self._run(["git", "-C", str(self.source_root), "archive", "--format=tar.gz", "-o", str(archive), sha], 120)
             if archived.returncode != 0:
                 raise ReleaseError("approved Git archive could not be created")
-            remote_archive = f"/tmp/agentown-{sha}.tar.gz"
-            remote_script = "/tmp/agentown-remote-release.sh"
-            remote_compose = "/tmp/agentown-compose-release.yml"
-            copies = ((archive, remote_archive), (self.root / "harness/deploy/remote-release.sh", remote_script), (self.root / "harness/deploy/docker-compose.release.yml", remote_compose))
+            remote_archive = f"/home/{self.user}/inbox/agentown-{sha}.tar.gz"
+            remote_compose = f"/home/{self.user}/inbox/agentown-compose-release-{sha}.yml"
+            copies = ((archive, f"inbox/agentown-{sha}.tar.gz"), (self.root / "harness/deploy/docker-compose.release.yml", f"inbox/agentown-compose-release-{sha}.yml"))
             for local, remote in copies:
                 copied = self._run(["scp", "-i", str(self.key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", str(local), f"{self.user}@{host}:{remote}"], 180)
                 if copied.returncode != 0:
                     return {"exit_code": copied.returncode, "observed_sha": None, "smoke_passed": False, "uncertain_outcome": False, "failure": "artifact transfer failed"}
-            command = self._ssh_base(host) + [f"sudo bash {remote_script} {remote_target} {sha} {remote_archive} {remote_compose}"]
+            command = self._ssh_base(host) + [f"sudo /usr/local/sbin/agentown-release-deploy {remote_target} {sha} {remote_archive} {remote_compose}"]
             try:
                 deployed = self._run(command, 5400)
             except subprocess.TimeoutExpired:

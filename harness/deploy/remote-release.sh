@@ -7,6 +7,11 @@ archive=${3:?archive required}
 compose_source=${4:?compose required}
 
 [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid SHA" >&2; exit 2; }
+inbox=/home/agentown-release/inbox
+archive=$(realpath "$archive")
+compose_source=$(realpath "$compose_source")
+[[ "$archive" == "$inbox/"* && "$compose_source" == "$inbox/"* ]] || { echo "release inputs must come from the restricted inbox" >&2; exit 2; }
+[[ -f "$archive" && -f "$compose_source" ]] || { echo "release input is missing" >&2; exit 2; }
 case "$target" in
   staging) base=/opt/agentown-staging; project=agentown-staging ;;
   production|rollback) base=/opt/agentown; project=agentown ;;
@@ -49,3 +54,4 @@ cd "$release_dir"
 COMPOSE_PARALLEL_LIMIT=1 docker compose -p "$project" --env-file "$env_file" -f "$compose_file" up -d --build --remove-orphans
 docker compose -p "$project" --env-file "$env_file" -f "$compose_file" ps
 printf '%s\n' "$expected_sha" > "$shared_dir/deployed-sha"
+rm -f "$archive" "$compose_source"
