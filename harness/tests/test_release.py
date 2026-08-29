@@ -225,6 +225,7 @@ class ReleaseManagerTest(unittest.TestCase):
             payload = self.manager.control_plane_payload(self.contract, report)
         self.assertEqual(payload["stagingStatus"], "PASSED")
         self.assertTrue(payload["detail"]["environmentContract"]["configured"])
+        self.assertEqual(payload["detail"]["screenshotPaths"], [])
         with patch.dict("os.environ", {}, clear=True):
             blocked = self.manager.control_plane_payload(self.contract, report)
         self.assertFalse(blocked["detail"]["environmentContract"]["configured"])
