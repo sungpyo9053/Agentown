@@ -63,6 +63,9 @@ class ReleaseControlIntegrationTest : IntegrationTestSupport() {
             .andExpect(status().isOk).andExpect(jsonPath("$.releaseKey").value("release-agent-sync")).andExpect(jsonPath("$.status").value("APPROVAL_REQUIRED"))
         mvc.perform(get("/api/internal/releases/release-agent-sync").header("X-Release-Agent-Token", "integration-release-token"))
             .andExpect(status().isOk).andExpect(jsonPath("$.candidateSha").value(SHA)).andExpect(jsonPath("$.preflightHash").value(PREFLIGHT))
+        val changed = payload.replace(SHA, "c".repeat(40)).replace(PREFLIGHT, "e".repeat(64))
+        mvc.perform(post("/api/internal/releases/candidates").header("X-Release-Agent-Token", "integration-release-token").contentType(MediaType.APPLICATION_JSON).content(changed))
+            .andExpect(status().isOk).andExpect(jsonPath("$.status").value("APPROVAL_REQUIRED")).andExpect(jsonPath("$.candidateSha").value("c".repeat(40)))
     }
 
     private fun principal(email: String) = AuthenticatedUser(UUID.randomUUID(), email, "", true, UserRole.ADMIN)
