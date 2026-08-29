@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -64,19 +65,24 @@ class SshReleaseAdapter:
         public_revision = True
         public_health = True
         public_frontend = True
-        if target == "production" and checked.returncode == 0:
+        if target == "production" and checked.returncode == 0 and observed_sha == sha:
             base = os.environ.get("AGENTOWN_PRODUCTION_PUBLIC_URL", "").rstrip("/")
             public_revision = public_health = public_frontend = False
             if base:
-                try:
-                    with urllib.request.urlopen(f"{base}/api/version", timeout=15) as response:
-                        public_revision = json.loads(response.read().decode()).get("commitSha") == sha
-                    with urllib.request.urlopen(f"{base}/actuator/health", timeout=15) as response:
-                        public_health = json.loads(response.read().decode()).get("status") == "UP"
-                    with urllib.request.urlopen(f"{base}/login", timeout=15) as response:
-                        public_frontend = 200 <= response.status < 400
-                except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-                    pass
+                for attempt in range(12):
+                    try:
+                        with urllib.request.urlopen(f"{base}/api/version", timeout=15) as response:
+                            public_revision = json.loads(response.read().decode()).get("commitSha") == sha
+                        with urllib.request.urlopen(f"{base}/health", timeout=15) as response:
+                            public_health = json.loads(response.read().decode()).get("status") == "UP"
+                        with urllib.request.urlopen(f"{base}/login", timeout=15) as response:
+                            public_frontend = 200 <= response.status < 400
+                    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                        public_revision = public_health = public_frontend = False
+                    if public_revision and public_health and public_frontend:
+                        break
+                    if attempt < 11:
+                        time.sleep(5)
         smoke_passed = checked.returncode == 0 and health_passed and observed_sha == sha and public_revision and public_health and public_frontend
         return {
             "exit_code": checked.returncode,
@@ -85,6 +91,14 @@ class SshReleaseAdapter:
             "uncertain_outcome": checked.returncode != 0 and observed_sha is None,
             "checks": {"revision": observed_sha == sha, "health": health_passed, "frontend": checked.returncode == 0, "database": checked.returncode == 0, "public_revision": public_revision, "public_health": public_health, "public_frontend": public_frontend},
         }
+
+    def reconcile(self, target: str, contract: dict[str, Any]) -> dict[str, Any]:
+        """Verify an already observed deployment without executing it again."""
+        if target != "production":
+            raise ReleaseError("only production revision reconciliation is supported")
+        sha = contract["approved_commit_sha"]
+        self.validate(target, sha)
+        return self._verify(target, self.hosts[target], sha)
 
     def __call__(self, target: str, contract: dict[str, Any]) -> dict[str, Any]:
         sha = contract.get("previous_release_sha") if target == "rollback" else contract["approved_commit_sha"]

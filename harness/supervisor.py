@@ -1073,7 +1073,15 @@ def run_nightly_release_first(cfg: dict[str, Any], max_cycles: int, max_runtime_
             scheduled = release.get("scheduled_at")
             due = not scheduled or datetime.fromisoformat(scheduled.replace("Z", "+00:00")) <= datetime.now(timezone.utc)
             if due:
-                deployment = manager.deploy("production")
+                reconcile = getattr(manager, "reconcile_production", None)
+                reconciliation = reconcile() if callable(reconcile) else None
+                if reconciliation and reconciliation.get("success"):
+                    release_check = "RELEASED_AND_VERIFIED"
+                    deployment = reconciliation
+                elif reconciliation and reconciliation.get("result", {}).get("observed_sha") == release.get("approved_commit_sha"):
+                    raise SupervisorError("Approved production SHA is already live but smoke verification is incomplete; duplicate deployment was blocked")
+                else:
+                    deployment = manager.deploy("production")
                 if not deployment.get("success"):
                     raise SupervisorError("Production revision and smoke verification did not pass; development was not started")
                 release_check = "RELEASED_AND_VERIFIED"
@@ -1101,7 +1109,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start"); start.add_argument("--background", action="store_true"); start.add_argument("--max-cycles", type=int); start.add_argument("--max-runtime-seconds", type=int)
     sub.add_parser("status"); sub.add_parser("pause"); sub.add_parser("resume"); sub.add_parser("stop"); sub.add_parser("logs")
-    sub.add_parser("release-status"); sub.add_parser("release-plan"); sub.add_parser("release-dry-run"); sub.add_parser("release-staging"); sub.add_parser("release-production"); sub.add_parser("release-rollback"); sub.add_parser("release-logs")
+    sub.add_parser("release-status"); sub.add_parser("release-plan"); sub.add_parser("release-dry-run"); sub.add_parser("release-staging"); sub.add_parser("release-production"); sub.add_parser("release-reconcile"); sub.add_parser("release-rollback"); sub.add_parser("release-logs")
     sub.add_parser("nightly-install"); sub.add_parser("nightly-status"); sub.add_parser("nightly-uninstall")
     release_approve = sub.add_parser("release-approve"); release_approve.add_argument("release_id"); release_approve.add_argument("commit_sha")
     nightly = sub.add_parser("nightly"); nightly.add_argument("--max-cycles", type=int, default=30); nightly.add_argument("--max-runtime-seconds", type=int, default=82800)
@@ -1131,6 +1139,7 @@ def main() -> int:
             if args.command == "release-approve": raise ReleaseError("production approval is accepted only from the admin@reviewdr.kr Releases page; CLI approval is disabled")
             if args.command == "release-staging": print(json.dumps(manager.deploy("staging"), ensure_ascii=False, indent=2)); return 0
             if args.command == "release-production": print(json.dumps(manager.deploy("production"), ensure_ascii=False, indent=2)); return 0
+            if args.command == "release-reconcile": print(json.dumps(manager.reconcile_production(), ensure_ascii=False, indent=2)); return 0
             if args.command == "release-rollback": print(json.dumps(manager.rollback(), ensure_ascii=False, indent=2)); return 0
         if args.command == "nightly":
             result = run_nightly_release_first(cfg, args.max_cycles, args.max_runtime_seconds)

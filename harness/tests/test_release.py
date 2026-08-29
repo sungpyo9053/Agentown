@@ -132,6 +132,7 @@ class ReleaseManagerTest(unittest.TestCase):
             synced = self.manager.sync_control_plane_approval()
         self.assertEqual(synced["status"], "APPROVED")
         self.assertEqual(synced["contract"]["approved_by"], "admin-id")
+        self.assertEqual(synced["contract"]["status"], "RELEASE_APPROVAL_REQUIRED")
         remote["candidateSha"] = "f" * 40
         with patch.dict("os.environ", {"AGENTOWN_RELEASE_CONTROL_URL": "https://control.invalid", "AGENTOWN_RELEASE_AGENT_TOKEN": "test-token"}), patch("urllib.request.urlopen", return_value=Response()):
             with self.assertRaises(ReleaseError): self.manager.sync_control_plane_approval()
