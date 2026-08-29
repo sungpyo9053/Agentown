@@ -284,7 +284,14 @@ class ReleaseManager:
         if existing.is_file() and read_json(existing) != immutable:
             raise ReleaseError("Immutable local approval record differs from the server approval")
         contract.update(immutable)
-        contract["status"] = remote["status"]
+        # The server control plane calls an immediate approval APPROVAL_REQUIRED
+        # because the release is still waiting for the deploy worker.  The local
+        # release state uses RELEASE_APPROVAL_REQUIRED for that same gate.
+        contract["status"] = (
+            "RELEASE_APPROVAL_REQUIRED"
+            if remote["status"] == "APPROVAL_REQUIRED"
+            else remote["status"]
+        )
         contract.setdefault("control_plane", {})["sync_status"] = "SYNCED"
         contract["failure_reason"] = None
         self.save(contract)
@@ -436,6 +443,37 @@ class ReleaseManager:
                 result["control_plane_failure"] = str(error)
             self.save(contract)
         return {"success": success, "contract": contract, "result": result, "control_plane": control_plane}
+
+    def reconcile_production(self) -> dict[str, Any]:
+        """Reconcile an already deployed exact SHA without issuing a duplicate deploy."""
+        contract = self.load()
+        if not contract.get("approved_at") or contract.get("approval_preflight_hash") != contract.get("preflight_hash"):
+            raise ReleaseError("immutable production approval is missing or stale")
+        reconcile = getattr(self.deploy_adapter, "reconcile", None)
+        if not callable(reconcile):
+            raise ReleaseError("deployment adapter does not support revision reconciliation")
+        result = reconcile("production", contract)
+        observed = result.get("observed_sha")
+        uncertain = bool(result.get("uncertain_outcome"))
+        success = result.get("exit_code") == 0 and observed == contract["approved_commit_sha"] and result.get("smoke_passed") is True and not uncertain
+        contract.update({
+            "environment": "PRODUCTION",
+            "deployed_release_sha": observed,
+            "uncertain_outcome": uncertain,
+            "status": "RELEASED" if success else "FAILED_SAFE",
+            "failure_reason": None if success else "Production revision reconciliation did not pass every smoke gate.",
+            "completed_at": utc_now(),
+        })
+        self.save(contract)
+        report = {
+            "release_id": contract["release_id"], "expected_sha": contract["approved_commit_sha"],
+            "observed_sha": observed, "smoke_passed": result.get("smoke_passed") is True,
+            "uncertain_outcome": uncertain, "checks": result.get("checks", {}), "passed": success,
+            "verified_at": utc_now(), "reconciled_without_redeploy": True,
+        }
+        atomic_json(self.report_dir(contract["release_id"]) / "production-verification-report.json", report)
+        atomic_json(self.report_dir(contract["release_id"]) / "production-reconciliation-report.json", {**result, "success": success, "recorded_at": utc_now()})
+        return {"success": success, "contract": contract, "result": result}
 
     def rollback(self) -> dict[str, Any]:
         contract = self.load()
