@@ -46,7 +46,7 @@ PRIVATE_ENV_ALLOWLIST = {
     "AGENTOWN_PRODUCTION_PUBLIC_URL",
 }
 DEFAULT_BRANCHES = {"main", "master"}
-ALLOWED_VERIFY = ("python3 -m unittest tools.tests", "./gradlew", "npm --prefix frontend")
+ALLOWED_VERIFY = ("python3 -m unittest tools.tests", "./gradlew", "npm --prefix frontend", "git diff --check")
 ALLOWED_VERIFY_ENV = {"PLAYWRIGHT_MOCKED_UI": {"true"}}
 REQUIRED_EXECUTABLES = ("npm", "node", "java", "git", "codex")
 CHECKPOINT_STATUSES = {"STARTING", "PLANNING", "IMPLEMENTING", "VERIFYING", "REVIEWING", "REPORTING", "RETRY_WAIT"}
@@ -458,7 +458,8 @@ def parse_verification_command(raw: str) -> tuple[list[str], dict[str, str]]:
         if value not in ALLOWED_VERIFY_ENV.get(key, set()):
             raise SupervisorError("Autonomous task contains unsupported verification environment")
         environment[key] = value
-    if not tokens or not " ".join(tokens).startswith(ALLOWED_VERIFY):
+    joined = " ".join(tokens)
+    if not tokens or not any(joined == prefix or joined.startswith(prefix + " ") for prefix in ALLOWED_VERIFY):
         raise SupervisorError("Autonomous task contains live or unsupported verification; defer it as a separate human-gated task")
     return tokens, environment
 
