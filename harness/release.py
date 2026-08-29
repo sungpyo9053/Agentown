@@ -169,6 +169,10 @@ class ReleaseManager:
             and contract.get("deployment_strategy", {}).get("mode") not in {None, "DRY_RUN_ONLY"}
         )
         staging_passed = contract.get("status") == "RELEASE_APPROVAL_REQUIRED"
+        verification_path = self.root / contract.get("verification_report", "")
+        verification = read_json(verification_path) if verification_path.is_file() else {}
+        staging_report_path = self.report_dir(contract["release_id"]) / "staging-verification-report.json"
+        staging_report = read_json(staging_report_path) if staging_report_path.is_file() else {"passed": False}
         return {
             "releaseKey": bounded_text(contract["release_id"], 80, "release"),
             "purpose": release_title_ko,
@@ -182,9 +186,13 @@ class ReleaseManager:
                 "userChanges": [user_change_summary_ko],
                 "systemChanges": ["Planner 승인 commit만 Release 후보로 취급", "관리자 UI 승인에 SHA와 preflight hash 결속"],
                 "technicalChanges": files, "files": files, "plannerDecision": contract["planner_decision"],
-                "verificationCommands": [], "stagingResults": {"status": "PASSED" if staging_passed else "NOT_CONFIGURED"},
-                "migration": contract["migration_plan"], "risks": ["실제 스테이징과 rollback 계약 미구성"],
-                "unverified": ["실제 스테이징 배포", "실제 운영 배포"], "externalImpact": [], "estimatedDowntime": "미확인",
+                "verificationCommands": verification.get("commands", []),
+                "stagingResults": {"status": "PASSED" if staging_passed else "NOT_CONFIGURED", **staging_report},
+                "migration": contract["migration_plan"],
+                "risks": ["운영 배포는 admin@reviewdr.kr의 정확한 SHA 승인 후에만 실행됩니다."],
+                "unverified": ["실제 운영 배포"],
+                "externalImpact": ["스테이징은 운영 데이터와 분리되고 외부 웹 포트를 공개하지 않습니다."],
+                "estimatedDowntime": "컨테이너 재기동 중 수분 이내의 일시 중단 가능성이 있으며 운영 검증에서 확정합니다.",
                 "rollback": contract["rollback_plan"], "preflight": preflight, "evidencePaths": contract["evidence_paths"],
                 "screenshotPaths": ["/release-evidence/release-control-plane.png"],
             },
