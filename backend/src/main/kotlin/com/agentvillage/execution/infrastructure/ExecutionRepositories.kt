@@ -36,6 +36,10 @@ interface ExecutionRepository : JpaRepository<Execution, UUID> {
         """,
     )
     fun claimQueued(@Param("id") id: UUID, @Param("now") now: Instant): Int
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select e from Execution e where e.id = :id")
+    fun findByIdForUpdate(@Param("id") id: UUID): Execution?
 }
 interface LocalRunnerConnectionRepository : JpaRepository<LocalRunnerConnection, UUID> {
     fun findAllByOwnerIdOrderByCreatedAtDesc(ownerId: UUID): List<LocalRunnerConnection>
