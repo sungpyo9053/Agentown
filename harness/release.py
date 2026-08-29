@@ -162,6 +162,16 @@ class ReleaseManager:
     def control_plane_payload(self, contract: dict[str, Any], preflight: dict[str, Any]) -> dict[str, Any]:
         files = preflight.get("changed_files", [])
         migrations = [path for path in files if "/db/migration/" in path]
+        screenshot_paths = [
+            path for path in contract.get("screenshot_paths", [])
+            if isinstance(path, str) and (
+                path.startswith("data:image/")
+                or (
+                    path.startswith("/release-evidence/")
+                    and (self.root / "frontend" / "public" / path[1:]).is_file()
+                )
+            )
+        ]
         release_title_ko = korean_release_text(contract.get("release_title_ko"), "release_title_ko", 5, 300)
         user_change_summary_ko = korean_release_text(contract.get("user_change_summary_ko"), "user_change_summary_ko", 10, 500)
         environment_configured = (
@@ -194,7 +204,7 @@ class ReleaseManager:
                 "externalImpact": ["스테이징은 운영 데이터와 분리되고 외부 웹 포트를 공개하지 않습니다."],
                 "estimatedDowntime": "컨테이너 재기동 중 수분 이내의 일시 중단 가능성이 있으며 운영 검증에서 확정합니다.",
                 "rollback": contract["rollback_plan"], "preflight": preflight, "evidencePaths": contract["evidence_paths"],
-                "screenshotPaths": ["/release-evidence/release-control-plane.png"],
+                "screenshotPaths": screenshot_paths,
             },
         }
 
