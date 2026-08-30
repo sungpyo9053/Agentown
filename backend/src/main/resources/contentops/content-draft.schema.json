@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "bodyMarkdown": {"type": "string", "minLength": 1, "maxLength": 30000},
+    "seoTitle": {"type": "string", "minLength": 1, "maxLength": 200},
+    "metaDescription": {"type": "string", "minLength": 1, "maxLength": 500},
+    "targetKeywords": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+    "evidenceUsed": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 300}},
+    "warnings": {"type": "array", "maxItems": 12, "items": {"type": "string", "minLength": 1, "maxLength": 300}}
+  },
+  "required": ["title", "bodyMarkdown", "seoTitle", "metaDescription", "targetKeywords", "evidenceUsed", "warnings"]
+}
