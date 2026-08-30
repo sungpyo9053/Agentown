@@ -85,6 +85,7 @@ class CodexCliMetaAgentModel(
 }
 
 @Component
+@org.springframework.modulith.NamedInterface("application")
 class CodexCliRunner(
     @Value("\${builder.meta-agent.codex-command:codex}") private val command: String,
     @Value("\${builder.meta-agent.timeout-seconds:120}") private val timeoutSeconds: Long,

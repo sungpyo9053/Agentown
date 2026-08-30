@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LayoutDashboard, Building2, Users, Settings, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { LayoutDashboard, Building2, Users, FilePenLine, Settings, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { SessionNav } from "@/components/SessionNav";
 import { AgentownLogo } from "@/components/MarketingShell";
 import { blockFontClassName } from "@/lib/fonts";
@@ -45,6 +45,7 @@ const groups = [
     { href: "/assemble/harness", label: "하네스 구성" },
     { href: "/assemble/automation", label: "업무 자동화" },
   ] },
+  { key: "content", icon: FilePenLine, label: "콘텐츠 운영", href: "/content", items: [] as { href: string; label: string }[] },
   { key: "settings", icon: Settings, label: "Setting", href: "/settings/subscription", items: [
     { href: "/settings/subscription", label: "구독 관리" },
     { href: "/settings/preferences", label: "환경 설정" },
@@ -53,7 +54,7 @@ const groups = [
   ] },
 ];
 
-const groupPrefix: Record<string, string> = { board: "/dashboard", management: "/management", assemble: "/assemble", settings: "/settings" };
+const groupPrefix: Record<string, string> = { board: "/dashboard", management: "/management", assemble: "/assemble", content: "/content", settings: "/settings" };
 
 export function AppShell({ title, kicker, children }: { title: string; kicker: string; children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
