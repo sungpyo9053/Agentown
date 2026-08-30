@@ -55,7 +55,10 @@ class ApiRateLimitFilter(
         val path = request.requestURI
         return when {
             path == "/api/auth/login" -> RateLimitRule("login", 20, 300)
-            path == "/api/auth/email/send-code" || path == "/api/auth/password/temporary" -> RateLimitRule("email", 5, 600)
+            // Verification resend and password recovery are separate user journeys. Sharing one
+            // bucket made password recovery attempts block an otherwise valid sign-up.
+            path == "/api/auth/email/send-code" -> RateLimitRule("email-verification", 10, 600)
+            path == "/api/auth/password/temporary" -> RateLimitRule("password-recovery", 5, 600)
             path == "/api/designer/companies/design" -> RateLimitRule("designer", 30, 60)
             path == "/api/automations/design" -> RateLimitRule("automation-designer", 30, 60)
             path.matches(Regex("^/api/harnesses/[^/]+/executions$")) -> RateLimitRule("execution", 10, 60)

@@ -27,4 +27,23 @@ class ApiRateLimitFilterTest {
         }
         assertThat(passed).isEqualTo(20)
     }
+
+    @Test
+    fun `email verification and password recovery have independent limits`() {
+        val filter = ApiRateLimitFilter(true, false, Clock.fixed(Instant.parse("2026-08-30T00:00:00Z"), ZoneOffset.UTC))
+        repeat(10) {
+            val request = MockHttpServletRequest("POST", "/api/auth/email/send-code").apply { remoteAddr = "203.0.113.20" }
+            val response = MockHttpServletResponse()
+            filter.doFilter(request, response) { _, _ -> }
+            assertThat(response.status).isEqualTo(200)
+        }
+        val blocked = MockHttpServletResponse()
+        filter.doFilter(MockHttpServletRequest("POST", "/api/auth/email/send-code").apply { remoteAddr = "203.0.113.20" }, blocked) { _, _ -> }
+        assertThat(blocked.status).isEqualTo(429)
+        assertThat(blocked.getHeader("X-RateLimit-Limit")).isEqualTo("10")
+
+        val recovery = MockHttpServletResponse()
+        filter.doFilter(MockHttpServletRequest("POST", "/api/auth/password/temporary").apply { remoteAddr = "203.0.113.20" }, recovery) { _, _ -> }
+        assertThat(recovery.status).isEqualTo(200)
+    }
 }

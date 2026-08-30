@@ -4,7 +4,7 @@ import com.agentvillage.agent.application.AgentDefinitionService
 import com.agentvillage.agent.application.AgentService
 import com.agentvillage.agent.application.GenerateDefinitionCommand
 import com.agentvillage.agent.application.SaveAgentCommand
-import com.agentvillage.builder.application.CodexCliRunner
+import com.agentvillage.builder.application.PlatformCodexExecutor
 import com.agentvillage.common.domain.Visibility
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.execution.application.AiModelGatewayRegistry
@@ -103,7 +103,7 @@ class CompanyDesignerService(
     private val agents: AgentService,
     private val definitions: AgentDefinitionService,
     private val harnesses: HarnessService,
-    private val codex: CodexCliRunner,
+    private val codex: PlatformCodexExecutor,
     @Value("\${designer.template-enabled:true}") private val templateEnabled: Boolean,
     @Value("\${designer.platform-model:gpt-5.6-luna}") private val platformModel: String,
 ) {
@@ -146,7 +146,7 @@ class CompanyDesignerService(
         return runCatching {
             val platformCommand = command.copy(provider = LlmProvider.OPENAI, model = platformModel)
             val prompt = designerSystemPrompt() + "\n\n" + designerInput(platformCommand, ownerId)
-            parseDraft(codex.executeWithSharedAuth(platformModel, prompt, schemaResource = "/designer/company-design.schema.json"), platformCommand)
+            parseDraft(codex.executeWithSharedAuth(platformModel, prompt, null, "/designer/company-design.schema.json"), platformCommand)
                 .copy(designSource = "AGENTOWN_AI")
         }.getOrElse { error ->
             log.warn("Agentown company designer AI unavailable; using verified template fallback: {}", error.javaClass.simpleName)

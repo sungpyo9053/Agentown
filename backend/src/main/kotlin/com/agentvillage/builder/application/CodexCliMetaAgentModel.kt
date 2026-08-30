@@ -45,7 +45,7 @@ class CodexCliMetaAgentModel(
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
         val credential = credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI)
         if (credential == null && usageLimiter.isUnlimited(context.ownerId)) {
-            return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)), context.jobId)
+            return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)), context.jobId, "/builder/meta-agent-design-bundle.schema.json")
         }
         credential ?: throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
         return credentials.withDecrypted(credential.id, context.ownerId, LlmProvider.OPENAI) { secret, _ ->
@@ -84,16 +84,23 @@ class CodexCliMetaAgentModel(
     """.trimIndent()
 }
 
+@org.springframework.modulith.NamedInterface("application")
+interface PlatformCodexExecutor {
+    fun hasSharedAuth(): Boolean
+    fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID?, schemaResource: String): String
+    fun cancel(jobId: UUID)
+}
+
 @Component
 class CodexCliRunner(
     @Value("\${builder.meta-agent.codex-command:codex}") private val command: String,
     @Value("\${builder.meta-agent.timeout-seconds:120}") private val timeoutSeconds: Long,
     @Value("\${builder.meta-agent.shared-codex-home:/var/lib/agentown-codex}") private val sharedCodexHome: String,
-) {
+) : PlatformCodexExecutor {
     private val processes = ConcurrentHashMap<UUID, Process>()
     private val cancelled = ConcurrentHashMap.newKeySet<UUID>()
 
-    fun hasSharedAuth(): Boolean = Files.isRegularFile(Path.of(sharedCodexHome).resolve("auth.json"))
+    override fun hasSharedAuth(): Boolean = Files.isRegularFile(Path.of(sharedCodexHome).resolve("auth.json"))
 
     fun execute(apiKey: CharArray, model: String, prompt: String, jobId: UUID? = null, schemaResource: String = DEFAULT_SCHEMA): String {
         val isolatedHome = Files.createTempDirectory("agentown-codex-home-")
@@ -104,7 +111,7 @@ class CodexCliRunner(
         }
     }
 
-    fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID? = null, schemaResource: String = DEFAULT_SCHEMA): String {
+    override fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID?, schemaResource: String): String {
         val home = Path.of(sharedCodexHome)
         if (!hasSharedAuth()) {
             throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
@@ -112,7 +119,7 @@ class CodexCliRunner(
         return execute(null, home, model, prompt, jobId, schemaResource)
     }
 
-    fun cancel(jobId: UUID) {
+    override fun cancel(jobId: UUID) {
         cancelled += jobId
         processes[jobId]?.destroyForcibly()
     }
