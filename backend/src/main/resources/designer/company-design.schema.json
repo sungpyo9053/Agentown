@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "companyName": {"type": "string", "minLength": 1, "maxLength": 100},
+    "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "agents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "role": {"type": "string", "minLength": 1, "maxLength": 200},
+          "responsibility": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "taskDescription": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "desiredOutput": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "requiredEvidence": {"type": "string", "maxLength": 4000},
+          "guide": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "prohibitions": {"type": "string", "maxLength": 4000},
+          "rewriteCriteria": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "approvalCriteria": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "characterKey": {"type": "string", "enum": ["writer", "reviewer", "designer", "developer", "manager"]},
+          "provider": {"type": "string", "const": "OPENAI"},
+          "recommendedModel": {"type": "string", "minLength": 1, "maxLength": 80},
+          "existingAgentId": {"type": ["string", "null"]}
+        },
+        "required": ["key", "name", "role", "responsibility", "taskDescription", "desiredOutput", "requiredEvidence", "guide", "prohibitions", "rewriteCriteria", "approvalCriteria", "characterKey", "provider", "recommendedModel", "existingAgentId"]
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {"type": "string", "pattern": "^step-[1-5]$"},
+          "agentKey": {"type": "string", "minLength": 1, "maxLength": 60},
+          "sequence": {"type": "integer", "minimum": 1, "maximum": 5},
+          "maxRetries": {"type": "integer", "minimum": 0, "maximum": 3}
+        },
+        "required": ["key", "agentKey", "sequence", "maxRetries"]
+      }
+    },
+    "approvalAfterLast": {"type": "boolean"},
+    "designSource": {"type": "string", "const": "AGENTOWN_AI"},
+    "resultAgentKey": {"type": ["string", "null"]},
+    "outputFormat": {"type": "string", "enum": ["AUTO", "TEXT", "MARKDOWN", "HTML", "JSON", "CSV", "EXTERNAL"]},
+    "outcome": {"type": "string", "const": "NEW_HARNESS"},
+    "changes": {"type": "array", "maxItems": 0}
+  },
+  "required": ["companyName", "goal", "agents", "steps", "approvalAfterLast", "designSource", "resultAgentKey", "outputFormat", "outcome", "changes"]
+}

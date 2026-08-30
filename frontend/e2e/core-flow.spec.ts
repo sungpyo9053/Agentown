@@ -46,10 +46,8 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await page.getByLabel("반드시 확인할 근거는 무엇인가요?").fill("공식 문서와 실행 결과");
   await page.getByLabel("절대 하면 안 되는 일은 무엇인가요?").fill("검증하지 않은 사실을 단정하지 않는다.");
   await page.getByLabel("언제 사람의 승인을 받아야 하나요?").fill("최종 발행 직전");
-  const model = page.locator('select[name="model"]');
-  await expect(model.locator("option")).not.toHaveCount(1);
-  await model.selectOption({ index: 1 });
-  await page.getByRole("button", { name: "AI 회사 전체 초안 만들기" }).click();
+  await expect(page.getByText(/별도의 모델 선택이나 API 키 없이 서버 Codex가 회사 조직 초안을 만듭니다/)).toBeVisible();
+  await page.getByRole("button", { name: "Agentown으로 회사 초안 만들기" }).click();
   await expect(page.getByRole("button", { name: "이 조직을 승인하고 내 회사에 저장" })).toBeVisible();
   await page.getByRole("button", { name: "이 조직을 승인하고 내 회사에 저장" }).click();
   await expect(page).toHaveURL(/\/harnesses\/[^/]+\/edit$/);

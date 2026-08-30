@@ -95,21 +95,21 @@ class CodexCliRunner(
 
     fun hasSharedAuth(): Boolean = Files.isRegularFile(Path.of(sharedCodexHome).resolve("auth.json"))
 
-    fun execute(apiKey: CharArray, model: String, prompt: String, jobId: UUID? = null): String {
+    fun execute(apiKey: CharArray, model: String, prompt: String, jobId: UUID? = null, schemaResource: String = DEFAULT_SCHEMA): String {
         val isolatedHome = Files.createTempDirectory("agentown-codex-home-")
         return try {
-            execute(apiKey, isolatedHome, model, prompt, jobId)
+            execute(apiKey, isolatedHome, model, prompt, jobId, schemaResource)
         } finally {
             deleteTemporary(isolatedHome)
         }
     }
 
-    fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID? = null): String {
+    fun executeWithSharedAuth(model: String, prompt: String, jobId: UUID? = null, schemaResource: String = DEFAULT_SCHEMA): String {
         val home = Path.of(sharedCodexHome)
         if (!hasSharedAuth()) {
             throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
         }
-        return execute(null, home, model, prompt, jobId)
+        return execute(null, home, model, prompt, jobId, schemaResource)
     }
 
     fun cancel(jobId: UUID) {
@@ -117,12 +117,12 @@ class CodexCliRunner(
         processes[jobId]?.destroyForcibly()
     }
 
-    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String, jobId: UUID?) : String {
+    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String, jobId: UUID?, schemaResource: String) : String {
         val root = Files.createTempDirectory("agentown-codex-meta-")
         return try {
             if (jobId != null && jobId in cancelled) cancelled()
             val schema = root.resolve("schema.json")
-            javaClass.getResourceAsStream("/builder/meta-agent-design-bundle.schema.json")?.use { input -> Files.copy(input, schema) }
+            javaClass.getResourceAsStream(schemaResource)?.use { input -> Files.copy(input, schema) }
                 ?: throw MetaAgentExecutionException("BUILDER_SCHEMA_MISSING", "Configuration", false, safeMessage = "메타 에이전트 출력 스키마를 찾을 수 없습니다.")
             Files.createDirectories(codexHome)
             val processBuilder = ProcessBuilder(
@@ -189,6 +189,7 @@ class CodexCliRunner(
     }
 
     companion object {
+        private const val DEFAULT_SCHEMA = "/builder/meta-agent-design-bundle.schema.json"
         private const val MAX_OUTPUT_CHARS = 1_000_000
         private const val MAX_ERROR_CHARS = 2_000
     }

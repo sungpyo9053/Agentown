@@ -44,6 +44,9 @@ llm:
 execution:
   stub-enabled: ${EXECUTION_STUB_ENABLED:true}
   poll-interval-ms: ${EXECUTION_POLL_INTERVAL_MS:500}
+designer:
+  template-enabled: ${DESIGNER_TEMPLATE_ENABLED:true}
+  platform-model: ${DESIGNER_PLATFORM_MODEL:gpt-5.6-luna}
 auth:
   email:
     provider: ${EMAIL_PROVIDER:stub}

@@ -18,13 +18,13 @@ type DesignResult = { draft:DesignDraft; valid:boolean; errors:string[] };
 export default function Page() {
   const router = useRouter();
   const [provider, setProvider] = useState<Provider>("OPENAI");
-  const [stubMode, setStubMode] = useState(true);
+  const [usePersonalAi, setUsePersonalAi] = useState(false);
   const [draft, setDraft] = useState<DesignDraft | null>(null);
   const [selectedCredential, setSelectedCredential] = useState("");
   const models = useQuery({ queryKey:["llm-models", provider], queryFn:() => api<Model[]>(`/llm-models?provider=${provider}`) });
   const credentials = useQuery({ queryKey:["credentials"], queryFn:() => api<Credential[]>("/llm-credentials") });
   const design = useMutation({ mutationFn:(body:unknown) => api<DesignResult>("/designer/companies/design", { method:"POST", body:JSON.stringify(body) }), onSuccess:(result) => setDraft(result.draft) });
-  const apply = useMutation({ mutationFn:() => api<{harnessId:string}>("/designer/companies/apply", { method:"POST", body:JSON.stringify({ draft, credentialId:selectedCredential || null, stubMode }) }), onSuccess:(result) => router.push(`/harnesses/${result.harnessId}/edit`) });
+  const apply = useMutation({ mutationFn:() => api<{harnessId:string}>("/designer/companies/apply", { method:"POST", body:JSON.stringify({ draft, credentialId:usePersonalAi ? selectedCredential || null : null, stubMode:!usePersonalAi }) }), onSuccess:(result) => router.push(`/harnesses/${result.harnessId}/edit`) });
 
   function submit(event:FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -32,7 +32,7 @@ export default function Page() {
       companyName:form.get("companyName"), goal:form.get("goal"), primaryInput:form.get("primaryInput"), desiredOutput:form.get("desiredOutput"),
       outputFormat:form.get("outputFormat"),
       requiredEvidence:form.get("requiredEvidence"), prohibitions:form.get("prohibitions"), approvalPolicy:form.get("approvalPolicy"),
-      provider, model:form.get("model"), credentialId:selectedCredential || null, stubMode,
+      provider, model:usePersonalAi ? form.get("model") : "gpt-5.6-luna", credentialId:usePersonalAi ? selectedCredential || null : null, stubMode:!usePersonalAi,
     });
   }
   function updateAgent(key:string, patch:Partial<DesignedAgent>) {
@@ -51,8 +51,8 @@ export default function Page() {
         <Question number="5" label="반드시 확인할 근거는 무엇인가요?" example="예: 주문 상태와 최신 환불 정책"><textarea name="requiredEvidence" rows={2}/></Question>
         <Question number="6" label="절대 하면 안 되는 일은 무엇인가요?" example="예: 환불 가능 여부를 추측하거나 개인정보를 답변에 노출하지 않는다."><textarea name="prohibitions" rows={2}/></Question>
         <Question number="7" label="언제 사람의 승인을 받아야 하나요?" example="예: 외부 전송 전 최종 답변과 정책 적용을 승인한다."><textarea name="approvalPolicy" rows={2}/></Question>
-        <div className="rounded-2xl bg-cream p-4"><p className="text-sm font-black">설계 모델</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><select value={provider} onChange={(event) => { setProvider(event.target.value as Provider); setSelectedCredential(""); }} className="rounded-xl border bg-white p-3"><option value="OPENAI">Codex / OpenAI</option><option value="ANTHROPIC">Claude / Anthropic</option><option value="GOOGLE">Gemini / Google</option></select><select name="model" required className="rounded-xl border bg-white p-3"><option value="">모델 선택</option>{models.data?.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></div><select value={selectedCredential} onChange={(event) => setSelectedCredential(event.target.value)} disabled={stubMode} className="mt-3 w-full rounded-xl border bg-white p-3"><option value="">연결 완료 API 키 선택</option>{credentials.data?.filter((item) => item.provider === provider && item.status === "ACTIVE").map((item) => <option key={item.id} value={item.id}>{item.maskedSecret} · 연결 완료</option>)}</select><label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={stubMode} onChange={(event) => setStubMode(event.target.checked)}/><span>API 비용 없이 Stub으로 전체 설계 흐름 테스트</span></label>{!stubMode && !selectedCredential && <p className="mt-2 text-xs font-bold text-amber-700">실제 설계에는 설정에서 검증·저장된 API 키가 필요합니다.</p>}</div>
-        <button disabled={design.isPending || (!stubMode && !selectedCredential)} className="w-full rounded-xl bg-coral p-4 font-black text-white">{design.isPending ? "AI 회사 설계 중…" : "AI 회사 전체 초안 만들기"}</button>
+        <div className="rounded-2xl bg-cream p-4"><p className="text-sm font-black">Agentown 제공 Codex</p><p className="mt-2 text-sm leading-6 text-stone-600">별도의 모델 선택이나 API 키 없이 서버 Codex가 회사 조직 초안을 만듭니다. Codex 연결에 일시적인 문제가 있으면 검증된 기본 템플릿으로 안전하게 계속할 수 있습니다.</p><details className="mt-3"><summary className="cursor-pointer text-xs font-bold text-stone-600">고급 옵션: 내 AI 연결로 설계</summary><label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={usePersonalAi} onChange={(event) => setUsePersonalAi(event.target.checked)}/><span>내가 연결한 AI로 맞춤 설계</span></label>{usePersonalAi && <><div className="mt-3 grid gap-3 sm:grid-cols-2"><select aria-label="AI 공급자" value={provider} onChange={(event) => { setProvider(event.target.value as Provider); setSelectedCredential(""); }} className="rounded-xl border bg-white p-3"><option value="OPENAI">Codex / OpenAI</option><option value="ANTHROPIC">Claude / Anthropic</option><option value="GOOGLE">Gemini / Google</option></select><select aria-label="AI 모델" name="model" required className="rounded-xl border bg-white p-3"><option value="">모델 선택</option>{models.data?.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></div><select aria-label="연결 완료 AI" value={selectedCredential} onChange={(event) => setSelectedCredential(event.target.value)} className="mt-3 w-full rounded-xl border bg-white p-3"><option value="">연결 완료 API 키 선택</option>{credentials.data?.filter((item) => item.provider === provider && item.status === "ACTIVE").map((item) => <option key={item.id} value={item.id}>{item.maskedSecret} · 연결 완료</option>)}</select>{!selectedCredential && <p className="mt-2 text-xs font-bold text-amber-700">고급 맞춤 설계에만 연결 완료 API 키가 필요합니다.</p>}</>}</details></div>
+        <button disabled={design.isPending || (usePersonalAi && !selectedCredential)} className="w-full rounded-xl bg-coral p-4 font-black text-white">{design.isPending ? "회사 초안 만드는 중…" : "Agentown으로 회사 초안 만들기"}</button>
         {design.error && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-600">{design.error.message}</p>}
       </form>
 

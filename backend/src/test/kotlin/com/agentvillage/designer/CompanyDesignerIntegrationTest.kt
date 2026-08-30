@@ -17,17 +17,19 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.context.TestPropertySource
 import java.util.UUID
 import java.nio.charset.StandardCharsets
 
 @AutoConfigureMockMvc
+@TestPropertySource(properties = ["execution.stub-enabled=false", "designer.template-enabled=true"])
 class CompanyDesignerIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var mvc: MockMvc
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var mapper: ObjectMapper
 
     @Test
-    fun `questions create validate and apply a portable company harness with stub designer`() {
+    fun `questions create validate and apply a portable company harness without enabling execution stub`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val identity = identities.register(RegisterUserCommand("designer-$suffix@example.com", "password123", "designer_$suffix", "설계 검증"))
         val principal = AuthenticatedUser(identity.id, identity.email, "unused", true)
@@ -46,7 +48,7 @@ class CompanyDesignerIntegrationTest : IntegrationTestSupport() {
           "provider":"OPENAI","model":"gpt-4o-mini","stubMode":true
         }""").andExpect(status().isOk)
             .andExpect(jsonPath("$.valid").value(true))
-            .andExpect(jsonPath("$.draft.designSource").value("STUB"))
+            .andExpect(jsonPath("$.draft.designSource").value("PLATFORM_TEMPLATE"))
             .andExpect(jsonPath("$.draft.agents.length()").value(3))
             .andExpect(jsonPath("$.draft.steps.length()").value(3))
             .andReturn().response.contentAsString

@@ -4,6 +4,7 @@ import com.agentvillage.agent.application.AgentDefinitionService
 import com.agentvillage.agent.application.AgentService
 import com.agentvillage.agent.application.GenerateDefinitionCommand
 import com.agentvillage.agent.application.SaveAgentCommand
+import com.agentvillage.builder.application.CodexCliRunner
 import com.agentvillage.common.domain.Visibility
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.execution.application.AiModelGatewayRegistry
@@ -16,6 +17,7 @@ import com.agentvillage.llmcredential.application.SupportedModelCatalog
 import com.agentvillage.llmcredential.domain.LlmProvider
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.beans.factory.annotation.Value
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
@@ -101,13 +103,17 @@ class CompanyDesignerService(
     private val agents: AgentService,
     private val definitions: AgentDefinitionService,
     private val harnesses: HarnessService,
-    @Value("\${execution.stub-enabled:true}") private val stubEnabled: Boolean,
+    private val codex: CodexCliRunner,
+    @Value("\${designer.template-enabled:true}") private val templateEnabled: Boolean,
+    @Value("\${designer.platform-model:gpt-5.6-luna}") private val platformModel: String,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     fun design(ownerId: UUID, command: CompanyDesignCommand): CompanyDesignResult {
         models.requireSupported(command.provider, command.model)
         val proposed = if (command.stubMode) {
-            if (!stubEnabled) throw BadRequestException("STUB_DISABLED", "Stub 설계는 이 환경에서 비활성화되어 있습니다.")
-            stubDraft(command)
+            if (!templateEnabled) throw BadRequestException("COMPANY_TEMPLATE_DISABLED", "Agentown 기본 설계를 현재 사용할 수 없습니다.")
+            platformDraft(ownerId, command)
         } else {
             val credentialId = command.credentialId
                 ?: throw BadRequestException("LLM_CREDENTIAL_NOT_FOUND", "설계에 사용할 연결 완료 API 키를 선택해 주세요.")
@@ -133,6 +139,19 @@ class CompanyDesignerService(
         val draft = withReusePlan(ownerId, proposed)
         val errors = validate(draft, ownerId, command.credentialId, command.stubMode)
         return CompanyDesignResult(draft, errors.isEmpty(), errors)
+    }
+
+    private fun platformDraft(ownerId: UUID, command: CompanyDesignCommand): CompanyDesignDraft {
+        if (!codex.hasSharedAuth()) return stubDraft(command).copy(designSource = "PLATFORM_TEMPLATE")
+        return runCatching {
+            val platformCommand = command.copy(provider = LlmProvider.OPENAI, model = platformModel)
+            val prompt = designerSystemPrompt() + "\n\n" + designerInput(platformCommand, ownerId)
+            parseDraft(codex.executeWithSharedAuth(platformModel, prompt, schemaResource = "/designer/company-design.schema.json"), platformCommand)
+                .copy(designSource = "AGENTOWN_AI")
+        }.getOrElse { error ->
+            log.warn("Agentown company designer AI unavailable; using verified template fallback: {}", error.javaClass.simpleName)
+            stubDraft(command).copy(designSource = "PLATFORM_TEMPLATE")
+        }
     }
 
     fun validateDraft(ownerId: UUID, draft: CompanyDesignDraft, credentialId: UUID?, stubMode: Boolean): List<String> =
@@ -291,7 +310,7 @@ class CompanyDesignerService(
             agents = designed,
             steps = designed.mapIndexed { index, agent -> DesignedStep("step-${index + 1}", agent.key, index + 1, if (index == designed.lastIndex) 2 else 1) },
             approvalAfterLast = command.approvalPolicy.isNotBlank(),
-            designSource = "STUB",
+            designSource = "PLATFORM_TEMPLATE",
             resultAgentKey = resultAgentKey,
             outputFormat = resolvedFormat(command.outputFormat, command.desiredOutput),
         )
@@ -377,7 +396,7 @@ Existing owner-scoped agents (reuse an exact matching responsibility instead of 
 $inventory
 
 Required JSON shape:
-{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"any free-form job role","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager (appearance only, never a role constraint)","provider":"${command.provider}","recommendedModel":"${command.model}","existingAgentId":null}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"${command.provider}","resultAgentKey":"writer","outputFormat":"AUTO|TEXT|MARKDOWN|HTML|JSON|CSV|EXTERNAL"}
+{"companyName":"...","goal":"...","agents":[{"key":"...","name":"...","role":"any free-form job role","responsibility":"...","taskDescription":"...","desiredOutput":"...","requiredEvidence":"...","guide":"...","prohibitions":"...","rewriteCriteria":"...","approvalCriteria":"...","characterKey":"writer|reviewer|designer|developer|manager (appearance only, never a role constraint)","provider":"${command.provider}","recommendedModel":"${command.model}","existingAgentId":null}],"steps":[{"key":"step-1","agentKey":"...","sequence":1,"maxRetries":1}],"approvalAfterLast":true,"designSource":"AGENTOWN_AI","resultAgentKey":"writer","outputFormat":"AUTO|TEXT|MARKDOWN|HTML|JSON|CSV|EXTERNAL","outcome":"NEW_HARNESS","changes":[]}
 """.trimIndent()
     }
 
