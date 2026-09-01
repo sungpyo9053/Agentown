@@ -107,6 +107,22 @@ class ReleaseManagerTest(unittest.TestCase):
         checks = {item["id"]: item for item in report["checks"]}
         self.assertFalse(checks["secret_scan"]["passed"]); self.assertFalse(checks["migration_compatible"]["passed"])
 
+    def test_secret_scan_checks_candidate_files_not_removed_patch_lines(self):
+        secret = self.root / "temporary-credential.txt"
+        synthetic_secret = "abcdefgh" + "ijklmnop"
+        secret.write_text(f"password={synthetic_secret}\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "temporary secret"], cwd=self.root, check=True)
+        secret.unlink()
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "remove secret"], cwd=self.root, check=True)
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.contract["approved_commit_sha"] = sha
+        atomic_json(self.verification, {"commit_sha": sha, "commands": [{"command": "test", "status": "PASSED"}]})
+        report = self.manager.preflight(self.contract)
+        checks = {item["id"]: item for item in report["checks"]}
+        self.assertTrue(checks["secret_scan"]["passed"])
+
     def test_cli_style_approval_is_sha_bound_and_idempotent_reapproval_rejected(self):
         report = self.manager.preflight(self.contract); self.contract.update({"preflight_hash": report["preflight_hash"], "status": "RELEASE_APPROVAL_REQUIRED"}); atomic_json(self.active, self.contract)
         approved = self.manager.approve("release-1", self.sha, "admin@reviewdr.kr")

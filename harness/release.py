@@ -56,7 +56,7 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+    return subprocess.run(["git", *args], cwd=root, text=True, errors="replace", capture_output=True)
 
 
 def hash_json(value: Any) -> str:
@@ -353,10 +353,18 @@ class ReleaseManager:
             dirty_paths.append(path)
         dirty = bool(dirty_paths)
         checks.append({"id": "clean_worktree", "passed": not dirty if require_clean else True, "observed_dirty": dirty, "dirty_paths": dirty_paths[:100]})
-        show = git(self.source_root, "show", "--format=", "--no-ext-diff", sha)
-        secret_ok = show.returncode == 0 and not any(pattern.search(show.stdout) for pattern in SECRET_PATTERNS)
-        checks.append({"id": "secret_scan", "passed": secret_ok})
         files = self.changed_files(sha, contract.get("previous_release_sha")) if exists else []
+        scanned_files = 0
+        secret_ok = exists
+        for name in files:
+            content = git(self.source_root, "show", f"{sha}:{name}")
+            if content.returncode != 0:  # Deleted files have no candidate blob to deploy.
+                continue
+            scanned_files += 1
+            if any(pattern.search(content.stdout) for pattern in SECRET_PATTERNS):
+                secret_ok = False
+                break
+        checks.append({"id": "secret_scan", "passed": secret_ok, "scanned_files": scanned_files})
         migrations = [name for name in files if "/db/migration/" in name]
         destructive = []
         for name in migrations:
