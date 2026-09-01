@@ -26,6 +26,6 @@ Commands and outcomes:
 - `./gradlew :backend:test :backend:build` — PASS.
 - Node 20 `npm run typecheck`, `npm run lint`, and `npm run build` — PASS; lint reports one pre-existing font warning and no errors.
 
-Production DB inspection found that V21 had been skipped while V22 and V23 were applied. The original V21 file was restored for complete history and V24 adds the same columns, constraints and index idempotently for already-ahead databases. A temporary production-shaped PostgreSQL database applied V1-V20, skipped V21, then applied V22-V24; all eight expected columns and both constraints were present. The temporary database was removed after verification.
+Production DB inspection found that V21 had never been applied while V22 and V23 were already recorded. Deleting V21 breaks databases that already applied it; retaining it without transition configuration blocks databases with the production gap. The release therefore keeps the original V21 checksum and enables Flyway out-of-order migration for this transition. V21 closes the known history gap and V24 idempotently confirms the columns, constraints and index. No missing-migration ignore rule is used.
 
 The real-model report is generated at `backend/build/reports/agent-compiler-real-golden.json`. The compact, reviewable result is preserved in `actual-graph-results.json`.

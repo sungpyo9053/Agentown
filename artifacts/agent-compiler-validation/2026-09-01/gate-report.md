@@ -9,7 +9,7 @@ Release base: production revision `ef8b090d53c4f1f5c13df7626213e997bfe9611c`.
 | Golden tests after correction | PASS | focused Gradle result |
 | Backend full test/build | PASS | full Gradle result |
 | Frontend type/lint/test/build | PASS | Node 20 typecheck, lint (0 errors), production build; Playwright 14/14 |
-| DB migration validation | PASS | restored original V21 and added idempotent V24 forward repair; a fresh production-shaped DB applied V1-V20, skipped V21, then applied V22-V24 and exposed all 8 columns, 2 constraints and the index |
+| DB migration validation | PASS | original V21 checksum retained. A production-shaped PostgreSQL history at V1-V20,V22,V23 was upgraded by the real Spring/Flyway path with out-of-order enabled: V21 and V24 succeeded, health was UP, and all 8 columns, 2 constraints and the index were present. An already-applied-V21 database also passed the 14-test browser E2E startup path. |
 | Different real graphs by input | PASS | `actual-graph-results.json` |
 | Follow-up creates new version | PASS | version Golden |
 | Agent Package structure | PASS | version Golden and package assertions |

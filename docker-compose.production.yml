@@ -23,6 +23,9 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
       DB_USERNAME: ${POSTGRES_USER:-agent_village}
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      # Transitional release: production recorded V22/V23 before V21 existed.
+      # Apply the known V21 gap, then V24 makes the resulting schema idempotent.
+      SPRING_FLYWAY_OUT_OF_ORDER: "true"
       LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
       LLM_MASTER_KEYS: ${LLM_MASTER_KEYS:?Set versioned LLM_MASTER_KEYS}
       COOKIE_SECURE: "true"

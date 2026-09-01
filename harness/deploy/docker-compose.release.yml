@@ -23,6 +23,8 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
       DB_USERNAME: ${POSTGRES_USER:-agent_village}
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      # Keep staging migration history compatible with the production V21 gap.
+      SPRING_FLYWAY_OUT_OF_ORDER: "true"
       LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
       LLM_MASTER_KEYS: ${LLM_MASTER_KEYS:?Set versioned LLM_MASTER_KEYS}
       COOKIE_SECURE: "false"
