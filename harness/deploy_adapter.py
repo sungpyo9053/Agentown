@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from harness.release import ReleaseError
+    from harness.release import ReleaseError, redact
 except ModuleNotFoundError:
-    from release import ReleaseError
+    from release import ReleaseError, redact
 
 
 class SshReleaseAdapter:
@@ -115,7 +115,7 @@ class SshReleaseAdapter:
                 raise ReleaseError("approved Git archive could not be created")
             remote_archive = f"/home/{self.user}/inbox/agentown-{sha}.tar.gz"
             remote_compose = f"/home/{self.user}/inbox/agentown-compose-release-{sha}.yml"
-            copies = ((archive, f"inbox/agentown-{sha}.tar.gz"), (self.root / "harness/deploy/docker-compose.release.yml", f"inbox/agentown-compose-release-{sha}.yml"))
+            copies = ((archive, f"inbox/agentown-{sha}.tar.gz"), (self.source_root / "harness/deploy/docker-compose.release.yml", f"inbox/agentown-compose-release-{sha}.yml"))
             for local, remote in copies:
                 copied = self._run(["scp", "-i", str(self.key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", str(local), f"{self.user}@{host}:{remote}"], 180)
                 if copied.returncode != 0:
@@ -131,6 +131,7 @@ class SshReleaseAdapter:
         if deployed.returncode != 0:
             result = self._verify("staging" if target == "staging" else "production", host, sha)
             result["failure"] = "remote deployment failed"
+            result["failure_detail"] = redact(f"{deployed.stdout}\n{deployed.stderr}")[-4000:]
             return result
         return self._verify("staging" if target == "staging" else "production", host, sha)
 

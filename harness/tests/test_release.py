@@ -295,6 +295,43 @@ class ReleaseManagerTest(unittest.TestCase):
 
 
 class SshReleaseAdapterTest(unittest.TestCase):
+    def test_adapter_uploads_compose_from_exact_source_worktree(self):
+        with tempfile.TemporaryDirectory() as raw:
+            operational = Path(raw) / "operational"
+            source = Path(raw) / "source"
+            (operational / "harness" / "deploy").mkdir(parents=True)
+            (source / "harness" / "deploy").mkdir(parents=True)
+            (operational / "harness" / "deploy" / "docker-compose.release.yml").write_text("stale\n")
+            source_compose = source / "harness" / "deploy" / "docker-compose.release.yml"
+            source_compose.write_text("candidate\n")
+            key = Path(raw) / "release.pem"
+            key.write_text("test-only\n")
+            sha = "a" * 40
+            copied_sources = []
+
+            def runner(command, **kwargs):
+                if command and command[0] == "git" and "archive" in command:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"archive")
+                if command and command[0] == "scp":
+                    copied_sources.append(Path(command[-2]))
+                if command[:3] == ["git", "-C", str(source)] and "status" in command:
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                if command[:3] == ["git", "-C", str(source)] and "rev-parse" in command:
+                    return subprocess.CompletedProcess(command, 0, f"{sha}\n", "")
+                if command and command[0] == "ssh" and "agentown-release-verify" in command[-1]:
+                    return subprocess.CompletedProcess(command, 0, f'{{"commitSha":"{sha}"}}\n{{"status":"UP"}}\n', "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            environment = {
+                "AGENTOWN_RELEASE_SSH_KEY": str(key), "AGENTOWN_STAGING_HOST": "staging.invalid",
+                "AGENTOWN_PRODUCTION_HOST": "production.invalid",
+            }
+            with patch.dict("os.environ", environment):
+                result = SshReleaseAdapter(operational, source, runner)("staging", {"approved_commit_sha": sha})
+            self.assertTrue(result["smoke_passed"])
+            self.assertIn(source_compose, copied_sources)
+            self.assertNotIn(operational / "harness" / "deploy" / "docker-compose.release.yml", copied_sources)
+
     def test_adapter_requires_clean_exact_sha_worktree(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "source"
