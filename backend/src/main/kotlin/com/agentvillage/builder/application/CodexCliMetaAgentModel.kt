@@ -62,7 +62,7 @@ class CodexCliMetaAgentModel(
         4. Agent Designer: 템플릿과 안전한 노드를 먼저 사용하고, 자연어 판단 단계에 필요한 최소 Agent Definition만 만든다. 기본은 한 명이며 독립 검증이나 분리된 전문성이 반드시 필요할 때만 추가한다. 트리거, 수집, 중복 제거, 승인, 외부 전송 자체를 AI Agent로 만들지 않는다.
         5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
-        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, data.deduplicate,
+        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
         condition.branch, ai.classify, ai.generate, human.approval, slack.new_message.mock, slack.reply.mock, slack.send.mock,
         notion.search.mock, notion.read_page.mock뿐이다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,

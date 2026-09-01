@@ -4,6 +4,8 @@ import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.agent.application.AgentService
 import com.agentvillage.builder.domain.BuilderRunStatus
+import com.agentvillage.builder.domain.AgentDesignStatus
+import com.agentvillage.builder.domain.DesignNodeKind
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
 import com.agentvillage.builder.infrastructure.BuilderRunRepository
@@ -46,10 +48,16 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         )
         assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("content-writer")
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "writing-team-design-$suffix")
-        assertThat(service.harnessPackage(owner.id, snapshot.workflowId).keys).contains(
+        val agentPackage = service.harnessPackage(owner.id, snapshot.workflowId)
+        assertThat(agentPackage.keys).contains(
+            "agent.yaml", "workflow.yaml", "prompts/system.md", "prompts/reviewer.md",
+            "schemas/input.schema.json", "schemas/output.schema.json", "tools/tools.yaml", "mcp.json",
+            "examples/sample-input.json", ".env.example", "runners/python/runner.py", "runtime-targets.json", "README.md",
             "AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json",
             "agents/content-writer.md", "schemas/final-output.schema.json", "policies/permissions.json", "policies/ai-budget.json",
         )
+        assertThat(agentPackage.getValue("manifest.json")).contains("agentown-agent-package/v1", "python-local", "generic-package")
+        assertThat(agentPackage.getValue("runners/python/runner.py")).contains("externalCallPerformed", "False")
         var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("text" to "검증용 주제와 참고 원문"), "writing-team-run-$suffix")
         assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
         run = service.decideExecution(owner.id, run.id, true, "writing-team-execution-$suffix")
@@ -84,13 +92,16 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.conversationId).isEqualTo(conversationId)
         assertThat(snapshot.workflowId).isEqualTo(workflowId)
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
-        assertThat(snapshot.requirement?.steps).hasSize(5)
+        assertThat(snapshot.requirement?.steps).hasSize(8)
         assertThat(snapshot.proposal).isNotNull
-        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("faq-searcher", "faq-answer-writer")
-        assertThat(snapshot.agentDefinitions).hasSize(2)
+        assertThat(snapshot.proposal?.agentDesign?.status).isEqualTo(AgentDesignStatus.READY_FOR_REVIEW)
+        assertThat(snapshot.proposal?.agentDesign?.executionReadiness).isEqualTo(AgentDesignStatus.EXECUTION_NOT_CONFIGURED)
+        assertThat(snapshot.proposal?.agentDesign?.review?.passed).isTrue()
+        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("support-answer-writer")
+        assertThat(snapshot.agentDefinitions).hasSize(1)
         assertThat(snapshot.agentDefinitions.joinToString(" ") { "${it.name} ${it.role}" })
             .doesNotContain("승인 라우팅", "게시 에이전트", "문의 분류")
-        assertThat(snapshot.guideDefinitions.map { it.key }).containsExactly("slack-mock", "notion-mock")
+        assertThat(snapshot.guideDefinitions.map { it.key }).containsExactly("slack", "notion")
         assertThat(snapshot.graph).isNull()
         val generatedTemplate = outputTemplates.findByTemplateKey(snapshot.proposal!!.templateSelection!!.templateKey)!!
         assertThat(outputTemplateVersions.findByTemplateIdAndVersionNo(generatedTemplate.id, 1)!!.state).isEqualTo(HarnessTemplateVersionState.PREVIEWED)
@@ -113,7 +124,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "환불은 언제 처리되나요?", "token" to "must-not-persist"), "simulation-1-$suffix")
         assertThat(builderRuns.findById(run.id).orElseThrow().templateVersionId).isEqualTo(pinnedTemplateVersionId)
         assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
-        assertThat(run.steps.map { it.nodeType }).containsExactly("slack.new_message.mock", "notion.search.mock", "ai.generate", "human.approval")
+        assertThat(run.steps.map { it.nodeType }).containsExactly("slack.new_message.mock", "data.normalize", "notion.search.mock", "ai.generate", "quality.check", "human.approval")
         assertThat(run.steps.first().input["token"]).isEqualTo("***")
         assertThat(run.pendingApprovalId).isNotNull
 
@@ -121,7 +132,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(duplicate.id).isEqualTo(run.id)
         run = service.decideExecution(owner.id, run.id, true, "execution-approve-$suffix")
         assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
-        assertThat(run.steps.last().nodeType).isEqualTo("slack.reply.mock")
+        assertThat(run.steps.last().nodeType).isEqualTo("workflow.end")
         assertThat(run.output).containsEntry("externalCallPerformed", false)
         assertThat(run.requirementMatched).isTrue()
         assertThat(service.decideExecution(owner.id, run.id, true, "execution-approve-$suffix").id).isEqualTo(run.id)
@@ -133,15 +144,15 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(teams).hasSize(1)
         assertThat(teams.single().category).isEqualTo("업무 자동화")
         assertThat(teams.single().workflowVersionId).isEqualTo(snapshot.currentVersionId)
-        assertThat(teams.single().employees.map { it.agentKey }).containsExactly("faq-searcher", "faq-answer-writer")
+        assertThat(teams.single().employees.map { it.agentKey }).containsExactly("support-answer-writer")
         assertThat(teams.single().employees).allSatisfy { employee ->
             assertThat(employee.department).isEqualTo(teams.single().teamName)
             assertThat(employee.agentMarkdown).contains("## Role")
             assertThat(employee.guideMarkdown).isNotBlank()
         }
-        assertThat(agents.list(owner.id).filter { it.department == teams.single().teamName }).hasSize(2)
+        assertThat(agents.list(owner.id).filter { it.department == teams.single().teamName }).hasSize(1)
         assertThat(service.activate(owner.id, workflowId, "activation-$suffix").status).isEqualTo(WorkflowStatus.ACTIVE)
-        assertThat(service.activeAutomationTeams(owner.id).single().employees).hasSize(2)
+        assertThat(service.activeAutomationTeams(owner.id).single().employees).hasSize(1)
         assertThat(service.activeAutomationTeams(stranger.id)).isEmpty()
 
         val stopped = service.stop(owner.id, workflowId, "workflow-stop-$suffix")
@@ -202,8 +213,12 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(designed.agentDefinitions.map { it.key }).containsExactly("market-news-reporter")
         assertThat(designed.proposal?.templateSelection?.templateKey).isEqualTo("daily-market-news-report")
         assertThat(designed.proposal?.economics?.estimatedAiCallsPerRun).isEqualTo(1)
+        assertThat(designed.proposal?.agentDesign?.workflow?.nodes?.map { it.kind }).contains(
+            DesignNodeKind.START, DesignNodeKind.TRIGGER, DesignNodeKind.TOOL, DesignNodeKind.AGENT,
+            DesignNodeKind.TEMPLATE, DesignNodeKind.USER_APPROVAL, DesignNodeKind.OUTPUT, DesignNodeKind.END,
+        )
         assertThat(designed.proposal?.graphPlan?.nodes?.map { it.nodeType }).containsExactly(
-            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "human.approval", "slack.send.mock",
+            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "template.render", "human.approval", "slack.send.mock", "workflow.end",
         )
     }
 

@@ -45,7 +45,7 @@ test("Builder 자연어 설계부터 캔버스와 승인 중단 재개까지 실
   await page.getByRole("button", { name: "Graph Patch 요청" }).click();
   await expect(page.getByText("Workflow Version 2")).toBeVisible();
 
-  await page.getByRole("button", { name: "시뮬레이션" }).click();
+  await page.getByRole("button", { name: "샘플 테스트" }).click();
   await page.getByLabel("시뮬레이션 문의").fill("환불은 언제 처리되나요?");
   await page.getByTestId("start-simulation").click();
   await expect(page.getByText("담당자 승인 대기")).toBeVisible();
@@ -69,7 +69,7 @@ test("Builder 자연어 설계부터 캔버스와 승인 중단 재개까지 실
   await page.getByRole("button", { name: "전체 캔버스" }).click();
   await expect(page.getByTestId("builder-canvas")).toBeVisible();
   await expect(page.getByText("Workflow Version 2")).toBeVisible();
-  await expect(page.getByRole("link", { name: "표준 하네스 폴더 다운로드" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Agent Package 다운로드" })).toBeVisible();
 });
 
 test("정보가 부족한 문의 자동화는 네 가지 필수 질문 후 설계를 멈춘다", async ({ page }) => {
@@ -98,10 +98,10 @@ test("글쓰기 표준 하네스는 네 명의 실제 직원을 글쓰기 자동
     await expect(page.getByText(employee, { exact: true })).toBeVisible();
   }
   await page.getByTestId("approve-design").click();
-  await expect(page.getByRole("button", { name: "시뮬레이션" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "샘플 테스트" })).toBeEnabled();
   await page.reload();
-  await expect(page.getByRole("button", { name: "시뮬레이션" })).toBeEnabled();
-  await page.getByRole("button", { name: "시뮬레이션" }).click();
+  await expect(page.getByRole("button", { name: "샘플 테스트" })).toBeEnabled();
+  await page.getByRole("button", { name: "샘플 테스트" }).click();
   await expect(page.getByLabel("시뮬레이션 문의")).toHaveValue("검증할 주제와 근거 원문을 입력하세요.");
   await expect(page.getByText("현재 Workflow Graph를 안전한 Mock 계약으로 실행합니다. 외부 저장·전송은 발생하지 않습니다.")).toBeVisible();
   await page.getByLabel("시뮬레이션 문의").fill("검증용 글 주제와 참고 원문");

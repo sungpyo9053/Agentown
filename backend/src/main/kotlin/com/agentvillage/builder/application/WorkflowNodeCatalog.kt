@@ -52,6 +52,10 @@ class WorkflowNodeCatalog {
             val items = (input["newsItems"] as? List<*>)?.distinctBy { it.toString() }.orEmpty()
             NodeSimulation(input + ("newsItems" to items) + ("deduplicatedCount" to items.size))
         },
+        SimpleNodeContract(NodeType.DATA_NORMALIZE) { _, input -> NodeSimulation(input + mapOf("normalizedText" to (input["message"] ?: input["text"] ?: "").toString().trim())) },
+        SimpleNodeContract(NodeType.QUALITY_CHECK) { _, input -> NodeSimulation(input + mapOf("qualityPassed" to input.values.any { it.toString().isNotBlank() })) },
+        SimpleNodeContract(NodeType.TEMPLATE_RENDER, requiredConfig = setOf("rendererKey")) { config, input -> NodeSimulation(input + mapOf("rendered" to FixedOutputRenderer.render(config["rendererKey"].toString(), input))) },
+        SimpleNodeContract(NodeType.WORKFLOW_END) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.CONDITION_BRANCH, requiredConfig = setOf("expression")) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.AI_CLASSIFY, requiredConfig = setOf("categories")) { config, input -> NodeSimulation(input + ("category" to (config["categories"] as? List<*>)?.firstOrNull().toString())) },
         SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { config, input ->

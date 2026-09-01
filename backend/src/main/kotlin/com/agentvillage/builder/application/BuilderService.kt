@@ -526,9 +526,17 @@ class BuilderService(
         )
     }
     private fun requireCompletePackage(files: Map<String, String>) {
-        val required = setOf("AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json")
+        val required = setOf(
+            "agent.yaml", "workflow.yaml", "prompts/system.md", "prompts/reviewer.md",
+            "schemas/input.schema.json", "schemas/output.schema.json", "tools/tools.yaml", "mcp.json",
+            "examples/sample-input.json", "runtime-targets.json", "runners/python/runner.py", ".env.example", "README.md",
+            "AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json",
+        )
         val missing = required.filter { files[it].isNullOrBlank() }
-        if (missing.isNotEmpty() || files.keys.none { it.startsWith("agents/") } || files.keys.none { it.startsWith("guides/") }) {
+        if (missing.isNotEmpty()) throw BadRequestException("HARNESS_PACKAGE_INVALID", "Agent Package 필수 파일이 없습니다: ${missing.joinToString()}")
+        listOf("schemas/input.schema.json", "schemas/output.schema.json", "mcp.json", "workflow.json", "design-bundle.json", "manifest.json")
+            .forEach { path -> runCatching { mapper.readTree(files[path]) }.getOrElse { throw BadRequestException("HARNESS_PACKAGE_INVALID", "$path JSON이 유효하지 않습니다.") } }
+        if (files.keys.none { it.startsWith("agents/") } || files.keys.none { it.startsWith("guides/") }) {
             throw BadRequestException("HARNESS_PACKAGE_INVALID", "하네스 패키지 필수 파일이 없습니다: ${missing.joinToString()}")
         }
     }

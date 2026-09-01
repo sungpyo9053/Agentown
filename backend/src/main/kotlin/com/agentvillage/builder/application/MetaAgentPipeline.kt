@@ -4,6 +4,7 @@ import com.agentvillage.builder.domain.*
 import com.agentvillage.common.exception.ApiException
 import com.agentvillage.common.exception.BadRequestException
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.JsonNode
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import java.util.UUID
@@ -13,6 +14,23 @@ interface MetaAgentModel {
     val modelName: String
     fun preflight(context: PipelineContext) = Unit
     fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String
+}
+
+/** Transport DTO kept separate from the trusted domain model. */
+private data class LlmMetaAgentDesignDto(
+    val requirement: JsonNode,
+    val clarificationQuestions: JsonNode,
+    val proposal: JsonNode,
+    val agentDefinitions: JsonNode,
+    val guideDefinitions: JsonNode,
+) {
+    fun toDomain(mapper: ObjectMapper) = MetaAgentDesignBundle(
+        mapper.treeToValue(requirement, AutomationRequirement::class.java),
+        mapper.convertValue(clarificationQuestions, mapper.typeFactory.constructCollectionType(List::class.java, ClarificationQuestion::class.java)),
+        mapper.treeToValue(proposal, AutomationProposal::class.java),
+        mapper.convertValue(agentDefinitions, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java)),
+        mapper.convertValue(guideDefinitions, mapper.typeFactory.constructCollectionType(List::class.java, GuideDefinition::class.java)),
+    )
 }
 
 @Component
@@ -169,6 +187,8 @@ class StructuredMetaAgentPipeline(
     private val audit: MetaAgentAuditService,
     private val progress: BuilderJobProgressService,
 ) {
+    private val capabilityResolver = BuilderCapabilityResolver()
+    private val designAssembler = AgentDesignAssembler()
     fun preflight(context: PipelineContext) = model.preflight(context)
     private val designStages = listOf(
         "analyze_business_process",
@@ -188,7 +208,8 @@ class StructuredMetaAgentPipeline(
         return try {
             val raw = model.generate(context, "builder_design_bundle", input)
             progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
-            val bundle = normalize(mapper.readValue(raw, MetaAgentDesignBundle::class.java), instruction)
+            val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
+            val bundle = normalize(transport.toDomain(mapper), instruction)
             BuilderMvpSupportPolicy.requireSupported(instruction, bundle)
             validate(bundle)
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
@@ -263,11 +284,12 @@ class StructuredMetaAgentPipeline(
         if (questions.isNotEmpty()) return normalized
         val standardized = when {
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
+            (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
             else -> normalized
         }
         val aiCalls = standardized.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
-        return standardized.copy(proposal = standardized.proposal.copy(
+        val completed = standardized.copy(proposal = standardized.proposal.copy(
             templateSelection = standardized.proposal.templateSelection ?: HarnessTemplateSelection(
                 templateKey = "generated-${instruction.hashCode().toUInt().toString(16)}",
                 version = 1,
@@ -291,6 +313,8 @@ class StructuredMetaAgentPipeline(
                 qualityRules = mapOf("evidenceRequired" to true, "arbitraryFieldsAllowed" to false),
             ),
         ))
+        val resolved = completed.copy(proposal = completed.proposal.copy(resourcePlan = capabilityResolver.resolve(completed)))
+        return resolved.copy(proposal = resolved.proposal.copy(agentDesign = designAssembler.assemble(resolved)))
     }
 
     private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
@@ -344,6 +368,46 @@ class StructuredMetaAgentPipeline(
         )
     }
 
+    private fun standardizeCustomerSupport(bundle: MetaAgentDesignBundle): MetaAgentDesignBundle {
+        val designedAgent = AgentDefinition(
+            key = "support-answer-writer", name = "고객 답변 작성자",
+            role = "정규화된 고객 문의와 Notion FAQ 검색 근거만 사용해 답변 초안을 작성한다.",
+            inputSchema = listOf(FieldDefinition("normalizedText", "string", true, "정규화된 고객 문의"), FieldDefinition("notionResult", "string", true, "FAQ 검색 근거")),
+            outputSchema = listOf(FieldDefinition("draft", "string", true, "고객 답변 초안")),
+            behaviorRules = listOf("FAQ 근거를 보존한다", "고객이 이해하기 쉬운 답변을 작성한다"),
+            forbiddenRules = listOf("근거 없는 정책을 만들지 않는다", "직접 외부 전송하지 않는다"),
+            evidenceRequirements = listOf("사용한 FAQ 문장"), connectorKeys = listOf("connector.notion.mock"),
+            approvalPolicy = ApprovalPolicy(true, listOf("slack-reply"), "Slack 전송 전 담당자 승인"),
+        )
+        val agent = bundle.agentDefinitions.singleOrNull()?.copy(
+            connectorKeys = (bundle.agentDefinitions.single().connectorKeys + "connector.notion.mock").distinct(),
+            approvalPolicy = ApprovalPolicy(true, listOf("slack-reply"), "Slack 전송 전 담당자 승인"),
+        ) ?: designedAgent
+        val nodes = listOf(
+            WorkflowNodePlan("slack-trigger", NodeType.SLACK_NEW_MESSAGE_MOCK.wireName, "Slack 문의 수신 (Mock)"),
+            WorkflowNodePlan("normalize", NodeType.DATA_NORMALIZE.wireName, "문의 정규화"),
+            WorkflowNodePlan("notion-search", NodeType.NOTION_SEARCH_MOCK.wireName, "Notion FAQ 검색 (Mock)", mapOf("database" to "FAQ")),
+            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 근거만 사용해 답변 초안 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("quality-check", NodeType.QUALITY_CHECK.wireName, "답변 품질 검사"),
+            WorkflowNodePlan("human-approval", NodeType.HUMAN_APPROVAL.wireName, "담당자 승인", mapOf("approver" to "담당자")),
+            WorkflowNodePlan("slack-reply", NodeType.SLACK_REPLY_MOCK.wireName, "Slack 스레드 답변 (Mock)"),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
+        )
+        val graph = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) -> WorkflowEdgePlan("edge-${index + 1}", from.id, to.id) })
+        return bundle.copy(
+            requirement = bundle.requirement.copy(steps = nodes.map { it.label }, qualityConditions = listOf("FAQ 근거 사용", "승인 전 미전송"), forbiddenConditions = listOf("근거 없는 답변 생성", "승인 없는 외부 전송")),
+            proposal = bundle.proposal.copy(
+                name = "Slack FAQ 답변 에이전트", summary = "Slack 문의를 정규화하고 FAQ 근거로 답변을 작성해 품질 검사와 담당자 승인 후 Mock 스레드 전송을 시험합니다.",
+                capabilities = nodes.map { it.label }, integrations = listOf("Slack Mock", "Notion Mock"), approvalPoints = listOf("Slack 답변 직전"), graphPlan = graph,
+            ),
+            agentDefinitions = listOf(agent),
+            guideDefinitions = listOf(
+                GuideDefinition("slack", "Slack 연결 설정", "실행 Runtime에서 Slack 연결을 설정합니다.", listOf(GuideField("channel", "문의 채널", "text", true, false, "#customer-support"), GuideField("approver", "승인자", "text", true, false, "담당자"))),
+                GuideDefinition("notion", "Notion FAQ 설정", "실행 Runtime에서 FAQ 데이터베이스 연결을 설정합니다.", listOf(GuideField("database", "FAQ 데이터베이스", "text", true, false, "검색할 데이터베이스"))),
+            ),
+        )
+    }
+
     private fun standardizeDailyNewsReport(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
         val source = listOf("네이버", "Google News", "구글 뉴스", "RSS").firstOrNull { instruction.contains(it, true) } ?: "사용자 지정 뉴스 소스"
         val hour = Regex("(\\d{1,2})\\s*시").find(instruction)?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(0, 23) ?: 8
@@ -371,8 +435,10 @@ class StructuredMetaAgentPipeline(
             WorkflowNodePlan("news-search", NodeType.NEWS_SEARCH_MOCK.wireName, "$source 뉴스 수집 (Mock)", mapOf("source" to source, "query" to "경제 주식 시장", "lookbackHours" to 24)),
             WorkflowNodePlan("deduplicate", NodeType.DATA_DEDUPLICATE.wireName, "중복 뉴스 제거", mapOf("key" to "canonicalUrl")),
             WorkflowNodePlan("write-report", NodeType.AI_GENERATE.wireName, "시장 영향 보고서 작성", mapOf("instruction" to "승인된 출력 스키마로 일일 시장 영향 보고서 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("render", NodeType.TEMPLATE_RENDER.wireName, "승인된 Slack 템플릿 렌더링", mapOf("rendererKey" to "slack.market-news.v1")),
             WorkflowNodePlan("approval", NodeType.HUMAN_APPROVAL.wireName, "담당자 승인", mapOf("approver" to "담당자")),
             WorkflowNodePlan("slack-send", NodeType.SLACK_SEND_MOCK.wireName, "$channel 전송 (Mock)", mapOf("channel" to channel, "rendererKey" to "slack.market-news.v1")),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
         )
         val guide = GuideDefinition("daily-news-settings", "일일 뉴스 보고서 설정", "실행 시간, 뉴스 소스, Slack 채널과 승인자를 설정합니다.", listOf(
             GuideField("schedule", "실행 시간", "text", true, false, "매일 실행할 시간과 시간대"),
