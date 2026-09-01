@@ -26,4 +26,6 @@ Commands and outcomes:
 - `./gradlew :backend:test :backend:build` — PASS.
 - Node 20 `npm run typecheck`, `npm run lint`, and `npm run build` — PASS; lint reports one pre-existing font warning and no errors.
 
+Production DB inspection found that V21 had been skipped while V22 and V23 were applied. The original V21 file was restored for complete history and V24 adds the same columns, constraints and index idempotently for already-ahead databases. A temporary production-shaped PostgreSQL database applied V1-V20, skipped V21, then applied V22-V24; all eight expected columns and both constraints were present. The temporary database was removed after verification.
+
 The real-model report is generated at `backend/build/reports/agent-compiler-real-golden.json`. The compact, reviewable result is preserved in `actual-graph-results.json`.

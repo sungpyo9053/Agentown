@@ -9,7 +9,7 @@ Release base: production revision `ef8b090d53c4f1f5c13df7626213e997bfe9611c`.
 | Golden tests after correction | PASS | focused Gradle result |
 | Backend full test/build | PASS | full Gradle result |
 | Frontend type/lint/test/build | PASS | Node 20 typecheck, lint (0 errors), production build; Playwright 14/14 |
-| DB migration validation | PASS | restored original V21; Flyway validated 23 migrations and reached V23 |
+| DB migration validation | PASS | restored original V21 and added idempotent V24 forward repair; a fresh production-shaped DB applied V1-V20, skipped V21, then applied V22-V24 and exposed all 8 columns, 2 constraints and the index |
 | Different real graphs by input | PASS | `actual-graph-results.json` |
 | Follow-up creates new version | PASS | version Golden |
 | Agent Package structure | PASS | version Golden and package assertions |
