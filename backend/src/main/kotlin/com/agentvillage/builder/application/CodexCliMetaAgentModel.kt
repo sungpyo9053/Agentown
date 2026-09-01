@@ -29,24 +29,25 @@ class MetaAgentExecutionException(
 class CodexCliMetaAgentModel(
     private val credentials: CredentialDirectory,
     private val runner: CodexCliRunner,
-    private val usageLimiter: BuilderUsageLimiter,
     private val mapper: ObjectMapper,
     @Value("\${builder.meta-agent.model:gpt-5.6-luna}") override val modelName: String,
 ) : MetaAgentModel {
     override val executorName = "codex-cli"
 
     override fun preflight(context: PipelineContext) {
+        if (runner.hasSharedAuth()) return
         if (credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI) != null) return
-        if (usageLimiter.isUnlimited(context.ownerId) && runner.hasSharedAuth()) return
-        if (usageLimiter.isUnlimited(context.ownerId)) throw BadRequestException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "운영 테스트용 서버 Codex 로그인이 필요합니다.")
-        throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
+        throw BadRequestException(
+            "BUILDER_AI_NOT_CONFIGURED",
+            "Agentown 기본 AI를 사용할 수 없습니다. 잠시 후 다시 시도하거나 설정에서 개인 OpenAI 연결을 확인해 주세요.",
+        )
     }
 
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
-        val credential = credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI)
-        if (credential == null && usageLimiter.isUnlimited(context.ownerId)) {
+        if (runner.hasSharedAuth()) {
             return runner.executeWithSharedAuth(modelName, prompt(mapper.writeValueAsString(input)), context.jobId, "/builder/meta-agent-design-bundle.schema.json")
         }
+        val credential = credentials.findLatestActive(context.ownerId, LlmProvider.OPENAI)
         credential ?: throw BadRequestException("BUILDER_OPENAI_CREDENTIAL_REQUIRED", "실제 Codex 분석에는 설정에서 검증한 OpenAI API 키가 필요합니다.")
         return credentials.withDecrypted(credential.id, context.ownerId, LlmProvider.OPENAI) { secret, _ ->
             runner.execute(secret, modelName, prompt(mapper.writeValueAsString(input)), context.jobId)
