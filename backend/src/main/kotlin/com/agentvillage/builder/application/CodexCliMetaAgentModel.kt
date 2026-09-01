@@ -188,10 +188,27 @@ class CodexCliRunner(
 
     private fun cancelled(): Nothing = throw BadRequestException("BUILDER_GENERATION_CANCELLED", "사용자가 Codex 설계를 중지했습니다.")
 
-    private fun sanitize(value: String) = value
-        .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S+"), "$1=***")
-        .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-***")
-        .takeLast(MAX_ERROR_CHARS)
+    private fun sanitize(value: String): String {
+        val structuredMessage = Regex("\\\"message\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
+            .findAll(value)
+            .lastOrNull()
+            ?.groupValues
+            ?.get(1)
+        val safe = structuredMessage ?: value.lineSequence()
+            .filter { line ->
+                line.contains("error", ignoreCase = true) ||
+                    line.contains("failed", ignoreCase = true) ||
+                    line.contains("unauthorized", ignoreCase = true)
+            }
+            .toList()
+            .takeLast(6)
+            .joinToString("\n")
+            .ifBlank { "Codex CLI가 안전한 오류 상세 없이 종료되었습니다." }
+        return safe
+            .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S+"), "$1=***")
+            .replace(Regex("sk-[A-Za-z0-9_-]{8,}"), "sk-***")
+            .takeLast(MAX_ERROR_CHARS)
+    }
 
     private fun deleteTemporary(root: Path) {
         runCatching { Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) } }
