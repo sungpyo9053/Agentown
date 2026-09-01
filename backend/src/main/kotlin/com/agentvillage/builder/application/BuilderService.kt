@@ -229,6 +229,35 @@ class BuilderService(
             return
         }
         if (!isPatchInstruction(instruction)) throw BadRequestException("UNSUPPORTED_GRAPH_PATCH", "MVP에서는 'Slack 답변 전 담당자 승인 추가' 수정만 지원합니다.")
+        val replaceSlackWithEmail = listOf("이메일", "메일").any(instruction::contains) &&
+            listOf("Slack", "슬랙").any { instruction.contains(it, true) } && listOf("바꿔", "변경", "대신").any(instruction::contains)
+        if (replaceSlackWithEmail) {
+            val slack = graph.nodes.firstOrNull { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName) }
+                ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "변경할 Slack 전송 노드를 찾지 못했습니다.")
+            val replacement = slack.copy(nodeType = NodeType.EMAIL_SEND_MOCK.wireName, label = "이메일 전송 (Mock · 연결 필요)", config = mapOf("recipient" to "사용자 지정 이메일", "rendererKey" to "plain-text.v1", "connectionStatus" to "UNRESOLVED"), connectionId = null)
+            val patch = GraphPatch(current.id, current.graphHash, listOf(ReplaceNode(slack.id, replacement)), "Slack 전송을 이메일 Mock 전송으로 변경")
+            val patched = applyPatch(graph, patch)
+            val requirementEntity = requirements.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "자동화 요구사항을 찾을 수 없습니다.")
+            val currentRequirement = mapper.convertValue(requirementEntity.structuredJson.filterKeys { it != "clarificationQuestions" }, AutomationRequirement::class.java)
+            val patchedRequirement = currentRequirement.copy(outputs = currentRequirement.outputs.map { it.replace("Slack 스레드", "이메일").replace("Slack", "이메일") }, steps = currentRequirement.steps.map { step -> if (step.contains("Slack") && listOf("답변", "전송", "회신").any(step::contains)) "이메일 전송 (Mock · 연결 필요)" else step })
+            requirementEntity.structuredJson = mapper.convertValue(patchedRequirement, mapType()) + mapOf("clarificationQuestions" to emptyList<Any>())
+            val proposalEntity = proposals.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
+            val currentProposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+            val patchedProposal = currentProposal.copy(
+                capabilities = currentProposal.capabilities.map { if (it.contains("Slack") && listOf("답변", "전송", "회신", "미리보기").any(it::contains)) "이메일 전송 (Mock · 연결 필요)" else it },
+                integrations = (currentProposal.integrations.filterNot { it.contains("Slack") } + listOf("Slack Mock (문의 수신)", "Email Mock · 연결 필요")).distinct(),
+                graphPlan = currentProposal.graphPlan?.copy(nodes = currentProposal.graphPlan.nodes.map { node -> if (node.id == slack.id) WorkflowNodePlan(replacement.id, replacement.nodeType, replacement.label, replacement.config) else node }),
+                resourcePlan = null,
+                agentDesign = null,
+            )
+            proposalEntity.proposalJson = mapper.convertValue(patchedProposal, mapType())
+            val designAgents: List<AgentDefinition> = mapper.convertValue(proposalEntity.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java))
+            requireValidDesign(patched, patchedRequirement, patchedProposal, designAgents)
+            val version = saveVersion(context.workflow, patched, patch.summary, approved = false)
+            context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
+            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "Graph Patch를 검증해 새 버전 ${version.versionNo}로 저장했습니다: ${patch.summary}", workflowVersionId = version.id))
+            return
+        }
         if (graph.nodes.any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }) {
             val version = saveVersion(context.workflow, graph, "담당자 승인 노드 확인 및 유지", approved = true)
             context.workflow.approvedVersionId = version.id
@@ -256,6 +285,7 @@ class BuilderService(
             is AddNode -> nodes += operation.node
             is RemoveNode -> { nodes.removeIf { it.id == operation.nodeId }; edges.removeIf { it.source == operation.nodeId || it.target == operation.nodeId } }
             is UpdateNodeConfig -> { val index = nodes.indexOfFirst { it.id == operation.nodeId }; if (index < 0) throw BadRequestException("PATCH_NODE_NOT_FOUND", operation.nodeId); nodes[index] = nodes[index].copy(config = nodes[index].config + operation.config) }
+            is ReplaceNode -> { val index = nodes.indexOfFirst { it.id == operation.nodeId }; if (index < 0) throw BadRequestException("PATCH_NODE_NOT_FOUND", operation.nodeId); nodes[index] = operation.node.copy(id = operation.nodeId) }
             is MoveNode -> { val index = nodes.indexOfFirst { it.id == operation.nodeId }; if (index < 0) throw BadRequestException("PATCH_NODE_NOT_FOUND", operation.nodeId); nodes[index] = nodes[index].copy(position = operation.position) }
             is AddEdge -> edges += operation.edge
             is RemoveEdge -> if (!edges.removeIf { it.id == operation.edgeId }) throw BadRequestException("PATCH_EDGE_NOT_FOUND", operation.edgeId)
@@ -434,9 +464,11 @@ class BuilderService(
         val design = storedDesign(context.conversation.id)
         val version = currentVersion(context.workflow)
         requireValidDesign(graph(version), design.requirement, design.proposal, design.agents, cumulativeInstruction(context.conversation.id))
-        return packageRenderer.render(MetaAgentDesignBundle(
+        return (packageRenderer.render(MetaAgentDesignBundle(
             design.requirement, emptyList(), design.proposal, design.agents, design.guides,
-        )).also(::requireCompletePackage)
+        )) + ("version.json" to mapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapOf(
+            "workflowId" to workflowId, "workflowVersionId" to version.id, "versionNo" to version.versionNo, "graphHash" to version.graphHash,
+        )) + "\n")).also(::requireCompletePackage)
     }
 
     @Transactional
@@ -469,7 +501,7 @@ class BuilderService(
             workflowId = workflowId,
             entryNodeId = plan.entryNodeId,
             nodes = nodes,
-            edges = plan.edges.map { WorkflowEdge(it.id, it.source, it.target, it.condition) },
+            edges = plan.edges.map { edge -> WorkflowEdge(edge.id, edge.source, edge.target, edge.condition, edge.bindings.associate { it.targetField to it.sourceField }) },
         )
     }
 
@@ -550,10 +582,11 @@ class BuilderService(
         .filter { it.role == "USER" }
         .map { it.content }
         .joinToString("\n추가 답변: ")
-    private fun isPatchInstruction(value: String) =
-        (value.contains("승인") || value.contains("담당자") || value.contains("확인")) &&
-            (value.contains("Slack", true) || value.contains("슬랙") || value.contains("전송") || value.contains("답변")) &&
-            (value.contains("추가") || value.contains("전") || value.contains("바꿔") || value.contains("경우"))
+    private fun isPatchInstruction(value: String): Boolean {
+        val changeVerb = listOf("추가", "제거", "삭제", "바꿔", "변경", "대신", "하지 말고").any(value::contains)
+        val graphTarget = listOf("승인", "담당자", "Slack", "슬랙", "이메일", "메일", "전송", "답변", "노드").any { value.contains(it, true) }
+        return changeVerb && graphTarget
+    }
     private fun isOutputTemplatePatch(value: String) = listOf("숫자를 더", "너무 길", "짧게", "관심 종목", "호재", "악재").any(value::contains)
     private fun requireIdempotency(key: String) { if (key.isBlank() || key.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.") }
     private fun mask(value: Map<String, Any?>): Map<String, Any?> = value.mapValues { (key, item) -> if (key.contains("token", true) || key.contains("secret", true) || key.contains("password", true)) "***" else item }

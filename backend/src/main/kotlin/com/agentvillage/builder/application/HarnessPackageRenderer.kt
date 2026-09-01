@@ -21,10 +21,11 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         return linkedMapOf<String, String>().apply {
             put("agent.yaml", agentYaml(normalized))
             put("workflow.yaml", workflowYaml(normalized))
-            put("prompts/system.md", agents.joinToString("\n\n---\n\n") { agentMarkdown(it) })
+            put("prompts/system.md", agents.takeIf { it.isNotEmpty() }?.joinToString("\n\n---\n\n") { agentMarkdown(it) }
+                ?: "# Deterministic package\n\n이 패키지는 AI Agent 없이 검증된 Function만 실행합니다.\n")
             put("prompts/reviewer.md", reviewerPrompt(normalized))
             put("schemas/input.schema.json", pretty(outputSchema(agents.flatMap { it.inputSchema }.distinctBy { it.name })))
-            put("schemas/output.schema.json", pretty(outputSchema(agents.lastOrNull()?.outputSchema.orEmpty())))
+            put("schemas/output.schema.json", pretty(outputSchema(agents.lastOrNull()?.outputSchema ?: normalized.proposal.outputSchema)))
             put("skills/README.md", "# Skills\n\n이 패키지에 고정된 Skill이 있으면 이 폴더에 추가합니다. 현재는 서버 카탈로그의 Template Skill만 참조합니다.\n")
             put("tools/tools.yaml", toolsYaml(resources))
             put("mcp.json", pretty(mapOf("mcpServers" to emptyMap<String, Any>())))
@@ -74,6 +75,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             )))
             put("policies/quality-rules.json", pretty(bundle.proposal.executionContract?.qualityRules ?: emptyMap<String, Any>()))
             normalized.agentDefinitions.forEach { put("agents/${it.key}.md", agentMarkdown(it)) }
+            if (normalized.agentDefinitions.isEmpty()) put("agents/README.md", "# Agents\n\n이 패키지는 결정론적 Function만 사용하며 AI Agent가 없습니다.\n")
             normalized.guideDefinitions.forEach { put("guides/${it.key}.md", guideMarkdown(it)) }
         }
     }
@@ -146,6 +148,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
     private fun requiredEnvironment(resources: com.agentvillage.builder.domain.ResourcePlan): List<String> = buildList {
         if (resources.bindings.any { it.resourceKey.contains("slack") }) add("SLACK_BOT_TOKEN")
         if (resources.bindings.any { it.resourceKey.contains("notion") }) add("NOTION_TOKEN")
+        if (resources.bindings.any { it.resourceKey.contains("email") }) add("EMAIL_CONNECTION")
         if (resources.bindings.any { it.resourceKey.contains("news") && !it.simulationOnly }) add("NEWS_API_KEY")
     }
 
@@ -179,7 +182,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         import argparse, json
         from pathlib import Path
 
-        SAFE = {"manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "notion.search.mock", "notion.read_page.mock"}
+        SAFE = {"manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock"}
         root = Path(__file__).resolve().parents[2]
         graph = json.loads((root / "workflow.json").read_text())
         data = json.loads((root / "examples/sample-input.json").read_text())
@@ -192,6 +195,8 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             if kind not in SAFE:
                 raise SystemExit(f"unsupported node: {kind}")
             if kind == "notion.search.mock": data["notionResult"] = "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다."
+            elif kind == "knowledge.search.mock": data["searchResults"] = [{"title": "Mock FAQ", "content": "검증용 FAQ 검색 결과"}]
+            elif kind == "data.csv.compare": data["changedRows"] = []
             elif kind == "news.search.mock": data["newsItems"] = [{"title": "Mock AI news", "url": "https://example.com/mock"}]
             elif kind == "ai.generate": data["draft"] = "[Mock] 제공된 근거를 사용한 초안"
             elif kind == "quality.check": data["qualityPassed"] = True
@@ -200,6 +205,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
                 print(json.dumps({"status": "WAITING_APPROVAL", "externalCallPerformed": False, "steps": steps}, ensure_ascii=False, indent=2))
                 raise SystemExit(0)
             elif kind.startswith("slack.") and ("reply" in kind or "send" in kind): data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
+            elif kind == "email.send.mock": data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
             steps.append({"node": node["id"], "status": "SUCCEEDED", "output": data})
         print(json.dumps({"status": "SUCCEEDED", "externalCallPerformed": False, "output": data, "steps": steps}, ensure_ascii=False, indent=2))
     """.trimIndent() + "\n"

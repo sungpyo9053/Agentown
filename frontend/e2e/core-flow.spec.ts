@@ -93,11 +93,11 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
     data: { output: realOutput },
   });
   expect(complete.ok()).toBeTruthy();
-  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 }).toContain("WAITING_APPROVAL");
+  await expect(page.getByTestId("execution-status")).toHaveText("WAITING_APPROVAL", { timeout: 30_000 });
   await expect(page.getByRole("heading", { name: "직원별 실제 작업 결과" })).toBeVisible();
   await expect(page.getByText(`실제 Runner fixture 1: ${job.agents[0].name} 작업 완료`, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "승인", exact: true }).click();
-  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 }).toContain("SUCCEEDED");
+  await expect(page.getByTestId("execution-status")).toHaveText("SUCCEEDED", { timeout: 30_000 });
   const realDownloadPromise = page.waitForEvent("download");
   await page.getByRole("link", { name: "최종 HTML (.html) 다운로드" }).click();
   const realDownload = await realDownloadPromise;
@@ -110,12 +110,10 @@ test("가입부터 AI 회사 설계, 발행, 실행 결과 다운로드까지 �
   await page.getByRole("button", { name: "비용 없이 Stub 검증" }).click();
   await expect(page).toHaveURL(/\/executions\/[^/]+$/);
 
-  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 })
-    .toMatch(/WAITING_APPROVAL|SUCCEEDED/);
+  await expect(page.getByTestId("execution-status")).toHaveText(/WAITING_APPROVAL|SUCCEEDED/, { timeout: 30_000 });
   const approve = page.getByRole("button", { name: "승인", exact: true });
   if (await approve.isVisible()) await approve.click();
-  await expect.poll(async () => page.locator("body").innerText(), { timeout: 30_000 })
-    .toContain("SUCCEEDED");
+  await expect(page.getByTestId("execution-status")).toHaveText("SUCCEEDED", { timeout: 30_000 });
   await expect(page.getByRole("heading", { name: "내 실행 결과물" })).toBeVisible();
   const htmlDownload = page.getByRole("link", { name: "최종 HTML (.html) 다운로드" });
   await expect(htmlDownload).toBeVisible();

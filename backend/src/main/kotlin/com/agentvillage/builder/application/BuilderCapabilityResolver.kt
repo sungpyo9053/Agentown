@@ -31,6 +31,7 @@ class BuilderCapabilityResolver {
         val strategy = when (type) {
             NodeType.MANUAL_TRIGGER, NodeType.SCHEDULE_TRIGGER, NodeType.TEXT_INPUT,
             NodeType.DATA_DEDUPLICATE, NodeType.DATA_NORMALIZE, NodeType.QUALITY_CHECK,
+            NodeType.DATA_CSV_COMPARE,
             NodeType.TEMPLATE_RENDER, NodeType.WORKFLOW_END, NodeType.CONDITION_BRANCH -> ExecutionStrategy.DETERMINISTIC
             NodeType.AI_CLASSIFY, NodeType.AI_GENERATE -> ExecutionStrategy.AI
             NodeType.HUMAN_APPROVAL -> ExecutionStrategy.HUMAN_APPROVAL
@@ -50,11 +51,14 @@ class BuilderCapabilityResolver {
         return when (NodeType.fromWire(node.nodeType)) {
             NodeType.MANUAL_TRIGGER, NodeType.SCHEDULE_TRIGGER, NodeType.TEXT_INPUT,
             NodeType.DATA_DEDUPLICATE, NodeType.DATA_NORMALIZE, NodeType.QUALITY_CHECK,
+            NodeType.DATA_CSV_COMPARE,
             NodeType.TEMPLATE_RENDER, NodeType.WORKFLOW_END, NodeType.CONDITION_BRANCH -> installed(capability, ResourceKind.TOOL, "builtin.${node.nodeType}", node.label, "Agentown 결정론적 런타임")
             NodeType.AI_CLASSIFY, NodeType.AI_GENERATE -> installed(capability, ResourceKind.TOOL, "platform.structured-ai", "Agentown 제공 AI", "구조화 출력과 호출 한도를 적용한 플랫폼 AI")
             NodeType.HUMAN_APPROVAL -> installed(capability, ResourceKind.TOOL, "builtin.human-approval", "사용자 승인", "승인 전 외부 쓰기를 차단하는 서버 상태 머신")
             NodeType.SLACK_NEW_MESSAGE_MOCK, NodeType.SLACK_REPLY_MOCK, NodeType.SLACK_SEND_MOCK -> mock(capability, "connector.slack.mock", "Slack Mock", "실제 Slack OAuth 연결 전 안전한 시뮬레이션")
             NodeType.NOTION_SEARCH_MOCK, NodeType.NOTION_READ_PAGE_MOCK -> mock(capability, "connector.notion.mock", "Notion Mock", "실제 Notion OAuth 연결 전 안전한 시뮬레이션")
+            NodeType.KNOWLEDGE_SEARCH_MOCK -> mock(capability, "connector.knowledge.mock", "FAQ/지식 검색 Mock", "실제 지식 소스 연결 전 안전한 시뮬레이션")
+            NodeType.EMAIL_SEND_MOCK -> mock(capability, "connector.email.mock", "Email Mock", "실제 이메일 연결 전 안전한 시뮬레이션")
             NodeType.NEWS_SEARCH_MOCK -> mock(capability, "connector.news.mock", "News Mock", "실제 뉴스 소스 연결 전 샘플 데이터 시뮬레이션")
             null -> ResourceBinding(capability, ResourceKind.TOOL, "missing.${node.nodeType}", node.label, ResourceAvailability.MISSING, "SERVER_CATALOG", "서버 허용 노드 카탈로그에 없는 기능")
         }

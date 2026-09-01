@@ -54,11 +54,12 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   return <AppShell kicker="LIVE ORCHESTRATION" title={harness.data?.harness.name??"AI 팀 실행 관제"}>
     <div className="overflow-hidden border border-hairline bg-white"><PixelOffice agents={workflowAgents} items={placedAssets(home.data?.items??[])} statuses={scene.statuses} backgroundKey={home.data?.backgroundKey} /></div>
     <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_340px]">
-      <section className="rounded-3xl bg-white p-6 shadow-card"><div className="flex items-center justify-between"><div><h2 className="text-xl font-black">실제 실행 이벤트</h2><p className="mt-1 text-xs text-stone-500">{execution.data?.execution.executionMode==="LOCAL_CLI"?"내 Codex/Claude 구독 계정이 실행 중입니다.":execution.data?.execution.executionMode==="STUB"?"개발용 Stub 실행입니다.":"연결된 API 계정이 실행 중입니다."}</p></div><span className="rounded-full bg-ink px-4 py-2 text-xs font-black text-white">{status}</span></div>
+      <section className="rounded-3xl bg-white p-6 shadow-card"><div className="flex items-center justify-between"><div><h2 className="text-xl font-black">실제 실행 이벤트</h2><p className="mt-1 text-xs text-stone-500">{execution.data?.execution.executionMode==="LOCAL_CLI"?"내 Codex/Claude 구독 계정이 실행 중입니다.":execution.data?.execution.executionMode==="STUB"?"개발용 Stub 실행입니다.":"연결된 API 계정이 실행 중입니다."}</p></div><span data-testid="execution-status" className="rounded-full bg-ink px-4 py-2 text-xs font-black text-white">{status}</span></div>
         <div className="mt-5 max-h-96 space-y-2 overflow-auto">{events.map(event=><div key={event.id} className="flex gap-3 rounded-xl bg-stone-50 p-3 text-sm"><b className="w-7 text-coral">{event.sequenceNo}</b><span className="font-bold">{eventLabel(event.eventType)}</span><span className="ml-auto text-stone-500">{event.agentId?agentMap[event.agentId]?.name:"오케스트레이터"}</span></div>)}{!events.length&&<p className="text-stone-500">Queue 이벤트를 기다리는 중입니다.</p>}</div>
       </section>
       <aside className="space-y-4"><div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs text-stone-300">CURRENT STEP</p><p className="mt-2 text-2xl font-black">{execution.data?.execution.currentStepKey??"대기"}</p></div>
         {status==="WAITING_APPROVAL"&&<div className="rounded-3xl bg-amber-50 p-5"><b>사용자 승인이 필요합니다</b><div className="mt-4 flex gap-2"><button onClick={()=>action.mutate("approve")} className="rounded-full bg-leaf px-4 py-2 font-bold text-white">승인</button><button onClick={()=>action.mutate("reject")} className="rounded-full border px-4 py-2 font-bold">반려</button></div></div>}
+        {status==="TIMEOUT"&&<div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-950"><b>실행이 안전하게 종료되었습니다</b><p className="mt-2 text-sm">작업자의 응답이 일정 시간 동안 없어 실행이 멈춘 것으로 판단했습니다.</p><p className="mt-2 text-sm">완료 여부를 확인할 수 없어 자동 재실행하지 않았습니다.</p>{harnessId&&<a href={`/harnesses/${harnessId}/edit`} className="mt-4 inline-flex rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">하네스를 확인하고 새 실행 만들기</a>}</div>}
         {["QUEUED","RUNNING","WAITING_APPROVAL"].includes(status)&&<button onClick={()=>action.mutate("cancel")} className="w-full rounded-full border border-red-200 p-3 font-bold text-red-600">실행 취소</button>}
         {execution.data?.execution.errorCode&&<div className="rounded-3xl bg-red-50 p-5 text-red-700"><b>{execution.data.execution.errorCode}</b><p className="mt-2 text-sm">{execution.data.execution.errorMessage}</p></div>}
       </aside>
@@ -87,7 +88,7 @@ function buildScene(events:EventItem[],agents:OfficeAgent[],items:OfficeRoomItem
   }
   return {statuses,positions};
 }
-function eventLabel(type:string){return ({EXECUTION_QUEUED:"대기열 등록",EXECUTION_STARTED:"업무 시작",STEP_STARTED:"담당자가 작업 구역으로 이동",MODEL_REQUEST_SENT:"모델에 요청",TOOL_CALLED:"외부 도구 사용",STEP_OUTPUT_CREATED:"결과물 생성",STEP_COMPLETED:"다음 담당자에게 전달",STEP_FAILED:"단계 실패",WAITING_APPROVAL:"승인 요청",EXECUTION_COMPLETED:"전체 업무 완료",EXECUTION_FAILED:"실행 실패"} as Record<string,string>)[type]??type}
+function eventLabel(type:string){return ({EXECUTION_QUEUED:"대기열 등록",EXECUTION_STARTED:"업무 시작",STEP_STARTED:"담당자가 작업 구역으로 이동",MODEL_REQUEST_SENT:"모델에 요청",TOOL_CALLED:"외부 도구 사용",STEP_OUTPUT_CREATED:"결과물 생성",STEP_COMPLETED:"다음 담당자에게 전달",STEP_FAILED:"단계 실패",WAITING_APPROVAL:"승인 요청",EXECUTION_COMPLETED:"전체 업무 완료",EXECUTION_FAILED:"실행 실패",EXECUTION_TIMEOUT_RECOVERED:"시간 초과 복구 · 안전 종료"} as Record<string,string>)[type]??type}
 
 function extractExecutionResult(output?:Record<string,unknown>,resultStepKey?:string):string|null{
  if(!output)return null;

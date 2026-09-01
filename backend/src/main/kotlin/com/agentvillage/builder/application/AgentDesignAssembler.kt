@@ -58,7 +58,7 @@ class AgentDesignAssembler {
     private fun kind(nodeType: String): DesignNodeKind = when {
         nodeType.endsWith("trigger") -> DesignNodeKind.TRIGGER
         nodeType.startsWith("ai.") -> DesignNodeKind.AGENT
-        nodeType in setOf("data.normalize", "data.deduplicate", "quality.check") -> DesignNodeKind.FUNCTION
+        nodeType in setOf("data.normalize", "data.deduplicate", "data.csv.compare", "quality.check") -> DesignNodeKind.FUNCTION
         nodeType == "template.render" -> DesignNodeKind.TEMPLATE
         nodeType == "condition.branch" -> DesignNodeKind.CONDITION
         nodeType == "human.approval" -> DesignNodeKind.USER_APPROVAL

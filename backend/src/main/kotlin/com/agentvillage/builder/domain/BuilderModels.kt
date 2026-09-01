@@ -18,6 +18,8 @@ enum class NodeType(val wireName: String, val riskLevel: String) {
     SCHEDULE_TRIGGER("schedule.trigger", "LOW"),
     TEXT_INPUT("text.input", "LOW"),
     NEWS_SEARCH_MOCK("news.search.mock", "LOW"),
+    KNOWLEDGE_SEARCH_MOCK("knowledge.search.mock", "LOW"),
+    DATA_CSV_COMPARE("data.csv.compare", "LOW"),
     DATA_DEDUPLICATE("data.deduplicate", "LOW"),
     DATA_NORMALIZE("data.normalize", "LOW"),
     QUALITY_CHECK("quality.check", "LOW"),
@@ -30,6 +32,7 @@ enum class NodeType(val wireName: String, val riskLevel: String) {
     SLACK_NEW_MESSAGE_MOCK("slack.new_message.mock", "LOW"),
     SLACK_REPLY_MOCK("slack.reply.mock", "HIGH"),
     SLACK_SEND_MOCK("slack.send.mock", "HIGH"),
+    EMAIL_SEND_MOCK("email.send.mock", "HIGH"),
     NOTION_SEARCH_MOCK("notion.search.mock", "LOW"),
     NOTION_READ_PAGE_MOCK("notion.read_page.mock", "LOW");
 
@@ -180,7 +183,14 @@ data class WorkflowNodePlan(
     val label: String,
     val config: Map<String, Any?> = emptyMap(),
 )
-data class WorkflowEdgePlan(val id: String, val source: String, val target: String, val condition: String = "success")
+data class WorkflowFieldBinding(val sourceField: String, val targetField: String)
+data class WorkflowEdgePlan(
+    val id: String,
+    val source: String,
+    val target: String,
+    val condition: String = "success",
+    val bindings: List<WorkflowFieldBinding> = listOf(WorkflowFieldBinding("context", "context")),
+)
 data class WorkflowGraphPlan(val entryNodeId: String, val nodes: List<WorkflowNodePlan>, val edges: List<WorkflowEdgePlan>)
 
 data class FieldDefinition(val name: String, val type: String, val required: Boolean, val description: String)
@@ -235,7 +245,13 @@ data class WorkflowNode(
     val config: Map<String, Any?> = emptyMap(),
     val connectionId: UUID? = null,
 )
-data class WorkflowEdge(val id: String, val source: String, val target: String, val condition: String = "success")
+data class WorkflowEdge(
+    val id: String,
+    val source: String,
+    val target: String,
+    val condition: String = "success",
+    val bindings: Map<String, String> = mapOf("context" to "context"),
+)
 data class WorkflowGraph(
     val schemaVersion: String = "1.0",
     val workflowId: UUID,
@@ -248,6 +264,7 @@ sealed interface GraphPatchOperation
 data class AddNode(val node: WorkflowNode) : GraphPatchOperation
 data class RemoveNode(val nodeId: String) : GraphPatchOperation
 data class UpdateNodeConfig(val nodeId: String, val config: Map<String, Any?>) : GraphPatchOperation
+data class ReplaceNode(val nodeId: String, val node: WorkflowNode) : GraphPatchOperation
 data class MoveNode(val nodeId: String, val position: NodePosition) : GraphPatchOperation
 data class AddEdge(val edge: WorkflowEdge) : GraphPatchOperation
 data class RemoveEdge(val edgeId: String) : GraphPatchOperation

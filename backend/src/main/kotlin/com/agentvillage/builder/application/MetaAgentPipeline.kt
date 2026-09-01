@@ -240,7 +240,7 @@ class StructuredMetaAgentPipeline(
         if (bundle.clarificationQuestions.map { it.field }.distinct().size != bundle.clarificationQuestions.size) invalid()
         if (bundle.clarificationQuestions.isNotEmpty()) return
         if (bundle.proposal.name.isBlank() || bundle.proposal.capabilities.isEmpty()) invalid()
-        if (bundle.agentDefinitions.size !in 1..5 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
+        if (bundle.agentDefinitions.size !in 0..5 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
         if (bundle.guideDefinitions.isEmpty() || bundle.guideDefinitions.size > 5 || bundle.guideDefinitions.map { it.key }.distinct().size != bundle.guideDefinitions.size) invalid()
         if (bundle.agentDefinitions.any { it.behaviorRules.isEmpty() || it.forbiddenRules.isEmpty() || it.evidenceRequirements.isEmpty() }) invalid()
         val plan = bundle.proposal.graphPlan ?: invalid()
@@ -248,6 +248,10 @@ class StructuredMetaAgentPipeline(
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val instructionLower = instruction.lowercase()
+        val deterministicCsv = instructionLower.contains("csv") && instructionLower.contains("비교") && listOf("변경", "차이", "행").any(instructionLower::contains)
+        val genericFaqDraft = instructionLower.contains("faq") && listOf("답변", "초안").any(instructionLower::contains) &&
+            listOf("slack", "슬랙", "notion", "노션", "전송", "보내").none(instructionLower::contains)
         val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "보고서", "article", "content", "writing", "report")
             .any(instruction.lowercase()::contains)
         val scheduled = Regex("\\d{1,2}시").containsMatchIn(instruction) ||
@@ -263,12 +267,12 @@ class StructuredMetaAgentPipeline(
         val questions = buildList {
             val hasDirectInput = listOf("수동", "입력", "붙여", "제공", "업로드", "원문", "텍스트")
                 .any(instruction.lowercase()::contains)
-            val hasInbound = scheduled || hasDirectInput || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
+            val hasInbound = scheduled || hasDirectInput || deterministicCsv || genericFaqDraft || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
             val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("데이터베이스") ||
-                (genericNewsReference && specificNewsSource) || hasDirectInput
-            val hasApproval = instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내") ||
+                genericNewsReference || deterministicCsv || genericFaqDraft || hasDirectInput
+            val hasApproval = deterministicCsv || genericFaqDraft || instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내") ||
                 listOf("승인 없이", "검토 없이", "승인 불필요", "실제 게시하지", "보내지 마").any(instruction::contains)
-            val hasDestination = instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
+            val hasDestination = deterministicCsv || genericFaqDraft || instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
                 Regex("(Slack|슬랙)[^\\n]{0,30}(답변|회신)", RegexOption.IGNORE_CASE).containsMatchIn(instruction) || specificFileDestination ||
                 listOf("화면", "미리보기", "결과로 표시", "채팅에 표시").any(instruction::contains)
             if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", if (writingAutomation) "글쓰기는 수동으로 시작할까요, 정해진 시간이나 이벤트에 실행할까요?" else "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
@@ -283,6 +287,8 @@ class StructuredMetaAgentPipeline(
         )
         if (questions.isNotEmpty()) return normalized
         val standardized = when {
+            deterministicCsv -> compileCsvComparison(normalized, instruction)
+            genericFaqDraft -> compileFaqDraft(normalized, instruction)
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
             (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
@@ -315,6 +321,53 @@ class StructuredMetaAgentPipeline(
         ))
         val resolved = completed.copy(proposal = completed.proposal.copy(resourcePlan = capabilityResolver.resolve(completed)))
         return resolved.copy(proposal = resolved.proposal.copy(agentDesign = designAssembler.assemble(resolved)))
+    }
+
+    private fun compileCsvComparison(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val nodes = listOf(
+            WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "CSV 두 파일 입력"),
+            WorkflowNodePlan("csv-compare", NodeType.DATA_CSV_COMPARE.wireName, "CSV 행 결정적 비교", mapOf("keyColumns" to listOf("사용자 지정 키"), "comparisonMode" to "EXACT")),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 파일 입력", listOf("기준 CSV", "비교 CSV"), listOf("추가·수정·삭제된 행"), nodes.map { it.label }, emptyList(), listOf("키 열 누락", "CSV 파싱 실패"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(
+                name = "CSV 변경 행 비교", summary = "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.", capabilities = nodes.map { it.label }, integrations = emptyList(), approvalPoints = emptyList(),
+                failurePolicy = "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
+                graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("files", "files"))))),
+                outputSchema = listOf(FieldDefinition("changedRows", "array", true, "추가·수정·삭제된 행 목록")),
+            ),
+            agentDefinitions = emptyList(),
+            guideDefinitions = listOf(GuideDefinition("csv-input", "CSV 비교 설정", "두 파일의 키 열과 인코딩을 설정합니다.", listOf(GuideField("keyColumns", "키 열", "text", true, false, "행을 식별할 하나 이상의 열")))),
+        )
+    }
+
+    private fun compileFaqDraft(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val agent = AgentDefinition(
+            "answer-writer", "근거 기반 답변 작성자", "검색된 FAQ 근거만 사용해 고객 답변 초안을 작성한다.",
+            listOf(FieldDefinition("question", "string", true, "고객 문의"), FieldDefinition("searchResults", "array", true, "FAQ 검색 결과")),
+            listOf(FieldDefinition("draft", "string", true, "근거 기반 답변 초안")),
+            listOf("질문 의도를 보존한다", "검색 결과를 근거로 답한다"), listOf("근거가 없으면 내용을 만들지 않는다", "외부로 전송하지 않는다"), listOf("사용한 FAQ 항목"),
+        )
+        val nodes = listOf(
+            WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "고객 문의 입력"),
+            WorkflowNodePlan("faq-search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 FAQ", "queryField" to "question", "connectionStatus" to "UNRESOLVED")),
+            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 답변 초안 작성", "agentKey" to agent.key)),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 문의 입력", listOf("고객 문의", "FAQ 자료"), listOf("답변 초안"), nodes.map { it.label }, listOf("관련 FAQ 선택"), listOf("근거 검색 결과 없음"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(
+                name = "FAQ 기반 고객 답변 초안", summary = "FAQ를 검색하고 근거가 있는 답변 초안만 만듭니다.", capabilities = nodes.map { it.label }, integrations = listOf("FAQ Mock · 연결 필요"), approvalPoints = emptyList(),
+                failurePolicy = "근거가 없으면 답변을 만들지 않고 담당자 확인 필요 상태를 반환",
+                graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(
+                    WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("question", "question"))),
+                    WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("question", "question"), WorkflowFieldBinding("searchResults", "searchResults"))),
+                )),
+            ),
+            agentDefinitions = listOf(agent),
+            guideDefinitions = listOf(GuideDefinition("faq-source", "FAQ 자료 연결", "실제 실행 전에 FAQ 검색 소스를 연결합니다.", listOf(GuideField("source", "FAQ 소스", "text", true, false, "검색할 FAQ 저장소")))),
+        )
     }
 
     private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
@@ -495,7 +548,7 @@ class StructuredMetaAgentPipeline(
             val field = Regex("[A-Za-z][A-Za-z0-9]*").find(expression)?.value ?: return@map edge
             edge.copy(condition = "$field=true")
         }
-        return plan.copy(edges = edges)
+        return plan.copy(edges = edges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge })
     }
 
     private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")

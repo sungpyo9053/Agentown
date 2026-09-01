@@ -63,12 +63,15 @@ class CodexCliMetaAgentModel(
         4. Agent Designer: 템플릿과 안전한 노드를 먼저 사용하고, 자연어 판단 단계에 필요한 최소 Agent Definition만 만든다. 기본은 한 명이며 독립 검증이나 분리된 전문성이 반드시 필요할 때만 추가한다. 트리거, 수집, 중복 제거, 승인, 외부 전송 자체를 AI Agent로 만들지 않는다.
         5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
-        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
+        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, knowledge.search.mock, data.csv.compare, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
         condition.branch, ai.classify, ai.generate, human.approval, slack.new_message.mock, slack.reply.mock, slack.send.mock,
-        notion.search.mock, notion.read_page.mock뿐이다.
+        email.send.mock, notion.search.mock, notion.read_page.mock뿐이다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
-        schedule.trigger에는 cron과 timezone, news.search.mock에는 source와 query, data.deduplicate에는 key,
+        schedule.trigger에는 cron과 timezone, news.search.mock에는 source, query, lookbackHours, data.deduplicate에는 key,
         human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.
+        knowledge.search.mock에는 source, queryField, connectionStatus=UNRESOLVED를 넣는다. data.csv.compare에는 keyColumns와 comparisonMode=EXACT를 넣고 AI Agent를 만들지 않는다.
+        email.send.mock에는 recipient, rendererKey=plain-text.v1, connectionStatus=UNRESOLVED를 넣고 반드시 앞 경로에 human.approval을 둔다.
+        모든 edge에는 bindings를 [{"sourceField":"...","targetField":"..."}] 배열로 하나 이상 넣는다.
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
