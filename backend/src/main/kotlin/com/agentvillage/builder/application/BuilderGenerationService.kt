@@ -88,7 +88,11 @@ class BuilderGenerationService(
 }
 
 @Component
-class BuilderGenerationWorker(private val builder: BuilderService, private val progress: BuilderJobProgressService) {
+class BuilderGenerationWorker(
+    private val builder: BuilderService,
+    private val progress: BuilderJobProgressService,
+    private val usageLimiter: BuilderUsageLimiter,
+) {
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     fun execute(event: BuilderGenerationRequested) {
@@ -98,7 +102,11 @@ class BuilderGenerationWorker(private val builder: BuilderService, private val p
         } catch (exception: Exception) {
             val code = (exception as? ApiException)?.code ?: "BUILDER_GENERATION_FAILED"
             if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
-            else progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+            else {
+                val job = progressJob(event.jobId)
+                usageLimiter.releaseFailedClaim(event.ownerId, job.idempotencyKey)
+                progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+            }
         }
     }
 

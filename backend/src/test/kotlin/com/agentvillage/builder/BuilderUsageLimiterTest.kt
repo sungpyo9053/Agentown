@@ -8,6 +8,7 @@ import com.agentvillage.identity.application.UserIdentity
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import java.util.UUID
 
@@ -33,5 +34,17 @@ class BuilderUsageLimiterTest {
         val limiter = BuilderUsageLimiter(records, users, "")
 
         assertThat(limiter.isUnlimited(ownerId)).isFalse()
+    }
+
+    @Test
+    fun `failed generation releases its one-time usage slot`() {
+        val ownerId = UUID.randomUUID()
+        val key = "message-1"
+        val record = mock<com.agentvillage.builder.domain.BuilderUsageRecord>()
+        whenever(records.findByOwnerIdAndIdempotencyKey(ownerId, key)).thenReturn(record)
+
+        BuilderUsageLimiter(records, users, "").releaseFailedClaim(ownerId, key)
+
+        verify(records).delete(record)
     }
 }

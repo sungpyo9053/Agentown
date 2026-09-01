@@ -90,6 +90,11 @@ class BuilderUsageLimiter(
             throw ConflictException("BUILDER_CODEX_LIMIT_REACHED", "실제 Codex 업무 분석은 계정당 한 번만 사용할 수 있습니다.")
         }
     }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun releaseFailedClaim(ownerId: UUID, idempotencyKey: String) {
+        records.findByOwnerIdAndIdempotencyKey(ownerId, idempotencyKey)?.let(records::delete)
+    }
 }
 
 @Service
