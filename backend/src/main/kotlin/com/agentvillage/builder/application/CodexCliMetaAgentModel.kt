@@ -71,7 +71,9 @@ class CodexCliMetaAgentModel(
         human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.
         knowledge.search.mock에는 source, queryField, connectionStatus=UNRESOLVED를 넣는다. data.csv.compare에는 keyColumns와 comparisonMode=EXACT를 넣고 AI Agent를 만들지 않는다.
         email.send.mock에는 recipient, rendererKey=plain-text.v1, connectionStatus=UNRESOLVED를 넣고 반드시 앞 경로에 human.approval을 둔다.
+        template.render와 slack.send.mock에는 rendererKey를 반드시 넣는다. 일반 출력은 plain-text.v1, 시장 뉴스 보고서는 slack.market-news.v1만 사용한다.
         모든 edge에는 bindings를 [{"sourceField":"...","targetField":"..."}] 배열로 하나 이상 넣는다.
+        condition.branch에서 나가는 모든 edge condition은 category=BUG 또는 qualityPassed=true처럼 field=value 형식이어야 하며 서로 중복되면 안 된다. success 같은 단독 상태 문자열은 사용하지 않는다.
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.

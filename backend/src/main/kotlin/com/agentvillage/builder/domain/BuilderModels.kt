@@ -19,6 +19,10 @@ enum class NodeType(val wireName: String, val riskLevel: String) {
     TEXT_INPUT("text.input", "LOW"),
     NEWS_SEARCH_MOCK("news.search.mock", "LOW"),
     KNOWLEDGE_SEARCH_MOCK("knowledge.search.mock", "LOW"),
+    FLIGHT_SEARCH_MOCK("flight.search.mock", "LOW"),
+    GITHUB_ISSUE_MOCK("github.issue.mock", "LOW"),
+    PARALLEL_MAP_MOCK("parallel.map.mock", "LOW"),
+    UNRESOLVED_TOOL("tool.unresolved", "HIGH"),
     DATA_CSV_COMPARE("data.csv.compare", "LOW"),
     DATA_DEDUPLICATE("data.deduplicate", "LOW"),
     DATA_NORMALIZE("data.normalize", "LOW"),
@@ -184,12 +188,21 @@ data class WorkflowNodePlan(
     val config: Map<String, Any?> = emptyMap(),
 )
 data class WorkflowFieldBinding(val sourceField: String, val targetField: String)
+enum class ConditionOperator { EQUALS, LESS_THAN_OR_EQUALS, GREATER_THAN_OR_EQUALS }
+data class WorkflowCondition(val field: String, val operator: ConditionOperator, val value: String) {
+    fun serialize(): String = when (operator) {
+        ConditionOperator.EQUALS -> "$field=$value"
+        ConditionOperator.LESS_THAN_OR_EQUALS -> "$field<=$value"
+        ConditionOperator.GREATER_THAN_OR_EQUALS -> "$field>=$value"
+    }
+}
 data class WorkflowEdgePlan(
     val id: String,
     val source: String,
     val target: String,
     val condition: String = "success",
     val bindings: List<WorkflowFieldBinding> = listOf(WorkflowFieldBinding("context", "context")),
+    val conditionSpec: WorkflowCondition? = null,
 )
 data class WorkflowGraphPlan(val entryNodeId: String, val nodes: List<WorkflowNodePlan>, val edges: List<WorkflowEdgePlan>)
 

@@ -150,6 +150,9 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         if (resources.bindings.any { it.resourceKey.contains("notion") }) add("NOTION_TOKEN")
         if (resources.bindings.any { it.resourceKey.contains("email") }) add("EMAIL_CONNECTION")
         if (resources.bindings.any { it.resourceKey.contains("news") && !it.simulationOnly }) add("NEWS_API_KEY")
+        resources.bindings.filter { it.availability == com.agentvillage.builder.domain.ResourceAvailability.MISSING }.forEach {
+            add(it.label.uppercase().replace(Regex("[^A-Z0-9]+"), "_").trim('_') + "_CONNECTION")
+        }
     }
 
     private fun packageReadme(bundle: MetaAgentDesignBundle) = """
@@ -182,7 +185,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         import argparse, json
         from pathlib import Path
 
-        SAFE = {"manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock"}
+        SAFE = {"manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "flight.search.mock", "github.issue.mock", "parallel.map.mock", "tool.unresolved", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock"}
         root = Path(__file__).resolve().parents[2]
         graph = json.loads((root / "workflow.json").read_text())
         data = json.loads((root / "examples/sample-input.json").read_text())
@@ -190,15 +193,41 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         args.add_argument("--approve", action="store_true")
         approved = args.parse_args().approve
         steps = []
-        for node in graph["nodes"]:
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        outgoing = {}
+        for edge in graph["edges"]: outgoing.setdefault(edge["source"], []).append(edge)
+        node_id = graph["entryNodeId"]
+        traversed = 0
+        while node_id is not None:
+            traversed += 1
+            if traversed > len(nodes) + 1: raise SystemExit("unsafe graph traversal")
+            node = nodes[node_id]
             kind = node["nodeType"]
+            config = node.get("config", {})
             if kind not in SAFE:
                 raise SystemExit(f"unsupported node: {kind}")
             if kind == "notion.search.mock": data["notionResult"] = "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다."
-            elif kind == "knowledge.search.mock": data["searchResults"] = [{"title": "Mock FAQ", "content": "검증용 FAQ 검색 결과"}]
-            elif kind == "data.csv.compare": data["changedRows"] = []
+            elif kind == "knowledge.search.mock":
+                results = data.get("mockSearchResults", [{"title": "배송 FAQ", "content": "배송은 주문 후 영업일 기준 2~3일 이내 도착합니다."}])
+                data.update({"searchResults": results, "evidenceFound": bool(results), "requiresHumanReview": not bool(results)})
+            elif kind == "flight.search.mock":
+                price = int(data.get("mockFlightPrice", 250000)); maximum = int(config.get("maximumPrice", 200000))
+                data.update({"price": price, "priceWithinBudget": price <= maximum, "searchResult": {"price": price, "currency": "KRW"}, "externalCallPerformed": False})
+            elif kind == "github.issue.mock": data.update({"issueTitle": "Mock issue", "issueBody": "Mock issue body"})
+            elif kind == "parallel.map.mock": data["parallelResults"] = [{"subject": item, "result": "Mock research"} for item in config.get("items", [])]
+            elif kind == "tool.unresolved": data.update({"requiresUserAction": True, "unresolvedTool": config.get("toolName"), "externalCallPerformed": False})
+            elif kind == "data.csv.compare":
+                before = {str(row.get("id", i)): row for i, row in enumerate(data.get("rowsA", []))}
+                after = {str(row.get("id", i)): row for i, row in enumerate(data.get("rowsB", []))}
+                added = [{"changeType": "ADDED", "key": key, "after": after[key]} for key in sorted(after.keys() - before.keys())]
+                removed = [{"changeType": "REMOVED", "key": key, "before": before[key]} for key in sorted(before.keys() - after.keys())]
+                modified = [{"changeType": "MODIFIED", "key": key, "before": before[key], "after": after[key]} for key in sorted(before.keys() & after.keys()) if before[key] != after[key]]
+                data.update({"addedRows": added, "removedRows": removed, "modifiedRows": modified, "changedRows": added + removed + modified, "externalCallPerformed": False})
             elif kind == "news.search.mock": data["newsItems"] = [{"title": "Mock AI news", "url": "https://example.com/mock"}]
-            elif kind == "ai.generate": data["draft"] = "[Mock] 제공된 근거를 사용한 초안"
+            elif kind == "ai.generate":
+                evidence = " ".join(item.get("content", "") for item in data.get("searchResults", []))
+                result = ("FAQ 근거에 따르면 " + evidence) if evidence else "제공된 입력을 출력 스키마에 맞춰 처리한 샘플 결과입니다."
+                data.update({"draft": result, "result": result, "summary": result, "report": result})
             elif kind == "quality.check": data["qualityPassed"] = True
             elif kind == "human.approval" and not approved:
                 steps.append({"node": node["id"], "status": "WAITING_APPROVAL", "output": data})
@@ -207,6 +236,18 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             elif kind.startswith("slack.") and ("reply" in kind or "send" in kind): data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
             elif kind == "email.send.mock": data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
             steps.append({"node": node["id"], "status": "SUCCEEDED", "output": data})
+            edges = outgoing.get(node_id, [])
+            if kind == "condition.branch":
+                matched = []
+                for edge in edges:
+                    field, expected = edge.get("condition", "").split("=", 1)
+                    if str(data.get(field)).lower() == expected.lower(): matched.append(edge)
+                if len(matched) != 1:
+                    print(json.dumps({"status": "FAILED", "reason": "condition branch did not match exactly one edge", "externalCallPerformed": False, "steps": steps}, ensure_ascii=False, indent=2))
+                    raise SystemExit(2)
+                node_id = matched[0]["target"]
+            else:
+                node_id = edges[0]["target"] if edges else None
         print(json.dumps({"status": "SUCCEEDED", "externalCallPerformed": False, "output": data, "steps": steps}, ensure_ascii=False, indent=2))
     """.trimIndent() + "\n"
 
