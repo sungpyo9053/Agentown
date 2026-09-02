@@ -55,6 +55,27 @@ class ReleaseManagerTest(unittest.TestCase):
         self.contract["approved_commit_sha"] = "0" * 40
         self.assertFalse(self.manager.preflight(self.contract, require_clean=False)["passed"])
 
+    def test_candidate_must_advance_the_previous_production_release(self):
+        base = self.sha
+        subprocess.run(["git", "checkout", "-qb", "production"], cwd=self.root, check=True)
+        (self.root / "production.txt").write_text("develop route\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "production feature"], cwd=self.root, check=True)
+        previous = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        subprocess.run(["git", "checkout", "-qb", "candidate", base], cwd=self.root, check=True)
+        (self.root / "candidate.txt").write_text("compiler fix\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "divergent candidate"], cwd=self.root, check=True)
+        candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.contract.update({"approved_commit_sha": candidate, "previous_release_sha": previous})
+        atomic_json(self.verification, {"commit_sha": candidate, "commands": [{"command": "test", "status": "PASSED"}]})
+
+        report = self.manager.preflight(self.contract)
+        checks = {item["id"]: item for item in report["checks"]}
+
+        self.assertFalse(checks["candidate_advances_previous_release"]["passed"])
+        self.assertFalse(report["passed"])
+
     def test_untracked_only_worktree_is_blocked(self):
         (self.root / "untracked.txt").write_text("not part of approved SHA\n")
         report = self.manager.preflight(self.contract)

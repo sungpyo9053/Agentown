@@ -323,6 +323,16 @@ class ReleaseManager:
         sha = contract["approved_commit_sha"]
         exists = git(self.source_root, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
         checks.append({"id": "commit_exists", "passed": exists})
+        previous_sha = contract.get("previous_release_sha")
+        previous_exists = not previous_sha or git(self.source_root, "cat-file", "-e", f"{previous_sha}^{{commit}}").returncode == 0
+        advances_previous = previous_exists and (
+            not previous_sha or git(self.source_root, "merge-base", "--is-ancestor", previous_sha, sha).returncode == 0
+        )
+        checks.append({
+            "id": "candidate_advances_previous_release",
+            "passed": advances_previous,
+            "previous_release_sha": previous_sha,
+        })
         checks.append({"id": "planner_approved", "passed": contract.get("planner_decision") == "APPROVED"})
         report_path = self.root / contract.get("verification_report", "")
         verification = read_json(report_path) if report_path.is_file() else {}
