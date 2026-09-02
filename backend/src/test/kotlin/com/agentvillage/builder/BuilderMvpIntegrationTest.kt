@@ -4,6 +4,7 @@ import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.agent.application.AgentService
 import com.agentvillage.builder.domain.BuilderRunStatus
+import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.builder.domain.AgentDesignStatus
 import com.agentvillage.builder.domain.DesignNodeKind
 import com.agentvillage.builder.domain.WorkflowStatus
@@ -35,6 +36,23 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var builderRuns: BuilderRunRepository
     @Autowired lateinit var outputTemplates: HarnessTemplateRepository
     @Autowired lateinit var outputTemplateVersions: HarnessTemplateVersionRepository
+
+    @Test
+    fun `agent development sessions stay separate and use chat defaults instead of automation questions`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("agent-dev-$suffix@example.com", "password123", "agent_dev_$suffix", "에이전트 개발 검증"))
+        val automation = service.createConversation(owner.id, "automation-conversation-$suffix")
+        var agent = service.createConversation(owner.id, "agent-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+
+        assertThat(service.listConversations(owner.id).map { it.conversationId }).containsExactly(automation.conversationId)
+        assertThat(service.listConversations(owner.id, BuilderConversationPurpose.AGENT_DEVELOPMENT).map { it.conversationId }).containsExactly(agent.conversationId)
+        assertThatThrownBy { service.requireConversationPurpose(owner.id, automation.conversationId, BuilderConversationPurpose.AGENT_DEVELOPMENT) }
+            .isInstanceOf(NotFoundException::class.java)
+
+        agent = service.sendMessage(owner.id, agent.conversationId, "날씨를 분석해 옷차림을 추천하는 에이전트를 만들어줘.", "agent-message-$suffix")
+        assertThat(agent.clarificationQuestions.map { it.field }).doesNotContain("inbound", "knowledgeSource", "approvalPolicy", "destination")
+        assertThat(agent.messages.last { it.role == "USER" }.content).isEqualTo("날씨를 분석해 옷차림을 추천하는 에이전트를 만들어줘.")
+    }
 
     @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {

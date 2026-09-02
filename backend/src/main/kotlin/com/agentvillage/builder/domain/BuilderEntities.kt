@@ -20,8 +20,11 @@ class BuilderConversation(
     @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
     @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
     @Column(nullable = false, length = 160) var title: String = "새 업무 자동화",
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) val purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION,
     @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
 ) : AuditedEntity()
+
+enum class BuilderConversationPurpose { AUTOMATION, AGENT_DEVELOPMENT }
 
 @Entity @Table(name = "builder_messages")
 class BuilderMessage(

@@ -76,14 +76,21 @@ class BuilderService(
     private val mapper: ObjectMapper,
 ) {
     @Transactional
-    fun createConversation(ownerId: UUID, idempotencyKey: String): BuilderSnapshot {
+    fun createConversation(ownerId: UUID, idempotencyKey: String, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val workspace = workspaces.findByOwnerId(ownerId) ?: workspaces.save(BuilderWorkspace(ownerId = ownerId))
         conversations.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let { return snapshot(ownerId, it.id) }
         val workflowId = UUID.randomUUID()
-        val conversation = conversations.save(BuilderConversation(workspaceId = workspace.id, workflowId = workflowId, idempotencyKey = idempotencyKey))
-        workflows.save(BuilderWorkflow(id = workflowId, workspaceId = workspace.id, conversationId = conversation.id, name = "새 업무 자동화"))
+        val initialName = if (purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) "새 AI 에이전트" else "새 업무 자동화"
+        val conversation = conversations.save(BuilderConversation(workspaceId = workspace.id, workflowId = workflowId, title = initialName, purpose = purpose, idempotencyKey = idempotencyKey))
+        workflows.save(BuilderWorkflow(id = workflowId, workspaceId = workspace.id, conversationId = conversation.id, name = initialName))
         return snapshot(ownerId, conversation.id)
+    }
+
+    @Transactional(readOnly = true)
+    fun requireConversationPurpose(ownerId: UUID, conversationId: UUID, purpose: BuilderConversationPurpose) {
+        val conversation = context(ownerId, conversationId).conversation
+        if (conversation.purpose != purpose) throw NotFoundException("BUILDER_CONVERSATION_NOT_FOUND", "요청한 대화를 찾을 수 없습니다.")
     }
 
     @Transactional
@@ -118,9 +125,10 @@ class BuilderService(
         val pipelineContext = context.pipeline(jobId)
         pipeline.preflight(pipelineContext)
         if (consumeUsage) usageLimiter.claim(pipelineContext, idempotencyKey)
-        val bundle = pipeline.generateDesign(pipelineContext, instruction)
+        val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
+        val bundle = pipeline.generateDesign(pipelineContext, designInstruction)
         val requirement = bundle.requirement
-        val questions = bundle.clarificationQuestions
+        val questions = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) emptyList() else bundle.clarificationQuestions
         require(requirement.objective.isNotBlank() && requirement.steps.isNotEmpty())
         val map = mapper.convertValue(requirement, object : TypeReference<Map<String, Any?>>() {}).toMutableMap()
         map["clarificationQuestions"] = mapper.convertValue(questions, object : TypeReference<List<Map<String, Any?>>>() {})
@@ -420,15 +428,27 @@ class BuilderService(
     }
 
     @Transactional(readOnly = true)
-    fun listConversations(ownerId: UUID): List<BuilderConversationSummary> {
+    fun listConversations(ownerId: UUID, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): List<BuilderConversationSummary> {
         val workspace = workspaces.findByOwnerId(ownerId) ?: return emptyList()
-        return conversations.findTop20ByWorkspaceIdOrderByCreatedAtDesc(workspace.id).mapNotNull { conversation ->
+        return conversations.findTop20ByWorkspaceIdAndPurposeOrderByCreatedAtDesc(workspace.id, purpose).mapNotNull { conversation ->
             workflows.findByConversationId(conversation.id)?.let { workflow ->
                 val versionNo = workflow.currentVersionId?.let { versions.findById(it).orElse(null)?.versionNo }
                 BuilderConversationSummary(conversation.id, workflow.id, workflow.name, workflow.status, versionNo, workflow.updatedAt)
             }
         }
     }
+
+    private fun agentDevelopmentInstruction(instruction: String) = """
+        다음 요청은 업무 자동화 배치가 아니라 사용자가 대화로 사용할 AI 에이전트 개발 요청입니다.
+        사용자가 별도로 지정하지 않았다면 실행 트리거는 '사용자가 채팅에서 요청할 때', 입력은 '현재 대화와 사용자 메시지',
+        출력은 '대화 화면의 에이전트 응답', 외부 서비스 연동은 '없음'으로 가정하세요.
+        완성된 에이전트 설계는 사용자가 검토하고 승인한 뒤 테스트하며, 승인 전 외부 작업은 수행하지 않습니다.
+        이 기본값들은 차단 질문으로 되묻지 말고 assumptions에 기록하세요. 요청 의미에 필요한 에이전트, 역할, 도구, 스킬,
+        메모리, 협업 순서와 검증 시나리오를 설계하되 고정 예시 흐름이나 사용자가 말하지 않은 외부 커넥터를 추가하지 마세요.
+
+        사용자 요청:
+        ${instruction.trim()}
+    """.trimIndent()
 
     @Transactional
     fun activate(ownerId: UUID, workflowId: UUID, idempotencyKey: String): BuilderSnapshot {

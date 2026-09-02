@@ -9,6 +9,7 @@ interface BuilderConversationRepository : JpaRepository<BuilderConversation, UUI
     fun findByIdAndWorkspaceId(id: UUID, workspaceId: UUID): BuilderConversation?
     fun findByWorkspaceIdAndIdempotencyKey(workspaceId: UUID, idempotencyKey: String): BuilderConversation?
     fun findTop20ByWorkspaceIdOrderByCreatedAtDesc(workspaceId: UUID): List<BuilderConversation>
+    fun findTop20ByWorkspaceIdAndPurposeOrderByCreatedAtDesc(workspaceId: UUID, purpose: BuilderConversationPurpose): List<BuilderConversation>
 }
 interface BuilderMessageRepository : JpaRepository<BuilderMessage, UUID> {
     fun findAllByConversationIdOrderByCreatedAt(conversationId: UUID): List<BuilderMessage>
