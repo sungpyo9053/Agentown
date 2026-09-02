@@ -693,7 +693,7 @@ class BuilderService(
         val validation = graph?.let {
             if (requirement != null && proposal != null) validator.validate(it, requirement, proposal, agents, if ((version?.versionNo ?: 1) == 1) cumulativeInstruction(conversationId) else null)
             else validator.validate(it)
-        }
+        }?.copy(graphHash = version!!.graphHash)
         return BuilderSnapshot(context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions, proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation, version?.id, context.workflow.approvedVersionId, messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) }, versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) })
     }
 

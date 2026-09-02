@@ -39,6 +39,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.http.MediaType
+import org.springframework.jdbc.core.JdbcTemplate
 import java.util.UUID
 
 @AutoConfigureMockMvc
@@ -55,6 +56,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var generationJobs: BuilderGenerationJobRepository
     @Autowired lateinit var workflows: BuilderWorkflowRepository
     @Autowired lateinit var mapper: ObjectMapper
+    @Autowired lateinit var jdbc: JdbcTemplate
 
     @Test
     fun `cross purpose idempotency keys are rejected through both HTTP controller families`() {
@@ -243,6 +245,10 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         val pinnedTemplateVersionId = workflowVersions.findById(snapshot.currentVersionId!!).orElseThrow().templateVersionId
         assertThat(pinnedTemplateVersionId).isNotNull()
         assertThat(outputTemplateVersions.findById(pinnedTemplateVersionId!!).orElseThrow().state).isEqualTo(HarnessTemplateVersionState.APPROVED)
+
+        jdbc.update("update builder_workflow_versions set graph_hash = ? where id = ?", "stored-authoritative-hash", snapshot.currentVersionId)
+        snapshot = service.snapshot(owner.id, conversationId)
+        assertThat(snapshot.validation!!.graphHash).isEqualTo("stored-authoritative-hash")
 
         val firstVersion = snapshot.currentVersionId!!
         snapshot = service.applyPatch(owner.id, snapshot.workflowId, "Slack 답변 전 담당자 승인을 추가해줘.", firstVersion, snapshot.validation!!.graphHash, "patch-1-$suffix")

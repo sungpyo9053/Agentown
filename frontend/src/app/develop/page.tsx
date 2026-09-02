@@ -17,7 +17,7 @@ type Snapshot = {
   proposal?: { name: string; summary: string; capabilities: string[]; resourcePlan?: { bindings: Resource[]; uncoveredCapabilities: string[]; simulationReady: boolean; productionReady: boolean }; agentDesign?: { naturalLanguageSummary: string; assumptions: Array<{ key: string; value: string; reason: string }>; simulationScenarios: Array<{ name: string; input: Record<string, unknown>; expectedStages: string[] }>; review: { passed: boolean; issues: Array<{ code: string; message: string }> } } };
   agentDefinitions: Agent[]; graph?: Graph; currentVersionId?: string; validation?: { valid: boolean; graphHash: string };
   messages: Array<{ id: string; role: string; content: string; createdAt: string }>;
-  versions: Array<{ id: string; versionNo: number; changeSummary: string; approved: boolean; createdAt: string }>;
+  versions: Array<{ id: string; versionNo: number; graphHash: string; changeSummary: string; approved: boolean; createdAt: string }>;
 };
 type Session = { conversationId: string; workflowId: string; title: string; status: string; currentVersionNo?: number; updatedAt: string };
 type Job = { id: string; conversationId: string; status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; stage: string; elapsedSeconds: number; remainingSeconds: number; errorMessage?: string };
@@ -71,10 +71,12 @@ export default function AgentDevelopmentPage() {
     mutationFn: async (content: string) => {
       const latest = await api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}`);
       if (!latest.currentVersionId || !latest.validation) throw new Error("최신 캔버스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      const currentVersion = latest.versions.find(version => version.id === latest.currentVersionId);
+      if (!currentVersion) throw new Error("최신 버전 기록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
       return api<Snapshot>(`/agent-development/sessions/${latest.conversationId}/patches`, {
         method: "POST",
         headers: { "Idempotency-Key": key("agent-patch") },
-        body: JSON.stringify({ instruction: content, baseVersionId: latest.currentVersionId, expectedGraphHash: latest.validation.graphHash }),
+        body: JSON.stringify({ instruction: content, baseVersionId: latest.currentVersionId, expectedGraphHash: currentVersion.graphHash }),
       });
     },
     onSuccess: next => { store(next); setMessage(""); setPanel("team"); },
@@ -141,8 +143,8 @@ export default function AgentDevelopmentPage() {
 }
 
 function TeamPanel({ snapshot, pending, decide, save }: { snapshot?: Snapshot; pending: boolean; decide: (approve: boolean) => void; save: (agentKey: string, value: Agent) => void }) {
-  if (!snapshot?.agentDefinitions.length) return <Empty icon={Users} text="역할에 맞는 에이전트 팀이 여기에 구성됩니다." />;
-  return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold text-coral">AGENT PACKAGE</p><p className="mt-2 text-sm leading-6">{snapshot.proposal?.summary}</p><div className="mt-3 flex flex-wrap gap-1">{snapshot.proposal?.capabilities.map(item => <span key={item} className="rounded-md bg-cloud px-2 py-1 text-[11px]">{item}</span>)}</div></div>{snapshot.agentDefinitions.map(agent => <AgentEditor key={`${agent.key}-${snapshot.currentVersionId ?? "draft"}`} agent={agent} resources={snapshot.proposal?.resourcePlan?.bindings ?? []} disabled={pending || !snapshot.currentVersionId} save={value => save(agent.key, value)} />)}{snapshot.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2 pt-1"><button disabled={pending} onClick={() => decide(false)} className="rounded-md border border-hairline px-3 py-2.5 text-xs disabled:opacity-40">수정 요청</button><button disabled={pending} onClick={() => decide(true)} className="rounded-md bg-ink px-3 py-2.5 text-xs text-white disabled:opacity-40">설계 승인</button></div>}{snapshot.currentVersionId && <a href={`/api/agent-development/sessions/${snapshot.conversationId}/package`} className="flex items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs"><FileCode2 className="h-3.5 w-3.5" />에이전트 패키지</a>}</div>;
+  if (!snapshot?.proposal) return <Empty icon={Users} text="역할에 맞는 에이전트 팀이 여기에 구성됩니다." />;
+  return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold text-coral">AGENT PACKAGE</p><p className="mt-2 text-sm leading-6">{snapshot.proposal.summary}</p><div className="mt-3 flex flex-wrap gap-1">{snapshot.proposal.capabilities.map(item => <span key={item} className="rounded-md bg-cloud px-2 py-1 text-[11px]">{item}</span>)}</div></div>{snapshot.agentDefinitions.length === 0 && <div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold">결정론적 Function 워크플로</p><p className="mt-2 text-xs leading-5 text-mute">AI 팀원 없이 선언된 Function과 조건만으로 실행됩니다.</p></div>}{snapshot.agentDefinitions.map(agent => <AgentEditor key={`${agent.key}-${snapshot.currentVersionId ?? "draft"}`} agent={agent} resources={snapshot.proposal?.resourcePlan?.bindings ?? []} disabled={pending || !snapshot.currentVersionId} save={value => save(agent.key, value)} />)}{snapshot.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2 pt-1"><button disabled={pending} onClick={() => decide(false)} className="rounded-md border border-hairline px-3 py-2.5 text-xs disabled:opacity-40">수정 요청</button><button disabled={pending} onClick={() => decide(true)} className="rounded-md bg-ink px-3 py-2.5 text-xs text-white disabled:opacity-40">설계 승인</button></div>}{snapshot.currentVersionId && <a href={`/api/agent-development/sessions/${snapshot.conversationId}/package`} className="flex items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs"><FileCode2 className="h-3.5 w-3.5" />에이전트 패키지</a>}</div>;
 }
 function AgentEditor({ agent, resources, disabled, save }: { agent: Agent; resources: Resource[]; disabled: boolean; save: (value: Agent) => void }) {
   const [editing, setEditing] = useState(false);

@@ -118,10 +118,12 @@ export default function AutomationBuilderPage() {
     mutationFn: async (instruction: string) => {
       const latest = await api<Snapshot>(`/builder/conversations/${snapshot!.conversationId}`);
       if (!latest.currentVersionId || !latest.validation) throw new Error("최신 캔버스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      const currentVersion = latest.versions.find(version => version.id === latest.currentVersionId);
+      if (!currentVersion) throw new Error("최신 버전 기록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
       return api<Snapshot>(`/builder/workflows/${latest.workflowId}/patches`, {
         method: "POST",
         headers: { "Idempotency-Key": key("patch") },
-        body: JSON.stringify({ instruction, baseVersionId: latest.currentVersionId, expectedGraphHash: latest.validation.graphHash }),
+        body: JSON.stringify({ instruction, baseVersionId: latest.currentVersionId, expectedGraphHash: currentVersion.graphHash }),
       });
     },
     onSuccess: (next) => { store(next); setMessage(""); setTab("canvas"); },
