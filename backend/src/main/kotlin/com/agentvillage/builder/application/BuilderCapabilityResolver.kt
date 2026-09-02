@@ -58,8 +58,12 @@ class BuilderCapabilityResolver {
             NodeType.SLACK_NEW_MESSAGE_MOCK, NodeType.SLACK_REPLY_MOCK, NodeType.SLACK_SEND_MOCK -> mock(capability, "connector.slack.mock", "Slack Mock", "실제 Slack OAuth 연결 전 안전한 시뮬레이션")
             NodeType.NOTION_SEARCH_MOCK, NodeType.NOTION_READ_PAGE_MOCK -> mock(capability, "connector.notion.mock", "Notion Mock", "실제 Notion OAuth 연결 전 안전한 시뮬레이션")
             NodeType.KNOWLEDGE_SEARCH_MOCK -> mock(capability, "connector.knowledge.mock", "FAQ/지식 검색 Mock", "실제 지식 소스 연결 전 안전한 시뮬레이션")
+            NodeType.FLIGHT_SEARCH_MOCK -> mock(capability, "connector.flight-search.mock", "항공권 검색 Mock", "실제 항공권 검색 연결 전 안전한 가격 조건 시뮬레이션")
             NodeType.EMAIL_SEND_MOCK -> mock(capability, "connector.email.mock", "Email Mock", "실제 이메일 연결 전 안전한 시뮬레이션")
             NodeType.NEWS_SEARCH_MOCK -> mock(capability, "connector.news.mock", "News Mock", "실제 뉴스 소스 연결 전 샘플 데이터 시뮬레이션")
+            NodeType.GITHUB_ISSUE_MOCK -> mock(capability, "connector.github.mock", "GitHub Mock", "실제 GitHub 연결 전 샘플 이슈 시뮬레이션")
+            NodeType.PARALLEL_MAP_MOCK -> mock(capability, "connector.web-research.mock", "Web Research Mock", "실제 검색 소스 연결 전 병렬 조사 시뮬레이션")
+            NodeType.UNRESOLVED_TOOL -> ResourceBinding(capability, ResourceKind.TOOL, "missing.${node.config["toolName"]}", node.label, ResourceAvailability.MISSING, "USER_REQUEST", node.config["reason"]?.toString() ?: "연결 또는 도구 구현 필요")
             null -> ResourceBinding(capability, ResourceKind.TOOL, "missing.${node.nodeType}", node.label, ResourceAvailability.MISSING, "SERVER_CATALOG", "서버 허용 노드 카탈로그에 없는 기능")
         }
     }

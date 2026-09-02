@@ -72,6 +72,8 @@ class AgentDesignAssembler {
         nodeType in setOf("data.normalize", "data.deduplicate", "data.csv.compare", "quality.check") -> DesignNodeKind.FUNCTION
         nodeType == "template.render" -> DesignNodeKind.TEMPLATE
         nodeType == "condition.branch" -> DesignNodeKind.CONDITION
+        nodeType == "parallel.map.mock" -> DesignNodeKind.PARALLEL
+        nodeType == "flight.search.mock" -> DesignNodeKind.TOOL
         nodeType == "human.approval" -> DesignNodeKind.USER_APPROVAL
         nodeType == "workflow.end" -> DesignNodeKind.END
         nodeType.startsWith("slack.") && (nodeType.contains("reply") || nodeType.contains("send")) -> DesignNodeKind.OUTPUT

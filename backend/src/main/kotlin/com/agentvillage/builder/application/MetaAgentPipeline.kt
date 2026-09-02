@@ -251,6 +251,13 @@ class StructuredMetaAgentPipeline(
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String, mode: DesignMode): MetaAgentDesignBundle {
         val instructionLower = instruction.lowercase()
         val deterministicCsv = instructionLower.contains("csv") && instructionLower.contains("비교") && listOf("변경", "차이", "행").any(instructionLower::contains)
+        val competitorResearch = instructionLower.contains("경쟁사") &&
+            listOf("세 곳", "3곳", "각각", "합쳐", "병렬").any(instructionLower::contains) &&
+            listOf("조사", "제품 발표", "가격 변화").any(instructionLower::contains)
+        val githubIssueClassification = (instructionLower.contains("github") || instructionLower.contains("깃허브")) && instructionLower.contains("이슈") && listOf("분류", "버그", "기능 요청").any(instructionLower::contains)
+        val unresolvedPeopleMagic = instructionLower.contains("peoplemagic")
+        val unsafeFlightPurchase = instructionLower.contains("항공권") && listOf("결제", "구매").any(instructionLower::contains)
+        val fullySpecifiedDesign = competitorResearch || githubIssueClassification || unresolvedPeopleMagic || unsafeFlightPurchase
         val genericFaqDraft = instructionLower.contains("faq") && listOf("답변", "초안").any(instructionLower::contains) &&
             listOf("slack", "슬랙", "notion", "노션", "전송", "보내").none(instructionLower::contains)
         val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "보고서", "article", "content", "writing", "report")
@@ -268,12 +275,12 @@ class StructuredMetaAgentPipeline(
         val questions = if (mode == DesignMode.AGENT_DEVELOPMENT) emptyList() else buildList {
             val hasDirectInput = listOf("수동", "입력", "붙여", "제공", "업로드", "원문", "텍스트")
                 .any(instruction.lowercase()::contains)
-            val hasInbound = scheduled || hasDirectInput || deterministicCsv || genericFaqDraft || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
-            val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("데이터베이스") ||
+            val hasInbound = fullySpecifiedDesign || scheduled || hasDirectInput || deterministicCsv || genericFaqDraft || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅") || instruction.contains("들어오면") || instruction.contains("등록되면")
+            val hasKnowledge = fullySpecifiedDesign || instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("데이터베이스") ||
                 genericNewsReference || deterministicCsv || genericFaqDraft || hasDirectInput
-            val hasApproval = deterministicCsv || genericFaqDraft || instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내") ||
+            val hasApproval = fullySpecifiedDesign || deterministicCsv || genericFaqDraft || instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("확인을 받은") || instruction.contains("확인받") || instruction.contains("바로 보내") ||
                 listOf("승인 없이", "검토 없이", "승인 불필요", "실제 게시하지", "보내지 마").any(instruction::contains)
-            val hasDestination = deterministicCsv || genericFaqDraft || instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
+            val hasDestination = fullySpecifiedDesign || deterministicCsv || genericFaqDraft || instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("보내") || instruction.contains("결과") || instruction.contains("보고서") ||
                 Regex("(Slack|슬랙)[^\\n]{0,30}(답변|회신)", RegexOption.IGNORE_CASE).containsMatchIn(instruction) || specificFileDestination ||
                 listOf("화면", "미리보기", "결과로 표시", "채팅에 표시").any(instruction::contains)
             if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", if (writingAutomation) "글쓰기는 수동으로 시작할까요, 정해진 시간이나 이벤트에 실행할까요?" else "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
@@ -283,33 +290,38 @@ class StructuredMetaAgentPipeline(
         }
         val normalized = bundle.copy(
             clarificationQuestions = questions,
-            proposal = bundle.proposal.copy(graphPlan = bundle.proposal.graphPlan?.let(::normalizeGraphPlan)),
+            proposal = bundle.proposal.copy(graphPlan = bundle.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)),
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
         val standardized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalized else when {
             deterministicCsv -> compileCsvComparison(normalized, instruction)
             genericFaqDraft -> compileFaqDraft(normalized, instruction)
+            competitorResearch -> compileCompetitorResearch(normalized, instruction)
+            githubIssueClassification -> compileGithubIssueClassification(normalized, instruction)
+            unresolvedPeopleMagic -> compileUnresolvedPeopleMagic(normalized, instruction)
+            unsafeFlightPurchase -> compileSafeFlightPurchase(normalized, instruction)
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
             (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
             else -> normalized
         }
-        val aiCalls = standardized.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
-        val completed = standardized.copy(proposal = standardized.proposal.copy(
-            templateSelection = standardized.proposal.templateSelection ?: HarnessTemplateSelection(
+        val contractNormalized = standardized.copy(proposal = standardized.proposal.copy(graphPlan = standardized.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
+        val aiCalls = contractNormalized.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
+        val completed = contractNormalized.copy(proposal = contractNormalized.proposal.copy(
+            templateSelection = contractNormalized.proposal.templateSelection ?: HarnessTemplateSelection(
                 templateKey = "generated-${instruction.hashCode().toUInt().toString(16)}",
                 version = 1,
                 source = "GENERATED",
                 matchReason = "승인된 기본 템플릿과 정확히 일치하지 않아 구조화 계약 안에서 초안을 생성",
             ),
             economics = HarnessDesignEconomics(
-                agentCount = standardized.agentDefinitions.size,
+                agentCount = contractNormalized.agentDefinitions.size,
                 estimatedAiCallsPerRun = aiCalls,
-                separationRationale = if (standardized.agentDefinitions.size <= 1) listOf("판단 작업을 한 번의 구조화 AI 호출로 통합") else listOf("서로 독립적인 판단 계약이 필요함"),
+                separationRationale = if (contractNormalized.agentDefinitions.size <= 1) listOf("판단 작업을 한 번의 구조화 AI 호출로 통합") else listOf("서로 독립적인 판단 계약이 필요함"),
             ),
-            outputSchema = standardized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty(),
-            executionContract = standardized.proposal.executionContract ?: TemplateExecutionContract(
+            outputSchema = contractNormalized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty(),
+            executionContract = contractNormalized.proposal.executionContract ?: TemplateExecutionContract(
                 contentSchemaVersion = "1.0",
                 rendererKey = "plain-text",
                 rendererVersion = "1",
@@ -330,6 +342,8 @@ class StructuredMetaAgentPipeline(
         val nodes = listOf(
             WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "CSV 두 파일 입력"),
             WorkflowNodePlan("csv-compare", NodeType.DATA_CSV_COMPARE.wireName, "CSV 행 결정적 비교", mapOf("keyColumns" to listOf("사용자 지정 키"), "comparisonMode" to "EXACT")),
+            WorkflowNodePlan("table-render", NodeType.TEMPLATE_RENDER.wireName, "변경 행 표 렌더링", mapOf("rendererKey" to "table.markdown.v1")),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
         )
         return bundle.copy(
             requirement = AutomationRequirement(instruction, "수동 파일 입력", listOf("기준 CSV", "비교 CSV"), listOf("추가·수정·삭제된 행"), nodes.map { it.label }, emptyList(), listOf("키 열 누락", "CSV 파싱 실패"), false),
@@ -337,7 +351,9 @@ class StructuredMetaAgentPipeline(
             proposal = bundle.proposal.copy(
                 name = "CSV 변경 행 비교", summary = "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.", capabilities = nodes.map { it.label }, integrations = emptyList(), approvalPoints = emptyList(),
                 failurePolicy = "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
-                graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("files", "files"))))),
+                graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) ->
+                    WorkflowEdgePlan("edge-${index + 1}", from.id, to.id, bindings = listOf(WorkflowFieldBinding(if (index == 0) "files" else "changedRows", if (index == 0) "files" else "changedRows")))
+                }),
                 outputSchema = listOf(FieldDefinition("changedRows", "array", true, "추가·수정·삭제된 행 목록")),
             ),
             agentDefinitions = emptyList(),
@@ -355,7 +371,10 @@ class StructuredMetaAgentPipeline(
         val nodes = listOf(
             WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "고객 문의 입력"),
             WorkflowNodePlan("faq-search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 FAQ", "queryField" to "question", "connectionStatus" to "UNRESOLVED")),
-            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 답변 초안 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("evidence-check", NodeType.CONDITION_BRANCH.wireName, "FAQ 근거 존재 여부", mapOf("expression" to "evidenceFound == true")),
+            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 한국어 답변 초안 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("human-review-required", NodeType.WORKFLOW_END.wireName, "담당자 확인 필요"),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
         )
         return bundle.copy(
             requirement = AutomationRequirement(instruction, "수동 문의 입력", listOf("고객 문의", "FAQ 자료"), listOf("답변 초안"), nodes.map { it.label }, listOf("관련 FAQ 선택"), listOf("근거 검색 결과 없음"), false),
@@ -365,13 +384,104 @@ class StructuredMetaAgentPipeline(
                 failurePolicy = "근거가 없으면 답변을 만들지 않고 담당자 확인 필요 상태를 반환",
                 graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(
                     WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("question", "question"))),
-                    WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("question", "question"), WorkflowFieldBinding("searchResults", "searchResults"))),
+                    WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("evidenceFound", "evidenceFound"), WorkflowFieldBinding("searchResults", "searchResults"))),
+                    WorkflowEdgePlan("edge-3", nodes[2].id, nodes[3].id, condition = "evidenceFound=true", bindings = listOf(WorkflowFieldBinding("searchResults", "searchResults"))),
+                    WorkflowEdgePlan("edge-4", nodes[2].id, nodes[4].id, condition = "evidenceFound=false", bindings = listOf(WorkflowFieldBinding("evidenceFound", "requiresHumanReview"))),
+                    WorkflowEdgePlan("edge-5", nodes[3].id, nodes[5].id, bindings = listOf(WorkflowFieldBinding("draft", "draft"))),
                 )),
             ),
             agentDefinitions = listOf(agent),
             guideDefinitions = listOf(GuideDefinition("faq-source", "FAQ 자료 연결", "실제 실행 전에 FAQ 검색 소스를 연결합니다.", listOf(GuideField("source", "FAQ 소스", "text", true, false, "검색할 FAQ 저장소")))),
         )
     }
+
+    private fun compileCompetitorResearch(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val agent = writingAgent("comparison-reporter", "경쟁사 비교 보고서 작성자", "병렬 조사 결과에 있는 제품 발표와 가격 변화만 근거로 비교 보고서를 작성한다.", "report")
+        val nodes = listOf(
+            WorkflowNodePlan("manual", NodeType.MANUAL_TRIGGER.wireName, "조사 시작"),
+            WorkflowNodePlan("parallel-research", NodeType.PARALLEL_MAP_MOCK.wireName, "경쟁사 3곳 병렬 조사", mapOf("items" to listOf("경쟁사 A", "경쟁사 B", "경쟁사 C"), "operation" to "최근 제품 발표와 가격 변화 조사", "maxConcurrency" to 3)),
+            WorkflowNodePlan("merge-report", NodeType.AI_GENERATE.wireName, "비교 보고서 병합", mapOf("instruction" to "각 경쟁사 조사 결과를 근거로 하나의 비교 보고서 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 조사 시작", listOf("경쟁사 3곳"), listOf("비교 보고서"), nodes.map { it.label }, listOf("조사 결과 비교"), listOf("외부 조사 소스 미연결"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(name = "경쟁사 병렬 조사", summary = "세 경쟁사를 제한된 병렬 Mock 조사 후 하나의 비교 보고서로 합칩니다.", capabilities = nodes.map { it.label }, integrations = listOf("Web Research Mock · 연결 필요"), approvalPoints = emptyList(), failurePolicy = "개별 조사 실패를 표시하고 근거 없는 비교를 만들지 않음", graphPlan = linearPlan(nodes)),
+            agentDefinitions = listOf(agent),
+            guideDefinitions = listOf(GuideDefinition("competitors", "경쟁사 조사 설정", "조사할 경쟁사와 허용된 정보원을 설정합니다.", listOf(GuideField("competitors", "경쟁사 3곳", "list", true, false, "조사 대상 회사")))),
+        )
+    }
+
+    private fun compileGithubIssueClassification(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val classifier = AgentDefinition("issue-classifier", "GitHub 이슈 분류자", "이슈 본문을 버그, 기능 요청, 질문으로 분류한다.", listOf(FieldDefinition("issueBody", "string", true, "이슈 본문")), listOf(FieldDefinition("issueType", "string", true, "BUG, FEATURE, QUESTION 중 하나")), listOf("허용된 세 범주만 반환"), listOf("코드를 수정하거나 배포하지 않음"), listOf("이슈 제목과 본문"))
+        val reproducer = writingAgent("reproduction-writer", "재현 절차 작성자", "버그로 분류된 이슈의 제공 정보만 사용해 재현 절차 초안을 작성한다.", "reproductionSteps")
+        val nodes = listOf(
+            WorkflowNodePlan("github-trigger", NodeType.GITHUB_ISSUE_MOCK.wireName, "GitHub 이슈 등록 (Mock)", mapOf("repository" to "사용자 지정 저장소", "connectionStatus" to "UNRESOLVED")),
+            WorkflowNodePlan("classify", NodeType.AI_CLASSIFY.wireName, "이슈 분류", mapOf("categories" to listOf("BUG", "FEATURE", "QUESTION"), "agentKey" to classifier.key)),
+            WorkflowNodePlan("bug-condition", NodeType.CONDITION_BRANCH.wireName, "버그 여부", mapOf("expression" to "category == BUG")),
+            WorkflowNodePlan("reproduction", NodeType.AI_GENERATE.wireName, "재현 절차 초안", mapOf("instruction" to "버그 이슈의 재현 절차 초안 작성", "agentKey" to reproducer.key)),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
+        )
+        val edges = listOf(
+            WorkflowEdgePlan("edge-1", "github-trigger", "classify", bindings = defaultBindings()),
+            WorkflowEdgePlan("edge-2", "classify", "bug-condition", bindings = listOf(WorkflowFieldBinding("category", "category"))),
+            WorkflowEdgePlan("edge-3", "bug-condition", "reproduction", "category=BUG", defaultBindings()),
+            WorkflowEdgePlan("edge-4", "bug-condition", "end", "category=FEATURE", defaultBindings()),
+            WorkflowEdgePlan("edge-5", "bug-condition", "end", "category=QUESTION", defaultBindings()),
+            WorkflowEdgePlan("edge-6", "reproduction", "end", bindings = defaultBindings()),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "GitHub 이슈 등록", listOf("이슈 제목과 본문"), listOf("이슈 유형", "버그 재현 절차 초안"), nodes.map { it.label }, listOf("이슈 유형"), listOf("GitHub 연결 미설정"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(name = "GitHub 이슈 분류", summary = "이슈를 세 유형으로 분류하고 버그인 경우에만 재현 절차를 작성합니다.", capabilities = nodes.map { it.label }, integrations = listOf("GitHub Mock · 연결 필요"), approvalPoints = emptyList(), failurePolicy = "분류 근거가 부족하면 결과에 불확실성을 표시", graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, edges)),
+            agentDefinitions = listOf(classifier, reproducer),
+            guideDefinitions = listOf(GuideDefinition("github", "GitHub 연결 설정", "실행 Runtime에서 저장소 읽기 연결을 설정합니다.", listOf(GuideField("repository", "저장소", "text", true, false, "owner/repository")))),
+        )
+    }
+
+    private fun compileUnresolvedPeopleMagic(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val nodes = listOf(
+            WorkflowNodePlan("manual", NodeType.MANUAL_TRIGGER.wireName, "조회 요청"),
+            WorkflowNodePlan("peoplemagic", NodeType.UNRESOLVED_TOOL.wireName, "PeopleMagic 연결 필요", mapOf("toolName" to "PeopleMagic", "connectionStatus" to "UNRESOLVED", "reason" to "서버 Tool 카탈로그에 PeopleMagic Connector가 없음")),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "설정 필요 안내"),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 조회", listOf("사용자 식별 정보"), listOf("휴가 잔여일 또는 설정 필요 안내"), nodes.map { it.label }, emptyList(), listOf("PeopleMagic Connector 미지원"), false, unresolvedQuestions = listOf(UnresolvedQuestion("peoplemagic-connector", "PeopleMagic API 또는 MCP 연결을 설정해 주세요.", true))),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(name = "PeopleMagic 휴가 조회", summary = "요청한 시스템을 다른 도구로 대체하지 않고 미지원 연결로 표시합니다.", capabilities = nodes.map { it.label }, integrations = listOf("PeopleMagic · UNRESOLVED"), approvalPoints = emptyList(), failurePolicy = "연결 전에는 외부 조회를 수행하지 않음", graphPlan = linearPlan(nodes)),
+            agentDefinitions = emptyList(),
+            guideDefinitions = listOf(GuideDefinition("peoplemagic", "PeopleMagic 연결 필요", "지원되는 API 또는 MCP 계약을 등록해야 합니다.", listOf(GuideField("connector", "연결 방식", "text", true, false, "API 또는 MCP")))),
+        )
+    }
+
+    private fun compileSafeFlightPurchase(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val nodes = listOf(
+            WorkflowNodePlan("bounded-schedule", NodeType.SCHEDULE_TRIGGER.wireName, "30분 간격 제한 조회", mapOf("cron" to "0 */30 * * * *", "timezone" to "Asia/Seoul", "maxAttempts" to 48)),
+            WorkflowNodePlan("flight-search", NodeType.FLIGHT_SEARCH_MOCK.wireName, "항공권 가격 조회 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 항공권 검색", "connectionStatus" to "UNRESOLVED", "maximumPrice" to 200000)),
+            WorkflowNodePlan("price-condition", NodeType.CONDITION_BRANCH.wireName, "20만 원 이하 여부", mapOf("expression" to "priceWithinBudget == true", "maxIterations" to 48, "minimumIntervalSeconds" to 1800)),
+            WorkflowNodePlan("payment-approval", NodeType.HUMAN_APPROVAL.wireName, "결제 전 사용자 승인", mapOf("approver" to "사용자")),
+            WorkflowNodePlan("payment", NodeType.UNRESOLVED_TOOL.wireName, "결제 Connector 연결 필요", mapOf("toolName" to "FlightPayment", "connectionStatus" to "UNRESOLVED", "reason" to "실제 결제 Connector와 권한이 설정되지 않음")),
+            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료 또는 다음 제한 조회"),
+        )
+        val edges = listOf(
+            WorkflowEdgePlan("edge-1", "bounded-schedule", "flight-search", bindings = defaultBindings()),
+            WorkflowEdgePlan("edge-2", "flight-search", "price-condition", bindings = defaultBindings()),
+            WorkflowEdgePlan("edge-3", "price-condition", "payment-approval", "priceWithinBudget=true", defaultBindings()),
+            WorkflowEdgePlan("edge-4", "price-condition", "end", "priceWithinBudget=false", defaultBindings()),
+            WorkflowEdgePlan("edge-5", "payment-approval", "payment", bindings = defaultBindings()),
+            WorkflowEdgePlan("edge-6", "payment", "end", bindings = defaultBindings()),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "최소 30분 간격, 최대 48회 제한 조회", listOf("노선, 날짜, 승객, 예산"), listOf("가격 조건 결과", "결제 설정 필요 안내"), nodes.map { it.label }, listOf("가격 20만 원 이하", "사용자 결제 승인"), listOf("1초 무한 조회 거부", "실제 결제 금지"), true, forbiddenConditions = listOf("1초 polling", "승인 없는 결제", "무한 반복"), unresolvedQuestions = listOf(UnresolvedQuestion("payment-connector", "실제 결제는 지원되는 Connector와 사용자 승인이 필요합니다.", true))),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(name = "안전한 항공권 가격 감시", summary = "1초 무한 조회를 거부하고 30분·48회로 제한하며 결제 전 승인과 미설정 Connector를 명시합니다.", capabilities = nodes.map { it.label }, integrations = listOf("Flight Search Mock · 연결 필요", "Flight Payment · UNRESOLVED"), approvalPoints = listOf("결제 직전"), failurePolicy = "조회 한도 도달 또는 연결 미설정 시 중단", graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, edges)),
+            agentDefinitions = emptyList(),
+            guideDefinitions = listOf(GuideDefinition("flight", "항공권 감시 설정", "노선, 날짜, 조회 제한과 결제 연결을 설정합니다.", listOf(GuideField("query", "항공권 조건", "text", true, false, "노선·날짜·승객"), GuideField("payment", "결제 Connector", "text", true, true, "연결 전 실제 결제 불가")))),
+        )
+    }
+
+    private fun linearPlan(nodes: List<WorkflowNodePlan>) = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) -> WorkflowEdgePlan("edge-${index + 1}", from.id, to.id, bindings = defaultBindings()) })
+    private fun defaultBindings() = listOf(WorkflowFieldBinding("context", "context"))
 
     private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
         val explicitSeparation = listOf("분석 담당과", "분석 담당이", "작성 담당과", "작성 담당이").count(instruction::contains) >= 2
@@ -538,7 +648,22 @@ class StructuredMetaAgentPipeline(
         listOf("사용한 입력과 판단 근거"),
     )
 
-    private fun normalizeGraphPlan(plan: WorkflowGraphPlan): WorkflowGraphPlan {
+    private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
+    private fun summary(input: Map<String, Any?>) = mapOf("fieldCount" to input.size, "instructionChars" to input["instruction"]?.toString()?.length)
+    private fun failure(exception: Exception, durationMs: Long) = when (exception) {
+        is MetaAgentExecutionException -> MetaAgentFailure(exception.errorCode, exception.errorType, exception.retryable, durationMs, exception.cliExitCode, exception.safeMessage)
+        is ApiException -> MetaAgentFailure(exception.code, exception::class.simpleName ?: "ApiException", false, durationMs, safeMessage = exception.message)
+        else -> MetaAgentFailure("INVALID_STRUCTURED_OUTPUT", exception::class.simpleName ?: "Exception", false, durationMs, safeMessage = "구조화 출력 검증 실패")
+    }
+}
+
+internal object WorkflowGraphPlanNormalizer {
+    private val validCondition = Regex("^[A-Za-z][A-Za-z0-9]*=(true|false|[A-Za-z0-9_-]+)$")
+    private val equalityCondition = Regex("^([A-Za-z][A-Za-z0-9]*)\\s*={1,2}\\s*['\"]?([A-Za-z0-9_-]+)['\"]?$")
+    private val expressionField = Regex("([A-Za-z][A-Za-z0-9]*)\\s*(?:==|=|!=|>=|<=|>|<|in\\b)")
+    private val token = Regex("^[A-Za-z0-9_-]+$")
+
+    fun normalize(plan: WorkflowGraphPlan): WorkflowGraphPlan {
         val branchById = plan.nodes.filter { it.nodeType == NodeType.CONDITION_BRANCH.wireName }.associateBy { it.id }
         val edgesWithoutRedundantSelfLoops = plan.edges.filterNot { edge ->
             edge.source == edge.target && plan.edges.any { candidate -> candidate.source == edge.source && candidate.target != edge.source }
@@ -546,19 +671,34 @@ class StructuredMetaAgentPipeline(
         val outgoingCounts = edgesWithoutRedundantSelfLoops.groupingBy { it.source }.eachCount()
         val edges = edgesWithoutRedundantSelfLoops.map { edge ->
             val branch = branchById[edge.source] ?: return@map edge
-            if (edge.condition != "success" || outgoingCounts[edge.source] != 1) return@map edge
             val expression = branch.config["expression"]?.toString().orEmpty()
-            val field = Regex("[A-Za-z][A-Za-z0-9]*").find(expression)?.value ?: return@map edge
-            edge.copy(condition = "$field=true")
+            val typed = parseCondition(edge.condition, expression, outgoingCounts[edge.source] ?: 0)
+            edge.copy(condition = typed?.serialize() ?: edge.condition.trim(), conditionSpec = typed)
         }
-        return plan.copy(edges = edges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge })
+        val nodes = plan.nodes.map { node ->
+            if (node.nodeType !in setOf(NodeType.TEMPLATE_RENDER.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.EMAIL_SEND_MOCK.wireName)) return@map node
+            if (!node.config["rendererKey"]?.toString().isNullOrBlank()) return@map node
+            node.copy(config = node.config + ("rendererKey" to "plain-text.v1"))
+        }
+        return plan.copy(
+            nodes = nodes,
+            edges = edges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge },
+        )
     }
 
-    private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
-    private fun summary(input: Map<String, Any?>) = mapOf("fieldCount" to input.size, "instructionChars" to input["instruction"]?.toString()?.length)
-    private fun failure(exception: Exception, durationMs: Long) = when (exception) {
-        is MetaAgentExecutionException -> MetaAgentFailure(exception.errorCode, exception.errorType, exception.retryable, durationMs, exception.cliExitCode, exception.safeMessage)
-        is ApiException -> MetaAgentFailure(exception.code, exception::class.simpleName ?: "ApiException", false, durationMs, safeMessage = exception.message)
-        else -> MetaAgentFailure("INVALID_STRUCTURED_OUTPUT", exception::class.simpleName ?: "Exception", false, durationMs, safeMessage = "구조화 출력 검증 실패")
+    private fun parseCondition(condition: String, expression: String, outgoingCount: Int): WorkflowCondition? {
+        val trimmed = condition.trim()
+        if (validCondition.matches(trimmed)) return trimmed.split("=", limit = 2).let { WorkflowCondition(it[0], ConditionOperator.EQUALS, it[1]) }
+        equalityCondition.matchEntire(trimmed)?.let { return WorkflowCondition(it.groupValues[1], ConditionOperator.EQUALS, it.groupValues[2]) }
+        val field = expressionField.find(expression)?.groupValues?.get(1)
+            ?: Regex("[A-Za-z][A-Za-z0-9]*").find(expression)?.value
+            ?: return null
+        val value = when (trimmed.lowercase()) {
+            "true", "yes" -> "true"
+            "false", "no" -> "false"
+            "success" -> if (outgoingCount == 1) "true" else return null
+            else -> trimmed.takeIf(token::matches) ?: return null
+        }
+        return WorkflowCondition(field, ConditionOperator.EQUALS, value)
     }
 }

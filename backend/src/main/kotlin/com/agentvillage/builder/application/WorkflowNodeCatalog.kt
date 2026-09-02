@@ -12,6 +12,10 @@ private object FixedOutputRenderer {
     fun render(rendererKey: String, input: Map<String, Any?>): String = when (rendererKey) {
         "slack.market-news.v1" -> input["report"]?.toString() ?: input["result"]?.toString() ?: "시장 뉴스 보고서 생성 결과가 없습니다."
         "article.plain-text.v1", "plain-text.v1" -> input["result"]?.toString() ?: input["draft"]?.toString().orEmpty()
+        "table.markdown.v1" -> {
+            val rows = input["changedRows"] as? List<*> ?: emptyList<Any>()
+            if (rows.isEmpty()) "변경된 행이 없습니다." else rows.joinToString(prefix = "| 변경 내용 |\n|---|\n", separator = "\n") { "| ${it.toString().replace("|", "\\|")} |" }
+        }
         else -> throw BadRequestException("OUTPUT_RENDERER_NOT_ALLOWED", "등록되지 않은 출력 렌더러입니다: $rendererKey")
     }
 }
@@ -37,6 +41,36 @@ private class SimpleNodeContract(
     override fun simulate(config: Map<String, Any?>, input: Map<String, Any?>) = simulator(config, input)
 }
 
+private fun csvRows(value: Any?): List<Map<String, String>> = when (value) {
+    is List<*> -> value.mapNotNull { row ->
+        (row as? Map<*, *>)?.entries?.associate { it.key.toString() to (it.value?.toString() ?: "") }
+    }
+    is String -> {
+        val lines = value.lineSequence().filter(String::isNotBlank).toList()
+        if (lines.isEmpty()) emptyList() else {
+            val header = parseCsvLine(lines.first())
+            lines.drop(1).map { line -> header.zip(parseCsvLine(line) + List(header.size) { "" }).take(header.size).toMap() }
+        }
+    }
+    else -> emptyList()
+}
+
+private fun parseCsvLine(line: String): List<String> {
+    val fields = mutableListOf<String>(); val current = StringBuilder(); var quoted = false; var index = 0
+    while (index < line.length) {
+        val char = line[index]
+        when {
+            char == '"' && quoted && index + 1 < line.length && line[index + 1] == '"' -> { current.append('"'); index++ }
+            char == '"' -> quoted = !quoted
+            char == ',' && !quoted -> { fields += current.toString(); current.clear() }
+            else -> current.append(char)
+        }
+        index++
+    }
+    fields += current.toString()
+    return fields
+}
+
 @Component
 class WorkflowNodeCatalog {
     private val contracts = listOf(
@@ -49,10 +83,41 @@ class WorkflowNodeCatalog {
             )))
         },
         SimpleNodeContract(NodeType.KNOWLEDGE_SEARCH_MOCK, requiredConfig = setOf("source", "queryField", "connectionStatus")) { config, input ->
-            NodeSimulation(input + mapOf("searchResults" to listOf(mapOf("title" to "Mock FAQ", "content" to "검증용 FAQ 검색 결과", "source" to config["source"])), "externalCallPerformed" to false))
+            val supplied = input["mockSearchResults"] as? List<*>
+            val results = supplied ?: listOf(mapOf("title" to "배송 FAQ", "content" to "배송은 주문 후 영업일 기준 2~3일 이내 도착하며 지연 시 담당자가 배송 상태를 확인합니다.", "source" to config["source"]))
+            NodeSimulation(input + mapOf("searchResults" to results, "evidenceFound" to results.isNotEmpty(), "requiresHumanReview" to results.isEmpty(), "externalCallPerformed" to false))
         },
-        SimpleNodeContract(NodeType.DATA_CSV_COMPARE, requiredConfig = setOf("keyColumns", "comparisonMode")) { _, input ->
-            NodeSimulation(input + mapOf("changedRows" to emptyList<Map<String, Any?>>(), "externalCallPerformed" to false))
+        SimpleNodeContract(NodeType.FLIGHT_SEARCH_MOCK, requiredConfig = setOf("source", "connectionStatus", "maximumPrice")) { config, input ->
+            val price = (input["mockFlightPrice"] as? Number)?.toLong() ?: 250_000L
+            val maximumPrice = (config["maximumPrice"] as Number).toLong()
+            NodeSimulation(input + mapOf(
+                "price" to price,
+                "priceWithinBudget" to (price <= maximumPrice),
+                "searchResult" to mapOf("price" to price, "currency" to "KRW", "source" to config["source"]),
+                "externalCallPerformed" to false,
+            ))
+        },
+        SimpleNodeContract(NodeType.GITHUB_ISSUE_MOCK, requiredConfig = setOf("repository", "connectionStatus")) { _, input ->
+            NodeSimulation(input + mapOf("issueTitle" to (input["issueTitle"] ?: "로그인 시 오류가 발생합니다"), "issueBody" to (input["issueBody"] ?: "재현 가능한 오류 내용"), "externalCallPerformed" to false))
+        },
+        SimpleNodeContract(NodeType.PARALLEL_MAP_MOCK, requiredConfig = setOf("items", "operation", "maxConcurrency")) { config, input ->
+            val items = (config["items"] as? List<*>)?.map { it.toString() }.orEmpty()
+            NodeSimulation(input + mapOf("parallelResults" to items.map { mapOf("subject" to it, "result" to "$it 제품 발표·가격 변화 Mock 조사 결과") }, "externalCallPerformed" to false))
+        },
+        SimpleNodeContract(NodeType.UNRESOLVED_TOOL, requiredConfig = setOf("toolName", "connectionStatus", "reason")) { config, input ->
+            NodeSimulation(input + mapOf("requiresUserAction" to true, "unresolvedTool" to config["toolName"], "reason" to config["reason"], "externalCallPerformed" to false))
+        },
+        SimpleNodeContract(NodeType.DATA_CSV_COMPARE, requiredConfig = setOf("keyColumns", "comparisonMode")) { config, input ->
+            val before = csvRows(input["csvA"] ?: input["rowsA"])
+            val after = csvRows(input["csvB"] ?: input["rowsB"])
+            val requestedKeys = (config["keyColumns"] as? List<*>)?.map { it.toString() }.orEmpty()
+            val keyColumns = requestedKeys.filterNot { it == "사용자 지정 키" }.ifEmpty { (before.firstOrNull() ?: after.firstOrNull()).orEmpty().keys.take(1) }
+            val keyOf: (Map<String, String>) -> String = { row -> keyColumns.joinToString("|") { row[it].orEmpty() } }
+            val beforeByKey = before.associateBy(keyOf); val afterByKey = after.associateBy(keyOf)
+            val added = (afterByKey.keys - beforeByKey.keys).sorted().map { mapOf("changeType" to "ADDED", "key" to it, "after" to afterByKey.getValue(it)) }
+            val removed = (beforeByKey.keys - afterByKey.keys).sorted().map { mapOf("changeType" to "REMOVED", "key" to it, "before" to beforeByKey.getValue(it)) }
+            val modified = (beforeByKey.keys intersect afterByKey.keys).sorted().filter { beforeByKey[it] != afterByKey[it] }.map { mapOf("changeType" to "MODIFIED", "key" to it, "before" to beforeByKey.getValue(it), "after" to afterByKey.getValue(it)) }
+            NodeSimulation(input + mapOf("addedRows" to added, "removedRows" to removed, "modifiedRows" to modified, "changedRows" to (added + removed + modified), "externalCallPerformed" to false))
         },
         SimpleNodeContract(NodeType.DATA_DEDUPLICATE, requiredConfig = setOf("key")) { _, input ->
             val items = (input["newsItems"] as? List<*>)?.distinctBy { it.toString() }.orEmpty()
@@ -65,18 +130,28 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.CONDITION_BRANCH, requiredConfig = setOf("expression")) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.AI_CLASSIFY, requiredConfig = setOf("categories")) { config, input -> NodeSimulation(input + ("category" to (config["categories"] as? List<*>)?.firstOrNull().toString())) },
         SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { config, input ->
-            val source = input["notionResult"] ?: input["text"] ?: input["message"] ?: input.values.firstOrNull()?.toString().orEmpty()
-            val generated = "[Mock] ${config["instruction"]}: $source"
-            NodeSimulation(input + mapOf("result" to generated, "draft" to generated))
+            val evidence = (input["searchResults"] as? List<*>)
+                ?.mapNotNull { (it as? Map<*, *>)?.get("content")?.toString() }
+                ?.filter(String::isNotBlank)
+                .orEmpty()
+            val generated = when {
+                evidence.isNotEmpty() -> "FAQ 근거에 따르면 ${evidence.joinToString(" ")}"
+                input["newsItems"] != null -> "주요 AI 뉴스 3개를 한국어로 요약한 샘플 결과입니다. 각 항목의 출처와 핵심 내용을 확인해 주세요."
+                input["parallelResults"] != null -> "세 경쟁사의 제품 발표와 가격 변화를 비교한 샘플 보고서입니다. 조사 근거별 차이를 함께 표시합니다."
+                input["changedRows"] != null -> "결정적 CSV 비교 결과에서 영향이 큰 변경 행을 우선 정리했습니다."
+                input["issueBody"] != null -> "제공된 버그 이슈를 재현하기 위한 사전 조건, 실행 순서, 기대 결과와 실제 결과 초안입니다."
+                else -> "제공된 입력을 출력 스키마에 맞춰 처리한 샘플 결과입니다."
+            }
+            NodeSimulation(input + mapOf("result" to generated, "draft" to generated, "summary" to generated, "report" to generated, "reproductionSteps" to generated))
         },
         SimpleNodeContract(NodeType.HUMAN_APPROVAL, requiredConfig = setOf("approver")) { _, input -> NodeSimulation(input, pauses = true) },
         SimpleNodeContract(NodeType.SLACK_NEW_MESSAGE_MOCK, setOf("slack:messages:read")) { _, input -> NodeSimulation(input + ("message" to (input["message"] ?: ""))) },
-        SimpleNodeContract(NodeType.SLACK_REPLY_MOCK, setOf("slack:messages:write")) { _, input -> NodeSimulation(mapOf("wouldSend" to true, "message" to (input["draft"] ?: input["message"] ?: ""), "externalCallPerformed" to false)) },
-        SimpleNodeContract(NodeType.SLACK_SEND_MOCK, setOf("slack:messages:write"), setOf("channel", "rendererKey")) { config, input -> NodeSimulation(mapOf(
+        SimpleNodeContract(NodeType.SLACK_REPLY_MOCK, setOf("slack:messages:write")) { _, input -> NodeSimulation(input + mapOf("wouldSend" to true, "message" to (input["draft"] ?: input["message"] ?: ""), "externalCallPerformed" to false)) },
+        SimpleNodeContract(NodeType.SLACK_SEND_MOCK, setOf("slack:messages:write"), setOf("channel", "rendererKey")) { config, input -> NodeSimulation(input + mapOf(
             "wouldSend" to true, "channel" to config["channel"],
             "message" to FixedOutputRenderer.render(config["rendererKey"].toString(), input), "externalCallPerformed" to false,
         )) },
-        SimpleNodeContract(NodeType.EMAIL_SEND_MOCK, setOf("email:send"), setOf("recipient", "rendererKey", "connectionStatus")) { config, input -> NodeSimulation(mapOf(
+        SimpleNodeContract(NodeType.EMAIL_SEND_MOCK, setOf("email:send"), setOf("recipient", "rendererKey", "connectionStatus")) { config, input -> NodeSimulation(input + mapOf(
             "wouldSend" to true, "recipient" to config["recipient"], "message" to FixedOutputRenderer.render(config["rendererKey"].toString(), input), "externalCallPerformed" to false,
         )) },
         SimpleNodeContract(NodeType.NOTION_SEARCH_MOCK, setOf("notion:read"), setOf("database")) { _, input -> NodeSimulation(input + ("notionResult" to "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다.")) },
