@@ -3,6 +3,8 @@ package com.agentvillage.builder
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.domain.BuilderRunStatus
+import com.agentvillage.builder.domain.BuilderConversationPurpose
+import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
 import org.assertj.core.api.Assertions.assertThat
@@ -23,12 +25,12 @@ class AgentCompilerUserE2EIntegrationTest : IntegrationTestSupport() {
         val found = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "배송이 늦어지고 있는데 언제 받을 수 있나요?"), key("found"))
         assertThat(found.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
         assertThat(found.requirementMatched).isTrue()
-        assertThat(found.output?.get("draft").toString()).contains("FAQ 근거에 따르면").doesNotContain("[Mock]")
+        assertThat(found.output?.get("draftResponse").toString()).contains("FAQ 근거에 따르면").doesNotContain("[Mock]")
 
         val missing = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "알 수 없는 질문", "mockSearchResults" to emptyList<Any>()), key("missing"))
         assertThat(missing.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
-        assertThat(missing.output?.get("requiresHumanReview")).isEqualTo(true)
-        assertThat(missing.output).doesNotContainKey("draft")
+        assertThat(missing.output?.get("needsAssigneeReview")).isEqualTo(true)
+        assertThat(missing.output).doesNotContainKey("draftResponse")
     }
 
     @Test fun `TC02 and TC03 preserve version one and patch only schedule renderer and delivery`() {
@@ -91,6 +93,19 @@ class AgentCompilerUserE2EIntegrationTest : IntegrationTestSupport() {
         val affordable = service.startSimulation(owner.id, snapshot.workflowId, mapOf("mockFlightPrice" to 190000), key("affordable"))
         assertThat(affordable.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
         assertThat(affordable.steps.last().nodeType).isEqualTo("human.approval")
+    }
+
+    @Test fun `failed develop generation preserves the request and exposes FAILED state before retry`() {
+        val owner = owner("developfailure")
+        val snapshot = service.createConversation(owner.id, key("conversation"), BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        val instruction = "CSV 파일 두 개를 정확히 비교하는 에이전트를 만들어줘"
+
+        service.recordGenerationFailure(owner.id, snapshot.conversationId, instruction, key("failed-message"), "생성 시간 초과")
+
+        val failed = service.snapshot(owner.id, snapshot.conversationId)
+        assertThat(failed.status).isEqualTo(WorkflowStatus.FAILED)
+        assertThat(failed.messages.map { it.content }).anyMatch { it == instruction }
+        assertThat(failed.messages.map { it.content }).anyMatch { it.contains("입력은 보존되었습니다") }
     }
 
     private fun owner(prefix: String) = identities.register(RegisterUserCommand("$prefix-${UUID.randomUUID()}@example.com", "password123", "${prefix}_${UUID.randomUUID().toString().take(8)}", "검증 사용자"))

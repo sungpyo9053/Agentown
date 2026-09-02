@@ -76,7 +76,27 @@ class AgentCompilerUserAcceptanceTest {
         assertThat(github.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("github.issue.mock", "condition.branch").doesNotContain("notion.search.mock")
     }
 
+    @Test fun `develop requests use the same truthful FAQ CSV and unsupported connector contracts`() {
+        val faq = compileForDevelopment("FAQ를 검색해서 고객 문의 답변을 만들고 근거가 없으면 담당자 확인이 필요하다고 알려주는 에이전트")
+        assertThat(faq.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("knowledge.search.mock", "condition.branch", "ai.generate")
+        assertThat(faq.proposal.outputSchema.map { it.name }).contains("draftResponse", "needsAssigneeReview")
+
+        val csv = compileForDevelopment("CSV 파일 두 개를 비교해서 추가 삭제 수정 행을 정확히 알려주는 에이전트")
+        assertThat(csv.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("data.csv.compare").doesNotContain("ai.generate")
+        assertThat(csv.agentDefinitions).isEmpty()
+
+        val unsupported = compileForDevelopment("PeopleMagic에서 휴가 잔여일을 조회하는 에이전트")
+        assertThat(unsupported.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("tool.unresolved").doesNotContain("knowledge.search.mock")
+        assertThat(unsupported.requirement.unresolvedQuestions).isNotEmpty
+    }
+
     private fun compile(instruction: String) = pipeline.generateDesign(
         PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()), instruction,
+    )
+
+    private fun compileForDevelopment(instruction: String) = pipeline.generateDesign(
+        PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+        instruction,
+        StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
     )
 }

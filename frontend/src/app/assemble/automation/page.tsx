@@ -100,7 +100,7 @@ export default function AutomationBuilderPage() {
   }
   useEffect(() => {
     if (generation.data?.status !== "SUCCEEDED") return;
-    api<Snapshot>(`/builder/conversations/${generation.data.conversationId}`).then(next => { store(next); setGenerationJobId(undefined); if (next.graph) setTab("canvas"); });
+    api<Snapshot>(`/builder/conversations/${generation.data.conversationId}`).then(next => { store(next); setGenerationJobId(undefined); setMessage(""); if (next.graph) setTab("canvas"); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [generation.data?.status]);
 
@@ -111,10 +111,22 @@ export default function AutomationBuilderPage() {
       if (!current) current = await api<Snapshot>("/builder/conversations", { method: "POST", headers: { "Idempotency-Key": key("conversation") }, body: "{}" });
       return api<GenerationJob>(`/builder/conversations/${current.conversationId}/messages`, { method: "POST", headers: { "Idempotency-Key": key("message") }, body: JSON.stringify({ content }) });
     },
-    onSuccess: (next) => { setGenerationJobId(next.id); setMessage(""); },
+    onSuccess: (next) => { setGenerationJobId(next.id); },
   });
   const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("design") }, body: JSON.stringify({ approve }) }), onSuccess: (next) => { store(next); if (next.graph) { setSimulationInput(sampleSimulationInput(next.graph)); setTab("canvas"); } } });
-  const patch = useMutation({ mutationFn: (instruction: string) => api<Snapshot>(`/builder/workflows/${snapshot!.workflowId}/patches`, { method: "POST", headers: { "Idempotency-Key": key("patch") }, body: JSON.stringify({ instruction, baseVersionId: snapshot!.currentVersionId, expectedGraphHash: snapshot!.validation!.graphHash }) }), onSuccess: (next) => { store(next); setMessage(""); setTab("canvas"); } });
+  const patch = useMutation({
+    mutationFn: async (instruction: string) => {
+      const latest = await api<Snapshot>(`/builder/conversations/${snapshot!.conversationId}`);
+      if (!latest.currentVersionId || !latest.validation) throw new Error("최신 캔버스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      return api<Snapshot>(`/builder/workflows/${latest.workflowId}/patches`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key("patch") },
+        body: JSON.stringify({ instruction, baseVersionId: latest.currentVersionId, expectedGraphHash: latest.validation.graphHash }),
+      });
+    },
+    onSuccess: (next) => { store(next); setMessage(""); setTab("canvas"); },
+    onError: () => snapshotQuery.refetch(),
+  });
   const simulate = useMutation({ mutationFn: () => api<Run>(`/builder/workflows/${snapshot!.workflowId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("simulation") }, body: JSON.stringify({ input: { message: simulationInput } }) }), onSuccess: (next) => { setRun(next); setTab("simulation"); } });
   const approveRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/builder/simulations/${run!.id}/approval`, { method: "POST", headers: { "Idempotency-Key": key("execution-approval") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
   const activate = useMutation({

@@ -53,7 +53,7 @@ export default function AgentDevelopmentPage() {
   }
   useEffect(() => {
     if (job.data?.status !== "SUCCEEDED") return;
-    api<Snapshot>(`/agent-development/sessions/${job.data.conversationId}`).then(next => { store(next); setJobId(undefined); setPanel("team"); });
+    api<Snapshot>(`/agent-development/sessions/${job.data.conversationId}`).then(next => { store(next); setJobId(undefined); setMessage(""); setPanel("team"); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job.data?.status]);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [snapshot?.messages.length, job.data?.status]);
@@ -65,9 +65,21 @@ export default function AgentDevelopmentPage() {
       if (!current) current = await api<Snapshot>("/agent-development/sessions", { method: "POST", headers: { "Idempotency-Key": key("agent-session") }, body: "{}" });
       return api<Job>(`/agent-development/sessions/${current.conversationId}/messages`, { method: "POST", headers: { "Idempotency-Key": key("agent-message") }, body: JSON.stringify({ content }) });
     },
-    onSuccess: next => { setJobId(next.id); setMessage(""); },
+    onSuccess: next => { setJobId(next.id); },
   });
-  const patch = useMutation({ mutationFn: (content: string) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/patches`, { method: "POST", headers: { "Idempotency-Key": key("agent-patch") }, body: JSON.stringify({ instruction: content, baseVersionId: snapshot!.currentVersionId, expectedGraphHash: snapshot!.validation!.graphHash }) }), onSuccess: next => { store(next); setMessage(""); setPanel("team"); } });
+  const patch = useMutation({
+    mutationFn: async (content: string) => {
+      const latest = await api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}`);
+      if (!latest.currentVersionId || !latest.validation) throw new Error("최신 캔버스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
+      return api<Snapshot>(`/agent-development/sessions/${latest.conversationId}/patches`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key("agent-patch") },
+        body: JSON.stringify({ instruction: content, baseVersionId: latest.currentVersionId, expectedGraphHash: latest.validation.graphHash }),
+      });
+    },
+    onSuccess: next => { store(next); setMessage(""); setPanel("team"); },
+    onError: () => snapshotQuery.refetch(),
+  });
   const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-design") }, body: JSON.stringify({ approve }) }), onSuccess: next => { store(next); if (next.graph) setPanel("graph"); } });
   const updateAgent = useMutation({ mutationFn: ({ agentKey, value }: { agentKey: string; value: Agent }) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/agents/${agentKey}`, { method: "PUT", headers: { "Idempotency-Key": key("agent-config") }, body: JSON.stringify(value) }), onSuccess: next => store(next) });
   const simulate = useMutation({ mutationFn: () => api<Run>(`/agent-development/sessions/${snapshot!.conversationId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("agent-test") }, body: JSON.stringify({ input: { text: testInput || snapshot?.proposal?.agentDesign?.simulationScenarios?.[0]?.input?.text || "샘플 입력" } }) }), onSuccess: next => { setRun(next); setPanel("output"); } });
@@ -156,5 +168,5 @@ function OutputPanel({ snapshot, run, input, setInput, pending, simulate, decide
 }
 function InspectorTab({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: typeof Users; label: string }) { return <button onClick={onClick} className={`flex items-center justify-center gap-1.5 border-b-2 text-xs ${active ? "border-ink bg-white text-ink" : "border-transparent text-mute hover:text-ink"}`}><Icon className="h-3.5 w-3.5" />{label}</button>; }
 function Empty({ icon: Icon, text }: { icon: typeof Users; text: string }) { return <div className="flex h-full min-h-52 flex-col items-center justify-center px-6 text-center text-xs leading-5 text-mute"><Icon className="mb-3 h-7 w-7" />{text}</div>; }
-function koStatus(status: string) { return ({ DRAFT: "새 에이전트", NEEDS_CLARIFICATION: "추가 대화 필요", WAITING_DESIGN_APPROVAL: "설계 검토", READY_TO_SIMULATE: "테스트 준비", ACTIVE: "사용 중", STOPPED: "중지됨" } as Record<string, string>)[status] ?? status; }
+function koStatus(status: string) { return ({ DRAFT: "새 에이전트", FAILED: "생성 실패", NEEDS_CLARIFICATION: "추가 대화 필요", WAITING_DESIGN_APPROVAL: "설계 검토", READY_TO_SIMULATE: "테스트 준비", ACTIVE: "사용 중", STOPPED: "중지됨" } as Record<string, string>)[status] ?? status; }
 function stageLabel(stage: string) { return ({ REQUEST_ACCEPTED: "요청 접수", CODEX_ANALYZING: "역할과 도구 설계", STRUCTURE_VALIDATING: "구조 검증", DESIGN_SAVING: "버전 저장" } as Record<string, string>)[stage] ?? stage; }

@@ -74,7 +74,15 @@ private fun parseCsvLine(line: String): List<String> {
 @Component
 class WorkflowNodeCatalog {
     private val contracts = listOf(
-        SimpleNodeContract(NodeType.MANUAL_TRIGGER) { _, input -> NodeSimulation(input) },
+        SimpleNodeContract(NodeType.MANUAL_TRIGGER) { _, input ->
+            val inquiry = input["customerInquiry"] ?: input["question"] ?: input["message"] ?: input["text"]
+            NodeSimulation(if (inquiry == null) input else input + mapOf(
+                "customerInquiry" to (input["customerInquiry"] ?: inquiry),
+                "question" to (input["question"] ?: inquiry),
+                "message" to (input["message"] ?: inquiry),
+                "text" to (input["text"] ?: inquiry),
+            ))
+        },
         SimpleNodeContract(NodeType.SCHEDULE_TRIGGER, requiredConfig = setOf("cron", "timezone")) { config, input -> NodeSimulation(input + mapOf("scheduledFor" to config["cron"], "timezone" to config["timezone"])) },
         SimpleNodeContract(NodeType.TEXT_INPUT) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query", "lookbackHours")) { config, input ->
@@ -84,8 +92,20 @@ class WorkflowNodeCatalog {
         },
         SimpleNodeContract(NodeType.KNOWLEDGE_SEARCH_MOCK, requiredConfig = setOf("source", "queryField", "connectionStatus")) { config, input ->
             val supplied = input["mockSearchResults"] as? List<*>
-            val results = supplied ?: listOf(mapOf("title" to "배송 FAQ", "content" to "배송은 주문 후 영업일 기준 2~3일 이내 도착하며 지연 시 담당자가 배송 상태를 확인합니다.", "source" to config["source"]))
-            NodeSimulation(input + mapOf("searchResults" to results, "evidenceFound" to results.isNotEmpty(), "requiresHumanReview" to results.isEmpty(), "externalCallPerformed" to false))
+            val candidates = supplied ?: listOf(mapOf("title" to "배송 FAQ", "content" to "배송은 주문 후 영업일 기준 2~3일 이내 도착하며 지연 시 담당자가 배송 상태를 확인합니다.", "source" to config["source"]))
+            val inquiry = (input[config["queryField"]?.toString()] ?: input["customerInquiry"] ?: input["question"] ?: input["message"] ?: input["text"] ?: "").toString()
+            val inquiryTerms = relevantTerms(inquiry)
+            val results = candidates.mapNotNull { it as? Map<*, *> }.filter { result ->
+                val content = listOf(result["title"], result["content"]).joinToString(" ") { it?.toString().orEmpty() }.trim()
+                content.isNotBlank() && inquiryTerms.intersect(relevantTerms(content)).isNotEmpty()
+            }
+            NodeSimulation(input + mapOf(
+                "customerInquiry" to inquiry,
+                "faqResults" to results,
+                "evidenceFound" to results.isNotEmpty(),
+                "needsAssigneeReview" to results.isEmpty(),
+                "externalCallPerformed" to false,
+            ))
         },
         SimpleNodeContract(NodeType.FLIGHT_SEARCH_MOCK, requiredConfig = setOf("source", "connectionStatus", "maximumPrice")) { config, input ->
             val price = (input["mockFlightPrice"] as? Number)?.toLong() ?: 250_000L
@@ -130,7 +150,7 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.CONDITION_BRANCH, requiredConfig = setOf("expression")) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.AI_CLASSIFY, requiredConfig = setOf("categories")) { config, input -> NodeSimulation(input + ("category" to (config["categories"] as? List<*>)?.firstOrNull().toString())) },
         SimpleNodeContract(NodeType.AI_GENERATE, requiredConfig = setOf("instruction")) { config, input ->
-            val evidence = (input["searchResults"] as? List<*>)
+            val evidence = (input["faqResults"] as? List<*>)
                 ?.mapNotNull { (it as? Map<*, *>)?.get("content")?.toString() }
                 ?.filter(String::isNotBlank)
                 .orEmpty()
@@ -142,7 +162,9 @@ class WorkflowNodeCatalog {
                 input["issueBody"] != null -> "제공된 버그 이슈를 재현하기 위한 사전 조건, 실행 순서, 기대 결과와 실제 결과 초안입니다."
                 else -> "제공된 입력을 출력 스키마에 맞춰 처리한 샘플 결과입니다."
             }
-            NodeSimulation(input + mapOf("result" to generated, "draft" to generated, "summary" to generated, "report" to generated, "reproductionSteps" to generated))
+            val outputField = config["outputField"]?.toString()
+            val generatedFields = if (outputField.isNullOrBlank()) mapOf("result" to generated, "draft" to generated, "summary" to generated, "report" to generated, "reproductionSteps" to generated) else mapOf(outputField to generated)
+            NodeSimulation(input + generatedFields + if (outputField == "draftResponse") mapOf("needsAssigneeReview" to false) else emptyMap())
         },
         SimpleNodeContract(NodeType.HUMAN_APPROVAL, requiredConfig = setOf("approver")) { _, input -> NodeSimulation(input, pauses = true) },
         SimpleNodeContract(NodeType.SLACK_NEW_MESSAGE_MOCK, setOf("slack:messages:read")) { _, input -> NodeSimulation(input + ("message" to (input["message"] ?: ""))) },
@@ -161,6 +183,12 @@ class WorkflowNodeCatalog {
     fun require(type: String): WorkflowNodeContract = contracts[type] ?: throw BadRequestException("NODE_TYPE_NOT_ALLOWED", "허용되지 않은 노드입니다: $type")
     fun allowedTypes(): Set<String> = contracts.keys
 }
+
+private fun relevantTerms(value: String): Set<String> = Regex("[가-힣A-Za-z0-9]{2,}")
+    .findAll(value.lowercase())
+    .map { it.value.replace(Regex("(에서|으로|에게|부터|까지|은|는|이|가|을|를|과|와|도|만)$"), "") }
+    .filterNot { it in setOf("언제", "어떻게", "해주세요", "알려주세요", "문의", "faq", "관련", "대한") }
+    .toSet()
 
 @Component
 class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private val mapper: ObjectMapper) {

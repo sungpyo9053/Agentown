@@ -125,6 +125,7 @@ class BuilderService(
         requireIdempotency(idempotencyKey)
         val context = context(ownerId, conversationId)
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 수정하거나 실행할 수 없습니다. 새 자동화를 만들어 주세요.")
+        if (context.workflow.status == WorkflowStatus.FAILED) transition(context.workflow, WorkflowStatus.DRAFT)
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
@@ -142,6 +143,16 @@ class BuilderService(
             throw ConflictException("BUILDER_MESSAGE_NOT_APPLICABLE", "현재 단계에서는 수정 요청이나 승인 작업을 사용해 주세요.")
         }
         return snapshot(ownerId, conversationId)
+    }
+
+    @Transactional
+    fun recordGenerationFailure(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String, message: String) {
+        val context = context(ownerId, conversationId)
+        if (messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey) == null) {
+            messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = context.workflow.currentVersionId, idempotencyKey = idempotencyKey))
+        }
+        context.workflow.status = WorkflowStatus.FAILED
+        messages.save(BuilderMessage(conversationId = conversationId, role = "ASSISTANT", content = "생성에 실패했습니다. 입력은 보존되었습니다. 다시 시도해 주세요: ${message.take(300)}", workflowVersionId = context.workflow.currentVersionId))
     }
 
     private fun analyzeAndDesign(
@@ -529,40 +540,63 @@ class BuilderService(
         if (!approve) { waiting.status = BuilderStepStatus.FAILED; waiting.errorMessage = "사용자가 실행을 거절했습니다."; run.status = BuilderRunStatus.FAILED; workflowContext(ownerId, run.workflowId).workflow.status = WorkflowStatus.SIMULATION_FAILED; return runView(run) }
         waiting.status = BuilderStepStatus.SUCCEEDED; waiting.outputJson = waiting.inputJson + ("approved" to true)
         val graph = graph(versions.findById(run.workflowVersionId).orElseThrow())
-        val next = graph.edges.firstOrNull { it.source == waiting.nodeId }?.target ?: finishRun(context, run, graph, waiting.outputJson.orEmpty())
-        if (next is String) executeFrom(context, run, graph, next, waiting.outputJson.orEmpty())
+        val edge = graph.edges.firstOrNull { it.source == waiting.nodeId }
+        if (edge == null) finishRun(context, run, graph, waiting.outputJson.orEmpty())
+        else executeFrom(context, run, graph, edge.target, bindEdge(waiting.outputJson.orEmpty(), edge))
         return runView(run)
     }
 
     private fun executeFrom(context: OwnedContext, run: BuilderRun, graph: WorkflowGraph, startNodeId: String, initialInput: Map<String, Any?>) {
+        val agents = storedDesign(context.conversation.id).agents.associateBy { it.key }
         var nodeId: String? = startNodeId; var value = initialInput; var sequence = stepRuns.findAllByRunIdOrderBySequenceNo(run.id).size
         while (nodeId != null) {
             val node = graph.nodes.first { it.id == nodeId }; val contract = catalog.require(node.nodeType)
             contract.validateInput(value).takeIf { it.isNotEmpty() }?.let { throw BadRequestException("INVALID_NODE_INPUT", it.joinToString()) }
+            val agent = node.config["agentKey"]?.toString()?.let(agents::get)
+            agent?.let { validateFields(it.inputSchema, value, "${node.label} 입력") }
+                ?.let { throw BadRequestException("INVALID_NODE_INPUT", it) }
             val step = stepRuns.save(BuilderStepRun(runId = run.id, nodeId = node.id, nodeType = node.nodeType, sequenceNo = ++sequence, status = BuilderStepStatus.RUNNING, inputJson = mask(value)))
             run.currentNodeId = node.id
-            val result = contract.simulate(node.config, value)
+            val simulated = contract.simulate(node.config, value)
+            val result = if (agent != null && node.nodeType == NodeType.AI_GENERATE.wireName) {
+                simulated.copy(output = materializeAgentOutput(simulated.output, agent))
+            } else simulated
             if (result.pauses) {
                 step.status = BuilderStepStatus.WAITING_APPROVAL; run.status = BuilderRunStatus.WAITING_APPROVAL
                 approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = run.workflowId, runId = run.id, approvalType = ApprovalType.EXECUTION, idempotencyKey = "run:${run.id}:node:${node.id}"))
                 return
             }
+            agent?.let { validateFields(it.outputSchema, projectOutput(result.output, it.outputSchema), "${node.label} 출력") }
+                ?.let { throw BadRequestException("INVALID_NODE_OUTPUT", it) }
             step.status = BuilderStepStatus.SUCCEEDED; step.outputJson = mask(result.output); value = result.output
             val outgoing = graph.edges.filter { it.source == node.id }
-            val next = nextNode(graph, node, value)
+            val edge = nextEdge(graph, node, value)
             if (node.nodeType == NodeType.CONDITION_BRANCH.wireName && outgoing.isNotEmpty()) {
-                value = value + ("branchMatched" to (next != null))
+                value = value + ("branchMatched" to (edge != null))
                 step.outputJson = mask(value)
             }
-            nodeId = next
+            nodeId = edge?.target
+            if (edge != null) value = bindEdge(value, edge)
         }
         finishRun(context, run, graph, value)
     }
 
-    private fun nextNode(graph: WorkflowGraph, node: WorkflowNode, output: Map<String, Any?>): String? {
+    private fun nextEdge(graph: WorkflowGraph, node: WorkflowNode, output: Map<String, Any?>): WorkflowEdge? {
         val outgoing = graph.edges.filter { it.source == node.id }
-        if (node.nodeType != NodeType.CONDITION_BRANCH.wireName) return outgoing.firstOrNull()?.target
-        return outgoing.firstOrNull { edge -> branchMatches(edge.condition, output) }?.target
+        if (node.nodeType != NodeType.CONDITION_BRANCH.wireName) return outgoing.firstOrNull()
+        return outgoing.firstOrNull { edge -> branchMatches(edge.condition, output) }
+    }
+
+    private fun bindEdge(output: Map<String, Any?>, edge: WorkflowEdge): Map<String, Any?> {
+        val bound = output.toMutableMap()
+        edge.bindings.forEach { (target, source) ->
+            when {
+                source == "context" -> bound[target] = output
+                output.containsKey(source) -> bound[target] = output[source]
+                else -> throw BadRequestException("INVALID_EDGE_BINDING", "${edge.id}의 '$source' 출력이 없어 '$target' 입력을 만들 수 없습니다.")
+            }
+        }
+        return bound
     }
 
     private fun branchMatches(condition: String, output: Map<String, Any?>): Boolean {
@@ -572,13 +606,56 @@ class BuilderService(
     }
 
     private fun finishRun(context: OwnedContext, run: BuilderRun, graph: WorkflowGraph, output: Map<String, Any?>): String? {
-        val issue = simulationOutcomeIssue(graph, output)
+        val design = storedDesign(context.conversation.id)
+        val projected = projectOutput(output, design.proposal.outputSchema)
+        val issue = simulationOutcomeIssue(graph, output) ?: validateFields(design.proposal.outputSchema, projected, "최종 출력")
         run.currentNodeId = null
-        run.outputJson = mask(if (issue == null) output else output + ("validationError" to issue))
+        val safetyMetadata = output["externalCallPerformed"]?.let { mapOf("externalCallPerformed" to it) }.orEmpty()
+        run.outputJson = mask(if (issue == null) projected + safetyMetadata else projected + safetyMetadata + ("validationError" to issue))
         run.requirementMatched = issue == null
         run.status = if (issue == null) BuilderRunStatus.SUCCEEDED else BuilderRunStatus.FAILED
         context.workflow.status = if (issue == null) WorkflowStatus.READY_TO_ACTIVATE else WorkflowStatus.SIMULATION_FAILED
         pipeline.record(context.pipeline(), "review_simulation", output.size, if (issue == null) 1 else 0)
+        return null
+    }
+
+    private fun projectOutput(output: Map<String, Any?>, fields: List<FieldDefinition>): Map<String, Any?> =
+        if (fields.isEmpty()) output else fields.mapNotNull { field -> output[field.name]?.let { field.name to it } }.toMap()
+
+    private fun materializeAgentOutput(output: Map<String, Any?>, agent: AgentDefinition): Map<String, Any?> {
+        val generatedText = listOf("draftResponse", "draft", "result", "summary", "report", "reproductionSteps")
+            .firstNotNullOfOrNull { output[it] as? String }
+            ?: "제공된 근거와 입력을 선언된 출력 계약에 맞춰 처리한 검증용 결과입니다."
+        val completed = output.toMutableMap()
+        agent.outputSchema.forEach { field ->
+            if (!completed.containsKey(field.name)) {
+                completed[field.name] = when (field.type.lowercase()) {
+                    "string" -> generatedText
+                    "array" -> emptyList<Any>()
+                    "object" -> emptyMap<String, Any?>()
+                    "boolean" -> false
+                    "number", "integer" -> 0
+                    else -> generatedText
+                }
+            }
+        }
+        return completed
+    }
+
+    private fun validateFields(fields: List<FieldDefinition>, value: Map<String, Any?>, label: String): String? {
+        fields.filter { it.required && !value.containsKey(it.name) }.firstOrNull()?.let { return "$label 필수 필드 '${it.name}'이 없습니다." }
+        fields.forEach { field ->
+            val actual = value[field.name] ?: return@forEach
+            val valid = when (field.type.lowercase()) {
+                "string" -> actual is String
+                "array" -> actual is List<*>
+                "object" -> actual is Map<*, *>
+                "boolean" -> actual is Boolean
+                "number", "integer" -> actual is Number
+                else -> true
+            }
+            if (!valid) return "$label 필드 '${field.name}'의 타입이 ${field.type}이 아닙니다."
+        }
         return null
     }
 
@@ -587,12 +664,12 @@ class BuilderService(
         if (graph.nodes.any { it.nodeType == NodeType.CONDITION_BRANCH.wireName } && output.keys.none { it in setOf("evidenceFound", "category", "priceWithinBudget", "qualityPassed") }) {
             return "조건 분기 결과가 최종 출력에 남지 않았습니다."
         }
-        if (graph.nodes.any { it.nodeType == NodeType.KNOWLEDGE_SEARCH_MOCK.wireName } && output["evidenceFound"] == false && output["requiresHumanReview"] != true) {
+        if (graph.nodes.any { it.nodeType == NodeType.KNOWLEDGE_SEARCH_MOCK.wireName } && output["evidenceFound"] == false && output["needsAssigneeReview"] != true) {
             return "검색 근거가 없지만 담당자 확인 필요 상태가 없습니다."
         }
         val generationExpected = output["evidenceFound"] != false && (output["category"] == null || output["category"].toString().equals("BUG", true))
         if (generationExpected && graph.nodes.any { it.nodeType == NodeType.AI_GENERATE.wireName }) {
-            val generated = listOf("draft", "result", "report", "summary", "reproductionSteps").mapNotNull { output[it]?.toString() }.firstOrNull(String::isNotBlank)
+            val generated = listOf("draftResponse", "draft", "result", "report", "summary", "reproductionSteps").mapNotNull { output[it]?.toString() }.firstOrNull(String::isNotBlank)
                 ?: return "AI 단계가 유효한 업무 결과를 생성하지 않았습니다."
             if (generated.trim().startsWith("[Mock]")) return "Mock AI가 구조화 결과 대신 지침 또는 입력을 되풀이했습니다."
         }

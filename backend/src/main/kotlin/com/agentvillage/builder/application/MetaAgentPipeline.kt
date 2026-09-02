@@ -294,13 +294,14 @@ class StructuredMetaAgentPipeline(
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
-        val standardized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalized else when {
+        val standardized = when {
             deterministicCsv -> compileCsvComparison(normalized, instruction)
             genericFaqDraft -> compileFaqDraft(normalized, instruction)
             competitorResearch -> compileCompetitorResearch(normalized, instruction)
             githubIssueClassification -> compileGithubIssueClassification(normalized, instruction)
             unresolvedPeopleMagic -> compileUnresolvedPeopleMagic(normalized, instruction)
             unsafeFlightPurchase -> compileSafeFlightPurchase(normalized, instruction)
+            mode == DesignMode.AGENT_DEVELOPMENT -> normalized
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
             (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
@@ -320,7 +321,7 @@ class StructuredMetaAgentPipeline(
                 estimatedAiCallsPerRun = aiCalls,
                 separationRationale = if (contractNormalized.agentDefinitions.size <= 1) listOf("판단 작업을 한 번의 구조화 AI 호출로 통합") else listOf("서로 독립적인 판단 계약이 필요함"),
             ),
-            outputSchema = contractNormalized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty(),
+            outputSchema = contractNormalized.proposal.outputSchema.ifEmpty { contractNormalized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty() },
             executionContract = contractNormalized.proposal.executionContract ?: TemplateExecutionContract(
                 contentSchemaVersion = "1.0",
                 rendererKey = "plain-text",
@@ -352,9 +353,12 @@ class StructuredMetaAgentPipeline(
                 name = "CSV 변경 행 비교", summary = "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.", capabilities = nodes.map { it.label }, integrations = emptyList(), approvalPoints = emptyList(),
                 failurePolicy = "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
                 graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) ->
-                    WorkflowEdgePlan("edge-${index + 1}", from.id, to.id, bindings = listOf(WorkflowFieldBinding(if (index == 0) "files" else "changedRows", if (index == 0) "files" else "changedRows")))
+                    WorkflowEdgePlan("edge-${index + 1}", from.id, to.id, bindings = defaultBindings())
                 }),
-                outputSchema = listOf(FieldDefinition("changedRows", "array", true, "추가·수정·삭제된 행 목록")),
+                outputSchema = listOf(
+                    FieldDefinition("changedRows", "array", true, "추가·수정·삭제된 행 목록"),
+                    FieldDefinition("rendered", "string", true, "변경 행 Markdown 표"),
+                ),
             ),
             agentDefinitions = emptyList(),
             guideDefinitions = listOf(GuideDefinition("csv-input", "CSV 비교 설정", "두 파일의 키 열과 인코딩을 설정합니다.", listOf(GuideField("keyColumns", "키 열", "text", true, false, "행을 식별할 하나 이상의 열")))),
@@ -364,15 +368,15 @@ class StructuredMetaAgentPipeline(
     private fun compileFaqDraft(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
         val agent = AgentDefinition(
             "answer-writer", "근거 기반 답변 작성자", "검색된 FAQ 근거만 사용해 고객 답변 초안을 작성한다.",
-            listOf(FieldDefinition("question", "string", true, "고객 문의"), FieldDefinition("searchResults", "array", true, "FAQ 검색 결과")),
-            listOf(FieldDefinition("draft", "string", true, "근거 기반 답변 초안")),
+            listOf(FieldDefinition("customerInquiry", "string", true, "고객 문의"), FieldDefinition("faqResults", "array", true, "FAQ 검색 결과")),
+            listOf(FieldDefinition("draftResponse", "string", false, "근거 기반 답변 초안"), FieldDefinition("needsAssigneeReview", "boolean", true, "담당자 확인 필요 여부")),
             listOf("질문 의도를 보존한다", "검색 결과를 근거로 답한다"), listOf("근거가 없으면 내용을 만들지 않는다", "외부로 전송하지 않는다"), listOf("사용한 FAQ 항목"),
         )
         val nodes = listOf(
             WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "고객 문의 입력"),
-            WorkflowNodePlan("faq-search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 FAQ", "queryField" to "question", "connectionStatus" to "UNRESOLVED")),
+            WorkflowNodePlan("faq-search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 FAQ", "queryField" to "customerInquiry", "connectionStatus" to "UNRESOLVED")),
             WorkflowNodePlan("evidence-check", NodeType.CONDITION_BRANCH.wireName, "FAQ 근거 존재 여부", mapOf("expression" to "evidenceFound == true")),
-            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 한국어 답변 초안 작성", "agentKey" to agent.key)),
+            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 한국어 답변 초안 작성", "agentKey" to agent.key, "outputField" to "draftResponse")),
             WorkflowNodePlan("human-review-required", NodeType.WORKFLOW_END.wireName, "담당자 확인 필요"),
             WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
         )
@@ -383,12 +387,13 @@ class StructuredMetaAgentPipeline(
                 name = "FAQ 기반 고객 답변 초안", summary = "FAQ를 검색하고 근거가 있는 답변 초안만 만듭니다.", capabilities = nodes.map { it.label }, integrations = listOf("FAQ Mock · 연결 필요"), approvalPoints = emptyList(),
                 failurePolicy = "근거가 없으면 답변을 만들지 않고 담당자 확인 필요 상태를 반환",
                 graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(
-                    WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("question", "question"))),
-                    WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("evidenceFound", "evidenceFound"), WorkflowFieldBinding("searchResults", "searchResults"))),
-                    WorkflowEdgePlan("edge-3", nodes[2].id, nodes[3].id, condition = "evidenceFound=true", bindings = listOf(WorkflowFieldBinding("searchResults", "searchResults"))),
-                    WorkflowEdgePlan("edge-4", nodes[2].id, nodes[4].id, condition = "evidenceFound=false", bindings = listOf(WorkflowFieldBinding("evidenceFound", "requiresHumanReview"))),
-                    WorkflowEdgePlan("edge-5", nodes[3].id, nodes[5].id, bindings = listOf(WorkflowFieldBinding("draft", "draft"))),
+                    WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("customerInquiry", "customerInquiry"))),
+                    WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("evidenceFound", "evidenceFound"), WorkflowFieldBinding("faqResults", "faqResults"), WorkflowFieldBinding("needsAssigneeReview", "needsAssigneeReview"))),
+                    WorkflowEdgePlan("edge-3", nodes[2].id, nodes[3].id, condition = "evidenceFound=true", bindings = listOf(WorkflowFieldBinding("faqResults", "faqResults"), WorkflowFieldBinding("needsAssigneeReview", "needsAssigneeReview"))),
+                    WorkflowEdgePlan("edge-4", nodes[2].id, nodes[4].id, condition = "evidenceFound=false", bindings = listOf(WorkflowFieldBinding("needsAssigneeReview", "needsAssigneeReview"))),
+                    WorkflowEdgePlan("edge-5", nodes[3].id, nodes[5].id, bindings = listOf(WorkflowFieldBinding("draftResponse", "draftResponse"), WorkflowFieldBinding("needsAssigneeReview", "needsAssigneeReview"))),
                 )),
+                outputSchema = agent.outputSchema,
             ),
             agentDefinitions = listOf(agent),
             guideDefinitions = listOf(GuideDefinition("faq-source", "FAQ 자료 연결", "실제 실행 전에 FAQ 검색 소스를 연결합니다.", listOf(GuideField("source", "FAQ 소스", "text", true, false, "검색할 FAQ 저장소")))),

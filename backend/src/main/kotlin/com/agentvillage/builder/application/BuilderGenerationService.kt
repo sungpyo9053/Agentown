@@ -124,6 +124,7 @@ class BuilderGenerationWorker(
             else {
                 val job = progressJob(event.jobId)
                 usageLimiter.releaseFailedClaim(event.ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
+                builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
                 progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
             }
         }

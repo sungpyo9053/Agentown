@@ -182,12 +182,51 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
     private fun pythonMockRunner() = """
         #!/usr/bin/env python3
         "Fixed Agentown mock runner. It never performs network or arbitrary-code execution."
-        import argparse, json
+        import argparse, csv, io, json, re
         from pathlib import Path
+
+        def fail(reason, steps=None):
+            print(json.dumps({"status": "FAILED", "reason": reason, "externalCallPerformed": False, "steps": steps or []}, ensure_ascii=False, indent=2))
+            raise SystemExit(2)
+
+        def valid_type(value, expected):
+            return {"string": isinstance(value, str), "array": isinstance(value, list), "object": isinstance(value, dict), "boolean": isinstance(value, bool), "number": isinstance(value, (int, float)) and not isinstance(value, bool), "integer": isinstance(value, int) and not isinstance(value, bool)}.get(expected, True)
+
+        def validate_fields(fields, value, label):
+            for field in fields:
+                name = field["name"]
+                if field.get("required") and name not in value: fail(f"{label}: required field {name} is missing", steps)
+                if name in value and not valid_type(value[name], field.get("type", "string")): fail(f"{label}: field {name} has invalid type", steps)
+
+        def validate_schema(schema, value, label):
+            for name in schema.get("required", []):
+                if name not in value: fail(f"{label}: required field {name} is missing", steps)
+            properties = schema.get("properties", {})
+            if schema.get("additionalProperties") is False and any(name not in properties for name in value): fail(f"{label}: undeclared field is present", steps)
+            for name, item in properties.items():
+                if name in value and not valid_type(value[name], item.get("type", "string")): fail(f"{label}: field {name} has invalid type", steps)
+
+        def complete_agent_output(agent, data):
+            generated = next((data.get(name) for name in ("draftResponse", "draft", "result", "summary", "report", "reproductionSteps") if isinstance(data.get(name), str)), "제공된 근거와 입력을 선언된 출력 계약에 맞춰 처리한 검증용 결과입니다.")
+            defaults = {"string": generated, "array": [], "object": {}, "boolean": False, "number": 0, "integer": 0}
+            for field in agent.get("outputSchema", []):
+                data.setdefault(field["name"], defaults.get(field.get("type", "string"), generated))
+
+        def terms(value):
+            stop = {"언제", "어떻게", "해주세요", "알려주세요", "문의", "faq", "관련", "대한"}
+            return {re.sub(r"(에서|으로|에게|부터|까지|은|는|이|가|을|를|과|와|도|만)$", "", item) for item in re.findall(r"[가-힣A-Za-z0-9]{2,}", str(value).lower()) if item not in stop}
+
+        def csv_rows(value):
+            if isinstance(value, list): return [row for row in value if isinstance(row, dict)]
+            if isinstance(value, str) and value.strip(): return list(csv.DictReader(io.StringIO(value)))
+            return []
 
         SAFE = {"manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "flight.search.mock", "github.issue.mock", "parallel.map.mock", "tool.unresolved", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock"}
         root = Path(__file__).resolve().parents[2]
         graph = json.loads((root / "workflow.json").read_text())
+        design = json.loads((root / "design-bundle.json").read_text())
+        agents = {agent["key"]: agent for agent in design.get("agentDefinitions", [])}
+        final_schema = json.loads((root / "schemas/final-output.schema.json").read_text())
         data = json.loads((root / "examples/sample-input.json").read_text())
         args = argparse.ArgumentParser()
         args.add_argument("--approve", action="store_true")
@@ -206,10 +245,19 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             config = node.get("config", {})
             if kind not in SAFE:
                 raise SystemExit(f"unsupported node: {kind}")
-            if kind == "notion.search.mock": data["notionResult"] = "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다."
+            agent = agents.get(str(config.get("agentKey", "")))
+            if agent: validate_fields(agent.get("inputSchema", []), data, f"node {node['id']} input")
+            if kind == "manual.trigger":
+                inquiry = data.get("customerInquiry", data.get("question", data.get("message", data.get("text"))))
+                if inquiry is not None:
+                    for alias in ("customerInquiry", "question", "message", "text"): data.setdefault(alias, inquiry)
+            elif kind == "notion.search.mock": data["notionResult"] = "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다."
             elif kind == "knowledge.search.mock":
-                results = data.get("mockSearchResults", [{"title": "배송 FAQ", "content": "배송은 주문 후 영업일 기준 2~3일 이내 도착합니다."}])
-                data.update({"searchResults": results, "evidenceFound": bool(results), "requiresHumanReview": not bool(results)})
+                inquiry = data.get(config.get("queryField"), data.get("customerInquiry", data.get("question", data.get("message", data.get("text", "")))))
+                candidates = data.get("mockSearchResults", [{"title": "배송 FAQ", "content": "배송은 주문 후 영업일 기준 2~3일 이내 도착합니다."}])
+                inquiry_terms = terms(inquiry)
+                results = [item for item in candidates if isinstance(item, dict) and str(item.get("content", "")).strip() and inquiry_terms.intersection(terms(str(item.get("title", "")) + " " + str(item.get("content", ""))))]
+                data.update({"customerInquiry": inquiry, "faqResults": results, "evidenceFound": bool(results), "needsAssigneeReview": not bool(results), "externalCallPerformed": False})
             elif kind == "flight.search.mock":
                 price = int(data.get("mockFlightPrice", 250000)); maximum = int(config.get("maximumPrice", 200000))
                 data.update({"price": price, "priceWithinBudget": price <= maximum, "searchResult": {"price": price, "currency": "KRW"}, "externalCallPerformed": False})
@@ -217,24 +265,39 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             elif kind == "parallel.map.mock": data["parallelResults"] = [{"subject": item, "result": "Mock research"} for item in config.get("items", [])]
             elif kind == "tool.unresolved": data.update({"requiresUserAction": True, "unresolvedTool": config.get("toolName"), "externalCallPerformed": False})
             elif kind == "data.csv.compare":
-                before = {str(row.get("id", i)): row for i, row in enumerate(data.get("rowsA", []))}
-                after = {str(row.get("id", i)): row for i, row in enumerate(data.get("rowsB", []))}
+                before_rows = csv_rows(data.get("csvA", data.get("rowsA", [])))
+                after_rows = csv_rows(data.get("csvB", data.get("rowsB", [])))
+                requested_keys = [key for key in config.get("keyColumns", []) if key != "사용자 지정 키"]
+                key_columns = requested_keys or list((before_rows[0] if before_rows else after_rows[0] if after_rows else {}).keys())[:1]
+                key_of = lambda row, i: "|".join(str(row.get(key, "")) for key in key_columns) if key_columns else str(i)
+                before = {key_of(row, i): row for i, row in enumerate(before_rows)}
+                after = {key_of(row, i): row for i, row in enumerate(after_rows)}
                 added = [{"changeType": "ADDED", "key": key, "after": after[key]} for key in sorted(after.keys() - before.keys())]
                 removed = [{"changeType": "REMOVED", "key": key, "before": before[key]} for key in sorted(before.keys() - after.keys())]
                 modified = [{"changeType": "MODIFIED", "key": key, "before": before[key], "after": after[key]} for key in sorted(before.keys() & after.keys()) if before[key] != after[key]]
                 data.update({"addedRows": added, "removedRows": removed, "modifiedRows": modified, "changedRows": added + removed + modified, "externalCallPerformed": False})
+            elif kind == "data.normalize":
+                data["normalizedText"] = str(data.get("message", data.get("text", ""))).strip()
             elif kind == "news.search.mock": data["newsItems"] = [{"title": "Mock AI news", "url": "https://example.com/mock"}]
             elif kind == "ai.generate":
-                evidence = " ".join(item.get("content", "") for item in data.get("searchResults", []))
+                evidence = " ".join(item.get("content", "") for item in data.get("faqResults", []))
                 result = ("FAQ 근거에 따르면 " + evidence) if evidence else "제공된 입력을 출력 스키마에 맞춰 처리한 샘플 결과입니다."
-                data.update({"draft": result, "result": result, "summary": result, "report": result})
-            elif kind == "quality.check": data["qualityPassed"] = True
+                output_field = config.get("outputField")
+                if output_field:
+                    data[output_field] = result
+                    if output_field == "draftResponse": data["needsAssigneeReview"] = False
+                else:
+                    data.update({"draft": result, "result": result, "summary": result, "report": result, "reproductionSteps": result})
+                if agent: complete_agent_output(agent, data)
+            elif kind == "quality.check": data["qualityPassed"] = any(str(value).strip() for value in data.values())
+            elif kind == "template.render": data["rendered"] = str(data.get("report", data.get("result", data.get("draft", data.get("draftResponse", json.dumps(data.get("changedRows", []), ensure_ascii=False))))))
             elif kind == "human.approval" and not approved:
                 steps.append({"node": node["id"], "status": "WAITING_APPROVAL", "output": data})
                 print(json.dumps({"status": "WAITING_APPROVAL", "externalCallPerformed": False, "steps": steps}, ensure_ascii=False, indent=2))
                 raise SystemExit(0)
-            elif kind.startswith("slack.") and ("reply" in kind or "send" in kind): data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
-            elif kind == "email.send.mock": data = {"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False}
+            elif kind.startswith("slack.") and ("reply" in kind or "send" in kind): data.update({"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False})
+            elif kind == "email.send.mock": data.update({"wouldSend": True, "message": data.get("draft", data.get("rendered", "")), "externalCallPerformed": False})
+            if agent: validate_fields(agent.get("outputSchema", []), data, f"node {node['id']} output")
             steps.append({"node": node["id"], "status": "SUCCEEDED", "output": data})
             edges = outgoing.get(node_id, [])
             if kind == "condition.branch":
@@ -245,10 +308,21 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
                 if len(matched) != 1:
                     print(json.dumps({"status": "FAILED", "reason": "condition branch did not match exactly one edge", "externalCallPerformed": False, "steps": steps}, ensure_ascii=False, indent=2))
                     raise SystemExit(2)
-                node_id = matched[0]["target"]
+                selected = matched[0]
+                node_id = selected["target"]
             else:
-                node_id = edges[0]["target"] if edges else None
-        print(json.dumps({"status": "SUCCEEDED", "externalCallPerformed": False, "output": data, "steps": steps}, ensure_ascii=False, indent=2))
+                selected = edges[0] if edges else None
+                node_id = selected["target"] if selected else None
+            if selected:
+                for binding in selected.get("bindings", []):
+                    source = binding.get("sourceField")
+                    target = binding.get("targetField")
+                    if source == "context": continue
+                    if source not in data: fail(f"edge {selected.get('id')} binding source {source} is missing", steps)
+                    data[target] = data[source]
+        final_output = {name: data[name] for name in final_schema.get("properties", {}) if name in data}
+        validate_schema(final_schema, final_output, "final output schema")
+        print(json.dumps({"status": "SUCCEEDED", "externalCallPerformed": False, "output": final_output, "steps": steps}, ensure_ascii=False, indent=2))
     """.trimIndent() + "\n"
 
     private fun yaml(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
