@@ -4,7 +4,7 @@ import com.agentvillage.builder.domain.*
 
 /** Builds the user-facing, runtime-neutral Agent Package contract from trusted domain data. */
 class AgentDesignAssembler {
-    fun assemble(bundle: MetaAgentDesignBundle): AgentDesign {
+    fun assemble(bundle: MetaAgentDesignBundle, agentDevelopment: Boolean = false): AgentDesign {
         val resources = requireNotNull(bundle.proposal.resourcePlan)
         val workflow = compose(requireNotNull(bundle.proposal.graphPlan))
         val issues = review(bundle, resources, workflow)
@@ -26,15 +26,26 @@ class AgentDesignAssembler {
                 beforeNodeIds = bundle.proposal.graphPlan.nodes.filter { it.nodeType.startsWith("slack.") && it.nodeType.endsWith("mock") }.map { it.id },
                 reason = bundle.proposal.approvalPoints.joinToString(", "),
             ),
-            retryPolicy = RetryPolicy(maxAttempts = 1, retryableErrors = listOf("MOCK_CONNECTOR_TEMPORARY_FAILURE")),
+            retryPolicy = RetryPolicy(
+                maxAttempts = 1,
+                retryableErrors = if (agentDevelopment) emptyList() else listOf("MOCK_CONNECTOR_TEMPORARY_FAILURE"),
+            ),
             assumptions = bundle.requirement.assumptions,
             unresolvedQuestions = bundle.requirement.unresolvedQuestions,
             review = review,
-            simulationScenarios = listOf(SimulationScenario(
-                name = "기본 Mock 시나리오",
-                input = mapOf("text" to "샘플 입력", "message" to "환불은 언제 처리되나요?"),
-                expectedStages = bundle.proposal.graphPlan.nodes.map { it.label },
-            )),
+            simulationScenarios = listOf(if (agentDevelopment) {
+                SimulationScenario(
+                    name = "요구사항 기반 검증 시나리오",
+                    input = mapOf("text" to bundle.requirement.objective),
+                    expectedStages = bundle.proposal.graphPlan.nodes.map { it.label },
+                )
+            } else {
+                SimulationScenario(
+                    name = "기본 Mock 시나리오",
+                    input = mapOf("text" to "샘플 입력", "message" to "환불은 언제 처리되나요?"),
+                    expectedStages = bundle.proposal.graphPlan.nodes.map { it.label },
+                )
+            }),
             executionReadiness = executionReadiness,
         )
     }

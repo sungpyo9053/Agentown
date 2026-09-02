@@ -45,6 +45,7 @@ interface BuilderGenerationJobRepository : JpaRepository<BuilderGenerationJob, U
 }
 interface BuilderUsageRecordRepository : JpaRepository<BuilderUsageRecord, UUID> {
     fun findByOwnerIdAndIdempotencyKey(ownerId: UUID, idempotencyKey: String): BuilderUsageRecord?
+    fun countByOwnerIdAndConversationId(ownerId: UUID, conversationId: UUID): Long
 }
 interface BuilderAutomationTeamRepository : JpaRepository<BuilderAutomationTeam, UUID> {
     fun findByWorkflowVersionId(workflowVersionId: UUID): BuilderAutomationTeam?

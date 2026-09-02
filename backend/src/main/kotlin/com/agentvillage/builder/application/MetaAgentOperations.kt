@@ -66,6 +66,7 @@ class BuilderUsageLimiter(
     private val records: BuilderUsageRecordRepository,
     private val users: UserDirectory,
     @Value("\${builder.meta-agent.unlimited-owner-ids:}") unlimitedOwnerIds: String,
+    @Value("\${builder.meta-agent.max-revisions-per-conversation:2}") private val maxRevisionsPerConversation: Int = 2,
 ) {
     private val unlimited: Set<UUID> = unlimitedOwnerIds.split(',')
         .map { value: String -> value.trim() }
@@ -77,7 +78,10 @@ class BuilderUsageLimiter(
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(context: PipelineContext, idempotencyKey: String) {
-        records.findByOwnerIdAndIdempotencyKey(context.ownerId, idempotencyKey)?.let { return }
+        records.findByOwnerIdAndIdempotencyKey(context.ownerId, idempotencyKey)?.let {
+            requireSameUsageOperation(it, context)
+            return
+        }
         try {
             records.saveAndFlush(BuilderUsageRecord(
                 ownerId = context.ownerId,
@@ -92,8 +96,41 @@ class BuilderUsageLimiter(
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    fun releaseFailedClaim(ownerId: UUID, idempotencyKey: String) {
-        records.findByOwnerIdAndIdempotencyKey(ownerId, idempotencyKey)?.let(records::delete)
+    fun claimRevision(context: PipelineContext, idempotencyKey: String) {
+        records.findByOwnerIdAndIdempotencyKey(context.ownerId, idempotencyKey)?.let {
+            requireSameUsageOperation(it, context)
+            return
+        }
+        if (isUnlimited(context.ownerId)) {
+            records.saveAndFlush(BuilderUsageRecord(ownerId = context.ownerId, conversationId = context.conversationId, workflowId = context.workflowId, limitSlot = null, idempotencyKey = idempotencyKey))
+            return
+        }
+        val used = (records.countByOwnerIdAndConversationId(context.ownerId, context.conversationId) - 1).coerceAtLeast(0)
+        if (used >= maxRevisionsPerConversation) throw ConflictException("BUILDER_CODEX_REVISION_LIMIT_REACHED", "에이전트 설계 수정 횟수를 모두 사용했습니다.")
+        try {
+            records.saveAndFlush(BuilderUsageRecord(
+                ownerId = context.ownerId,
+                conversationId = context.conversationId,
+                workflowId = context.workflowId,
+                limitSlot = "R-${context.conversationId.toString().take(8)}-${used + 1}",
+                idempotencyKey = idempotencyKey,
+            ))
+        } catch (_: DataIntegrityViolationException) {
+            throw ConflictException("BUILDER_CODEX_REVISION_LIMIT_REACHED", "에이전트 설계 수정 횟수를 모두 사용했습니다.")
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun releaseFailedClaim(ownerId: UUID, conversationId: UUID, workflowId: UUID, idempotencyKey: String) {
+        records.findByOwnerIdAndIdempotencyKey(ownerId, idempotencyKey)
+            ?.takeIf { it.conversationId == conversationId && it.workflowId == workflowId }
+            ?.let(records::delete)
+    }
+
+    private fun requireSameUsageOperation(record: BuilderUsageRecord, context: PipelineContext) {
+        if (record.conversationId != context.conversationId || record.workflowId != context.workflowId) {
+            throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 대화 또는 제품 흐름에서 사용한 Idempotency-Key입니다.")
+        }
     }
 }
 

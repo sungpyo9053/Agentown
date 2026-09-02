@@ -5,10 +5,13 @@ import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.agent.application.AgentService
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.BuilderConversationPurpose
+import com.agentvillage.builder.domain.BuilderGenerationJob
 import com.agentvillage.builder.domain.AgentDesignStatus
 import com.agentvillage.builder.domain.DesignNodeKind
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
+import com.agentvillage.builder.infrastructure.BuilderGenerationJobRepository
+import com.agentvillage.builder.infrastructure.BuilderWorkflowRepository
 import com.agentvillage.builder.infrastructure.BuilderRunRepository
 import com.agentvillage.builder.infrastructure.BuilderWorkflowVersionRepository
 import com.agentvillage.builder.infrastructure.HarnessTemplateRepository
@@ -19,15 +22,28 @@ import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
+import com.agentvillage.identity.infrastructure.AuthenticatedUser
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.http.MediaType
 import java.util.UUID
 
+@AutoConfigureMockMvc
 class BuilderMvpIntegrationTest : IntegrationTestSupport() {
+    @Autowired lateinit var mvc: MockMvc
     @Autowired lateinit var service: BuilderService
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var requirements: BuilderRequirementRepository
@@ -36,6 +52,49 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var builderRuns: BuilderRunRepository
     @Autowired lateinit var outputTemplates: HarnessTemplateRepository
     @Autowired lateinit var outputTemplateVersions: HarnessTemplateVersionRepository
+    @Autowired lateinit var generationJobs: BuilderGenerationJobRepository
+    @Autowired lateinit var workflows: BuilderWorkflowRepository
+    @Autowired lateinit var mapper: ObjectMapper
+
+    @Test
+    fun `cross purpose idempotency keys are rejected through both HTTP controller families`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("purpose-http-$suffix@example.com", "password123", "purpose_http_$suffix", "흐름 격리 검증"))
+        val principal = AuthenticatedUser(owner.id, owner.email, "unused", true)
+
+        mvc.perform(post("/api/builder/conversations").with(user(principal)).with(csrf()).header("Idempotency-Key", "session-auto-$suffix"))
+            .andExpect(status().isOk)
+        mvc.perform(post("/api/agent-development/sessions").with(user(principal)).with(csrf()).header("Idempotency-Key", "session-auto-$suffix"))
+            .andExpect(status().isConflict)
+        mvc.perform(post("/api/agent-development/sessions").with(user(principal)).with(csrf()).header("Idempotency-Key", "session-agent-$suffix"))
+            .andExpect(status().isOk)
+        mvc.perform(post("/api/builder/conversations").with(user(principal)).with(csrf()).header("Idempotency-Key", "session-agent-$suffix"))
+            .andExpect(status().isConflict)
+
+        var automation = service.createConversation(owner.id, "message-auto-conversation-$suffix")
+        var agent = service.createConversation(owner.id, "message-agent-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        generationJobs.save(BuilderGenerationJob(workspaceId = automation.workspaceId, conversationId = automation.conversationId, workflowId = automation.workflowId, instruction = "자동화", idempotencyKey = "message-auto-$suffix"))
+        mvc.perform(post("/api/agent-development/sessions/{id}/messages", agent.conversationId).with(user(principal)).with(csrf())
+            .header("Idempotency-Key", "message-auto-$suffix").contentType(MediaType.APPLICATION_JSON)
+            .content("""{"content":"계약서를 검토하는 에이전트"}"""))
+            .andExpect(status().isConflict)
+        generationJobs.save(BuilderGenerationJob(workspaceId = agent.workspaceId, conversationId = agent.conversationId, workflowId = agent.workflowId, instruction = "에이전트", idempotencyKey = "message-agent-$suffix"))
+        mvc.perform(post("/api/builder/conversations/{id}/messages", automation.conversationId).with(user(principal)).with(csrf())
+            .header("Idempotency-Key", "message-agent-$suffix").contentType(MediaType.APPLICATION_JSON)
+            .content("""{"content":"수동 입력을 화면에 정리하는 자동화"}"""))
+            .andExpect(status().isConflict)
+
+        workflows.findById(automation.workflowId).orElseThrow().also { it.status = WorkflowStatus.WAITING_DESIGN_APPROVAL; workflows.save(it) }
+        workflows.findById(agent.workflowId).orElseThrow().also { it.status = WorkflowStatus.WAITING_DESIGN_APPROVAL; workflows.save(it) }
+        service.decideDesign(owner.id, automation.workflowId, false, "decision-auto-$suffix")
+        mvc.perform(post("/api/agent-development/sessions/{id}/design-decision", agent.conversationId).with(user(principal)).with(csrf())
+            .header("Idempotency-Key", "decision-auto-$suffix").contentType(MediaType.APPLICATION_JSON).content("""{"approve":false}"""))
+            .andExpect(status().isConflict)
+        service.decideDesign(owner.id, agent.workflowId, false, "decision-agent-$suffix")
+        mvc.perform(post("/api/builder/workflows/{id}/design-decision", automation.workflowId).with(user(principal)).with(csrf())
+            .header("Idempotency-Key", "decision-agent-$suffix").contentType(MediaType.APPLICATION_JSON).content("""{"approve":false}"""))
+            .andExpect(status().isConflict)
+    }
 
     @Test
     fun `agent development sessions stay separate and use chat defaults instead of automation questions`() {
@@ -48,10 +107,61 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(service.listConversations(owner.id, BuilderConversationPurpose.AGENT_DEVELOPMENT).map { it.conversationId }).containsExactly(agent.conversationId)
         assertThatThrownBy { service.requireConversationPurpose(owner.id, automation.conversationId, BuilderConversationPurpose.AGENT_DEVELOPMENT) }
             .isInstanceOf(NotFoundException::class.java)
+        assertThatThrownBy { service.createConversation(owner.id, "automation-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT) }
+            .isInstanceOf(ConflictException::class.java)
+
+        val principal = AuthenticatedUser(owner.id, owner.email, "unused", true)
+        mvc.perform(get("/api/builder/conversations/{id}", agent.conversationId).with(user(principal))).andExpect(status().isNotFound)
+        mvc.perform(get("/api/agent-development/sessions/{id}", automation.conversationId).with(user(principal))).andExpect(status().isNotFound)
+        mvc.perform(get("/api/builder/workflows/{id}/graph", agent.workflowId).with(user(principal))).andExpect(status().isNotFound)
+
+        val automationJob = generationJobs.save(BuilderGenerationJob(workspaceId = automation.workspaceId, conversationId = automation.conversationId, workflowId = automation.workflowId, instruction = "자동화", idempotencyKey = "automation-job-$suffix"))
+        val agentJob = generationJobs.save(BuilderGenerationJob(workspaceId = agent.workspaceId, conversationId = agent.conversationId, workflowId = agent.workflowId, instruction = "에이전트", idempotencyKey = "agent-job-$suffix"))
+        mvc.perform(get("/api/builder/generation-jobs/{id}", agentJob.id).with(user(principal))).andExpect(status().isNotFound)
+        mvc.perform(get("/api/agent-development/jobs/{id}", automationJob.id).with(user(principal))).andExpect(status().isNotFound)
 
         agent = service.sendMessage(owner.id, agent.conversationId, "날씨를 분석해 옷차림을 추천하는 에이전트를 만들어줘.", "agent-message-$suffix")
         assertThat(agent.clarificationQuestions.map { it.field }).doesNotContain("inbound", "knowledgeSource", "approvalPolicy", "destination")
         assertThat(agent.messages.last { it.role == "USER" }.content).isEqualTo("날씨를 분석해 옷차림을 추천하는 에이전트를 만들어줘.")
+
+        agent = service.decideDesign(owner.id, agent.workflowId, false, "agent-reject-$suffix")
+        assertThat(agent.status).isEqualTo(WorkflowStatus.DRAFT)
+        agent = service.sendMessage(owner.id, agent.conversationId, "추천 이유에 체감온도와 강수 확률을 반드시 포함해줘.", "agent-revise-$suffix")
+        assertThat(agent.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(agent.messages.last { it.role == "USER" }.content).contains("체감온도", "강수 확률")
+
+        agent = service.decideDesign(owner.id, agent.workflowId, true, "agent-approve-$suffix")
+        val definition = agent.agentDefinitions.first()
+        val updateBody = mapper.writeValueAsString(mapOf(
+            "name" to "체감 날씨 코치", "role" to definition.role,
+            "behaviorRules" to definition.behaviorRules, "forbiddenRules" to definition.forbiddenRules,
+            "evidenceRequirements" to definition.evidenceRequirements, "toolKeys" to definition.toolKeys,
+            "skillKeys" to definition.skillKeys, "memoryScope" to "NONE",
+        ))
+        val updated = mvc.perform(put("/api/agent-development/sessions/{id}/agents/{key}", agent.conversationId, definition.key)
+            .with(user(principal)).with(csrf()).header("Idempotency-Key", "agent-config-$suffix")
+            .contentType(MediaType.APPLICATION_JSON).content(updateBody))
+            .andExpect(status().isOk).andReturn().response.getContentAsString(Charsets.UTF_8)
+        assertThat(updated).contains("체감 날씨 코치", "NONE", "속성 수정")
+
+        mvc.perform(put("/api/agent-development/sessions/{id}/agents/{key}", agent.conversationId, definition.key)
+            .with(user(principal)).with(csrf()).header("Idempotency-Key", "agent-memory-$suffix")
+            .contentType(MediaType.APPLICATION_JSON).content(updateBody.replace("\"NONE\"", "\"CONVERSATION\"")))
+            .andExpect(status().isBadRequest)
+
+        mvc.perform(post("/api/agent-development/sessions/{id}/simulations", agent.conversationId)
+            .with(user(principal)).with(csrf()).header("Idempotency-Key", "agent-simulation-$suffix")
+            .contentType(MediaType.APPLICATION_JSON).content("""{"input":{"text":"서울 12도, 비 올 확률 70%"}}"""))
+            .andExpect(status().isOk)
+
+        val latest = service.snapshot(owner.id, agent.conversationId)
+        val previousVersion = latest.versions.last().id
+        val restoredJson = mvc.perform(post("/api/agent-development/sessions/{id}/versions/{versionId}/restore", agent.conversationId, previousVersion)
+            .with(user(principal)).with(csrf()).header("Idempotency-Key", "agent-restore-$suffix"))
+            .andExpect(status().isOk).andReturn().response.getContentAsString(Charsets.UTF_8)
+        val restoredAgent = mapper.readTree(restoredJson)["agentDefinitions"].first()
+        assertThat(restoredAgent["name"].asText()).isEqualTo(definition.name)
+        assertThat(restoredAgent["memoryScope"].asText()).isEqualTo(definition.memoryScope)
     }
 
     @Test

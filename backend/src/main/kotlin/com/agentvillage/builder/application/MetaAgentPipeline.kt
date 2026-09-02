@@ -187,6 +187,7 @@ class StructuredMetaAgentPipeline(
     private val audit: MetaAgentAuditService,
     private val progress: BuilderJobProgressService,
 ) {
+    enum class DesignMode { AUTOMATION, AGENT_DEVELOPMENT }
     private val capabilityResolver = BuilderCapabilityResolver()
     private val designAssembler = AgentDesignAssembler()
     fun preflight(context: PipelineContext) = model.preflight(context)
@@ -198,8 +199,8 @@ class StructuredMetaAgentPipeline(
         "design_guides",
     )
 
-    fun generateDesign(context: PipelineContext, instruction: String): MetaAgentDesignBundle {
-        val input = mapOf("instruction" to instruction)
+    fun generateDesign(context: PipelineContext, instruction: String, mode: DesignMode = DesignMode.AUTOMATION): MetaAgentDesignBundle {
+        val input = mapOf("instruction" to instruction, "designMode" to mode.name)
         val startedAt = System.nanoTime()
         designStages.forEach { stage ->
             audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
@@ -209,7 +210,7 @@ class StructuredMetaAgentPipeline(
             val raw = model.generate(context, "builder_design_bundle", input)
             progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
             val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
-            val bundle = normalize(transport.toDomain(mapper), instruction)
+            val bundle = normalize(transport.toDomain(mapper), instruction, mode)
             BuilderMvpSupportPolicy.requireSupported(instruction, bundle)
             validate(bundle)
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
@@ -247,7 +248,7 @@ class StructuredMetaAgentPipeline(
         if (plan.nodes.isEmpty() || plan.nodes.map { it.id }.distinct().size != plan.nodes.size || plan.edges.map { it.id }.distinct().size != plan.edges.size) invalid()
     }
 
-    private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+    private fun normalize(bundle: MetaAgentDesignBundle, instruction: String, mode: DesignMode): MetaAgentDesignBundle {
         val instructionLower = instruction.lowercase()
         val deterministicCsv = instructionLower.contains("csv") && instructionLower.contains("비교") && listOf("변경", "차이", "행").any(instructionLower::contains)
         val genericFaqDraft = instructionLower.contains("faq") && listOf("답변", "초안").any(instructionLower::contains) &&
@@ -264,7 +265,7 @@ class StructuredMetaAgentPipeline(
         val wordFormatOnly = Regex("(워드|word)(로|문서|파일)?(?:\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(instruction)
         val specificFileDestination = listOf("onedrive", "원드라이브", "sharepoint", "셰어포인트", "google drive", "구글 드라이브", "이메일", "다운로드", "폴더")
             .any(instruction.lowercase()::contains)
-        val questions = buildList {
+        val questions = if (mode == DesignMode.AGENT_DEVELOPMENT) emptyList() else buildList {
             val hasDirectInput = listOf("수동", "입력", "붙여", "제공", "업로드", "원문", "텍스트")
                 .any(instruction.lowercase()::contains)
             val hasInbound = scheduled || hasDirectInput || deterministicCsv || genericFaqDraft || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
@@ -286,7 +287,7 @@ class StructuredMetaAgentPipeline(
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
-        val standardized = when {
+        val standardized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalized else when {
             deterministicCsv -> compileCsvComparison(normalized, instruction)
             genericFaqDraft -> compileFaqDraft(normalized, instruction)
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
@@ -320,7 +321,9 @@ class StructuredMetaAgentPipeline(
             ),
         ))
         val resolved = completed.copy(proposal = completed.proposal.copy(resourcePlan = capabilityResolver.resolve(completed)))
-        return resolved.copy(proposal = resolved.proposal.copy(agentDesign = designAssembler.assemble(resolved)))
+        return resolved.copy(proposal = resolved.proposal.copy(
+            agentDesign = designAssembler.assemble(resolved, agentDevelopment = mode == DesignMode.AGENT_DEVELOPMENT),
+        ))
     }
 
     private fun compileCsvComparison(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {

@@ -75,6 +75,7 @@ class BuilderWorkflowVersion(
     @Column(name = "template_version_id") val templateVersionId: UUID?,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "execution_contract_json", nullable = false, columnDefinition = "jsonb") val executionContractJson: Map<String, Any?>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "graph_json", nullable = false, columnDefinition = "jsonb") val graphJson: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "design_snapshot_json", nullable = false, columnDefinition = "jsonb") val designSnapshotJson: Map<String, Any?> = emptyMap(),
     @Column(name = "graph_hash", nullable = false, length = 64) val graphHash: String,
     @Column(name = "change_summary", nullable = false, length = 500) val changeSummary: String,
     @Column(nullable = false) var approved: Boolean = false,
