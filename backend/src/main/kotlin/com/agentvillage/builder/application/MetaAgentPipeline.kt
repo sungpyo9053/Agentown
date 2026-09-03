@@ -250,7 +250,8 @@ class StructuredMetaAgentPipeline(
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String, mode: DesignMode): MetaAgentDesignBundle {
         val instructionLower = instruction.lowercase()
-        val deterministicCsv = instructionLower.contains("csv") && instructionLower.contains("비교") && listOf("변경", "차이", "행").any(instructionLower::contains)
+        val deterministicCsv = instructionLower.contains("csv") &&
+            listOf("비교", "diff", "달라진", "차이", "변경", "added", "removed", "modified").any(instructionLower::contains)
         val competitorResearch = instructionLower.contains("경쟁사") &&
             listOf("세 곳", "3곳", "각각", "합쳐", "병렬").any(instructionLower::contains) &&
             listOf("조사", "제품 발표", "가격 변화").any(instructionLower::contains)
@@ -258,8 +259,9 @@ class StructuredMetaAgentPipeline(
         val unresolvedPeopleMagic = instructionLower.contains("peoplemagic")
         val unsafeFlightPurchase = instructionLower.contains("항공권") && listOf("결제", "구매").any(instructionLower::contains)
         val fullySpecifiedDesign = competitorResearch || githubIssueClassification || unresolvedPeopleMagic || unsafeFlightPurchase
-        val genericFaqDraft = instructionLower.contains("faq") && listOf("답변", "초안").any(instructionLower::contains) &&
-            listOf("slack", "슬랙", "notion", "노션", "전송", "보내").none(instructionLower::contains)
+        val genericFaqDraft = listOf("faq", "도움말", "지원 문서").any(instructionLower::contains) &&
+            listOf("답변", "응답", "초안", "상담원", "담당자", "답하고", "답해").any(instructionLower::contains) &&
+            listOf("slack", "슬랙", "notion", "노션", "외부 전송").none(instructionLower::contains)
         val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "보고서", "article", "content", "writing", "report")
             .any(instruction.lowercase()::contains)
         val scheduled = Regex("\\d{1,2}시").containsMatchIn(instruction) ||
@@ -301,10 +303,10 @@ class StructuredMetaAgentPipeline(
             githubIssueClassification -> compileGithubIssueClassification(normalized, instruction)
             unresolvedPeopleMagic -> compileUnresolvedPeopleMagic(normalized, instruction)
             unsafeFlightPurchase -> compileSafeFlightPurchase(normalized, instruction)
-            mode == DesignMode.AGENT_DEVELOPMENT -> normalized
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
             (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
+            mode == DesignMode.AGENT_DEVELOPMENT -> normalized
             else -> normalized
         }
         val contractNormalized = standardized.copy(proposal = standardized.proposal.copy(graphPlan = standardized.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))

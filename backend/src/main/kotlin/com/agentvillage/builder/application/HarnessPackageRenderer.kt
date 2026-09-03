@@ -82,17 +82,27 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
 
     private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any?> {
         val nodeTypes = bundle.proposal.graphPlan?.nodes.orEmpty().map { it.nodeType }.toSet()
-        return when {
-            "data.csv.compare" in nodeTypes -> linkedMapOf(
+        val sample: LinkedHashMap<String, Any?> = when {
+            "data.csv.compare" in nodeTypes -> linkedMapOf<String, Any?>(
                 "csvA" to "id,name\n1,old\n2,remove\n",
                 "csvB" to "id,name\n1,new\n3,add\n",
             )
-            "knowledge.search.mock" in nodeTypes -> linkedMapOf(
+            "knowledge.search.mock" in nodeTypes -> linkedMapOf<String, Any?>(
                 "customerInquiry" to "사내 복지포인트는 언제 지급되나요?",
                 "mockSearchResults" to emptyList<Any>(),
             )
-            else -> linkedMapOf("text" to "검증할 샘플 입력", "message" to "검증할 샘플 입력")
+            else -> linkedMapOf<String, Any?>("text" to "검증할 샘플 입력", "message" to "검증할 샘플 입력")
         }
+        bundle.agentDefinitions.flatMap { it.inputSchema }.filter { it.required }.forEach { field ->
+            sample.putIfAbsent(field.name, when (field.type.lowercase()) {
+                "array" -> emptyList<Any>()
+                "object" -> emptyMap<String, Any>()
+                "boolean" -> false
+                "number", "integer" -> 1
+                else -> "검증할 샘플 입력"
+            })
+        }
+        return sample
     }
 
     private fun agentYaml(bundle: MetaAgentDesignBundle) = buildString {
@@ -296,6 +306,13 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             elif kind == "data.normalize":
                 data["normalizedText"] = str(data.get("message", data.get("text", ""))).strip()
             elif kind == "news.search.mock": data["newsItems"] = [{"title": "Mock AI news", "url": "https://example.com/mock"}]
+            elif kind == "ai.classify":
+                categories = config.get("categories", ["OTHER"])
+                category = str(data.get("mockCategory", categories[0] if categories else "OTHER"))
+                data["category"] = category
+                if agent:
+                    for field in agent.get("outputSchema", []):
+                        if field.get("type", "string") == "string": data.setdefault(field["name"], category)
             elif kind == "ai.generate":
                 evidence = " ".join(item.get("content", "") for item in data.get("faqResults", []))
                 result = ("FAQ 근거에 따르면 " + evidence) if evidence else "제공된 입력을 출력 스키마에 맞춰 처리한 샘플 결과입니다."
