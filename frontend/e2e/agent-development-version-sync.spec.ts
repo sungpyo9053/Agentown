@@ -73,3 +73,59 @@ test("deterministic agent design without AI team members can be approved", async
   await page.getByRole("button", { name: "설계 승인" }).click();
   await expect.poll(() => decisionBody).toEqual({ approve: true });
 });
+
+test("develop CSV test sends structured sample input without exposing compiler instructions", async ({ page }) => {
+  let simulationBody: Record<string, unknown> | undefined;
+  const snapshot = {
+    conversationId: "csv-conversation",
+    workflowId: "csv-workflow",
+    status: "READY_TO_SIMULATE",
+    proposal: {
+      name: "CSV 변경 행 비교",
+      summary: "두 CSV를 비교합니다.",
+      capabilities: [],
+      resourcePlan: { bindings: [], uncoveredCapabilities: [], simulationReady: true, productionReady: true },
+      agentDesign: {
+        naturalLanguageSummary: "CSV 비교",
+        assumptions: [],
+        simulationScenarios: [{ name: "검증", input: { text: "다음 요청은 업무 자동화 배치가 아니라 내부 컴파일 지시문" }, expectedStages: [] }],
+        review: { passed: true, issues: [] },
+      },
+    },
+    agentDefinitions: [],
+    graph: {
+      nodes: [
+        { id: "manual", nodeType: "manual.trigger", label: "입력", position: { x: 0, y: 0 }, config: {} },
+        { id: "compare", nodeType: "data.csv.compare", label: "비교", position: { x: 200, y: 0 }, config: {} },
+      ],
+      edges: [{ id: "edge", source: "manual", target: "compare" }],
+    },
+    currentVersionId: "csv-version-1",
+    validation: { valid: true, graphHash: "hash" },
+    messages: [],
+    versions: [{ id: "csv-version-1", versionNo: 1, graphHash: "hash", changeSummary: "최초", approved: true, createdAt: "2026-09-04T00:00:00Z" }],
+  };
+  await page.addInitScript(() => localStorage.setItem("agentown.agent-development.session.v1", "csv-conversation"));
+  await page.route("**/api/**", async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+    if (path === "/api/auth/me") return json({ displayName: "검증 사용자", role: "USER" });
+    if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
+    if (path === "/api/agent-development/sessions") return json([]);
+    if (path === "/api/agent-development/sessions/csv-conversation" && request.method() === "GET") return json(snapshot);
+    if (path === "/api/agent-development/sessions/csv-conversation/simulations") {
+      simulationBody = request.postDataJSON();
+      return json({ id: "run", status: "SUCCEEDED", output: {}, steps: [] });
+    }
+    return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto("/develop");
+  await page.getByRole("button", { name: "테스트" }).click();
+  const input = page.getByLabel("테스트 입력");
+  await expect(input).toHaveAttribute("placeholder", /csvA/);
+  await expect(input).not.toHaveAttribute("placeholder", /업무 자동화 배치가 아니라/);
+  await page.getByRole("button", { name: "테스트 실행" }).click();
+  await expect.poll(() => simulationBody).toEqual({ input: { csvA: "id,name\n1,old\n2,remove\n", csvB: "id,name\n1,new\n3,add\n" } });
+});

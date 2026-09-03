@@ -175,14 +175,14 @@ class BuilderService(
         val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
         val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
         generationDrafts.start(pipelineContext, instruction, mode)
-        var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode)
+        var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, userInstruction = instruction)
         generationDrafts.checkpoint(context.conversation.id, bundle)
         bundle = generationDrafts.reloadBundle(context.conversation.id)
         if (bundle.clarificationQuestions.isEmpty()) {
             val firstValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
             if (!firstValidation.valid) {
                 generationDrafts.validationFailed(context.conversation.id, firstValidation.issues)
-                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, firstValidation.issues, bundle)
+                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, firstValidation.issues, bundle, userInstruction = instruction)
                 generationDrafts.checkpoint(context.conversation.id, bundle)
                 bundle = generationDrafts.reloadBundle(context.conversation.id)
                 val repairedValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)

@@ -90,6 +90,21 @@ class AgentCompilerUserAcceptanceTest {
         assertThat(unsupported.requirement.unresolvedQuestions).isNotEmpty
     }
 
+    @Test fun `develop wrapper is model context only and never becomes runtime sample input`() {
+        val request = "두 개의 CSV 파일을 ID 기준으로 비교해서 추가·삭제·수정된 행을 표로 만들어주는 에이전트"
+        val bundle = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            agentDevelopmentPrompt(request),
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+            userInstruction = request,
+        )
+
+        assertThat(bundle.requirement.objective).isEqualTo(request)
+        assertThat(bundle.proposal.agentDesign!!.simulationScenarios.single().input.values.joinToString(" "))
+            .contains(request)
+            .doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
+    }
+
     private fun compile(instruction: String) = pipeline.generateDesign(
         PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()), instruction,
     )

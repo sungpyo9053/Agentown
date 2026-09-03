@@ -205,6 +205,7 @@ class StructuredMetaAgentPipeline(
         mode: DesignMode = DesignMode.AUTOMATION,
         validationFeedback: List<ValidationIssue> = emptyList(),
         previousBundle: MetaAgentDesignBundle? = null,
+        userInstruction: String? = null,
     ): MetaAgentDesignBundle {
         val input = buildMap<String, Any?> {
             put("instruction", instruction)
@@ -224,8 +225,9 @@ class StructuredMetaAgentPipeline(
             val raw = model.generate(context, "builder_design_bundle", input)
             progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
             val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
-            val bundle = normalize(transport.toDomain(mapper), instruction, mode)
-            BuilderMvpSupportPolicy.requireSupported(instruction, bundle)
+            val semanticInstruction = userInstruction ?: instruction
+            val bundle = normalize(transport.toDomain(mapper), semanticInstruction, mode)
+            BuilderMvpSupportPolicy.requireSupported(semanticInstruction, bundle)
             validate(bundle)
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
             val counts = listOf(1, bundle.clarificationQuestions.size, 1, bundle.agentDefinitions.size, bundle.guideDefinitions.size)

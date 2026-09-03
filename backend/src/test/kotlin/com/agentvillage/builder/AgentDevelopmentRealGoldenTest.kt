@@ -29,7 +29,12 @@ class AgentDevelopmentRealGoldenTest {
         val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
         val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
         val request = "업로드한 계약서에서 위험 조항을 찾고 조항별 근거와 수정 제안을 설명하는 AI 에이전트를 만들어줘."
-        val bundle = pipeline.generateDesign(context(), agentDevelopmentPrompt(request), StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT)
+        val bundle = pipeline.generateDesign(
+            context(),
+            agentDevelopmentPrompt(request),
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+            userInstruction = request,
+        )
 
         assertThat(bundle.clarificationQuestions).isEmpty()
         assertThat(bundle.agentDefinitions).isNotEmpty
@@ -41,6 +46,7 @@ class AgentDevelopmentRealGoldenTest {
         assertThat(bundle.agentDefinitions.joinToString(" ") { "${it.name} ${it.role}" }).containsAnyOf("계약", "조항", "위험")
         val design = requireNotNull(bundle.proposal.agentDesign)
         assertThat(design.simulationScenarios.single().input.values.joinToString(" ")).containsAnyOf("계약", "조항", "위험")
+        assertThat(design.simulationScenarios.single().input.values.joinToString(" ")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
         assertThat(design.retryPolicy.retryableErrors).isEmpty()
         assertThat(bundle.proposal.integrations).allMatch { it.contains("없음") }
         val completeOutput = mapper.writeValueAsString(mapOf(
