@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
+    "start:e2e:mocked": "set -eu; stage() { printf '[playwright:webserver] stage=%s status=%s\\n' \"$1\" \"$2\" >&2; }; stage build starting; API_INTERNAL_URL=http://127.0.0.1:8180 npm run build; stage build complete; stage standalone-preparation starting; test -f .next/standalone/server.js; mkdir -p .next/standalone/public .next/standalone/.next/static; cp -R public/. .next/standalone/public/; cp -R .next/static/. .next/standalone/.next/static/; stage standalone-preparation complete; stage process-launch starting; stage url-readiness waiting; exec env API_INTERNAL_URL=http://127.0.0.1:8180 HOSTNAME=127.0.0.1 PORT=3100 node .next/standalone/server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test"

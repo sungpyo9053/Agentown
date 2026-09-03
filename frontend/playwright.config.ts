@@ -6,10 +6,12 @@ const localBaseUrl = "http://127.0.0.1:3100";
 const localBackendUrl = "http://127.0.0.1:8180";
 
 const frontendServer = {
-  command: "API_INTERNAL_URL=http://127.0.0.1:8180 npm run build && mkdir -p .next/standalone/.next && cp -R public .next/standalone/ && cp -R .next/static .next/standalone/.next/ && exec env API_INTERNAL_URL=http://127.0.0.1:8180 HOSTNAME=127.0.0.1 PORT=3100 node .next/standalone/server.js",
+  command: "npm run start:e2e:mocked",
   url: localBaseUrl,
   reuseExistingServer: false,
-  timeout: 180_000,
+  timeout: 300_000,
+  stdout: "pipe" as const,
+  stderr: "pipe" as const,
 };
 
 const fullStackServers = [
