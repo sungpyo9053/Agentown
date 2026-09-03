@@ -4,6 +4,7 @@ import com.agentvillage.builder.application.BuilderWorkspaceAccess
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.common.exception.NotFoundException
+import com.agentvillage.common.exception.ServiceUnavailableException
 import com.agentvillage.common.exception.UnauthorizedException
 import com.agentvillage.connector.notion.infrastructure.*
 import com.agentvillage.connector.notion.domain.*
@@ -13,8 +14,13 @@ import com.agentvillage.connector.slack.infrastructure.ConnectorOauthStateReposi
 import com.agentvillage.llmcredential.application.EncryptedSecret
 import com.agentvillage.llmcredential.application.SecretEncryptor
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatusCode
 import org.springframework.stereotype.Service
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionTemplate
+import org.springframework.web.client.HttpClientErrorException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -25,6 +31,12 @@ import java.time.Instant
 import java.util.Base64
 import java.util.UUID
 
+private const val NOTION_CONNECTION_EXPIRED_CODE = "NOTION_CONNECTION_EXPIRED"
+private const val NOTION_CONNECTION_EXPIRED_MESSAGE = "Notion 연결이 만료되었습니다. 업무 연결에서 다시 연결한 뒤 재시도해 주세요."
+private const val NOTION_PAGE_CREATE_AMBIGUOUS_CODE = "NOTION_PAGE_CREATE_AMBIGUOUS"
+private const val NOTION_PAGE_CREATE_AMBIGUOUS_MESSAGE =
+    "Notion 발행 결과를 확인하지 못했습니다. 중복 페이지 생성을 막기 위해 이 실행은 재시도할 수 없습니다. 대상 Notion 페이지에서 생성 여부를 확인해 주세요."
+
 data class NotionConnectionView(val id: UUID, val workspaceId: String, val workspaceName: String, val status: ConnectorStatus, val lastVerifiedAt: Instant?, val connectedAt: Instant)
 data class NotionConnectorStatus(val configured: Boolean, val connected: Boolean, val connections: List<NotionConnectionView>)
 data class NotionOauthStart(val authorizationUrl: String, val expiresAt: Instant)
@@ -33,6 +45,19 @@ data class NotionPagePreviewRequest(val parentPageId: String = "", val title: St
 data class NotionPageWriteView(
     val id: UUID, val connectionId: UUID, val parentPageId: String, val title: String, val paragraphs: List<String>,
     val status: NotionPageWriteStatus, val notionPageId: String?, val notionUrl: String?, val failureCode: String?, val failureMessage: String?,
+)
+private data class NotionPagePublishClaim(
+    val view: NotionPageWriteView,
+    val dispatch: Boolean,
+    val connectionId: UUID? = null,
+    val parentPageId: String? = null,
+    val title: String? = null,
+    val paragraphs: List<String> = emptyList(),
+)
+private data class NotionDispatchOutcome(
+    val status: NotionPageWriteStatus,
+    val page: NotionCreatedPage? = null,
+    val error: Exception? = null,
 )
 
 @Service
@@ -44,12 +69,17 @@ class NotionConnectorService(
     private val pageWrites: NotionPageWriteRepository,
     private val encryptor: SecretEncryptor,
     private val clock: Clock,
+    transactionManager: PlatformTransactionManager,
     @Value("\${connectors.notion.enabled:false}") private val enabled: Boolean,
     @Value("\${connectors.notion.client-id:}") private val clientId: String,
     @Value("\${connectors.notion.client-secret:}") private val clientSecret: String,
     @Value("\${connectors.notion.redirect-uri:http://localhost:8080/api/connectors/notion/oauth/callback}") private val redirectUri: String,
 ) {
     private val random = SecureRandom()
+    private val transactions = TransactionTemplate(transactionManager)
+    private val invalidationTransactions = TransactionTemplate(transactionManager).apply {
+        propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+    }
 
     @Transactional
     fun start(ownerId: UUID): NotionOauthStart {
@@ -98,14 +128,33 @@ class NotionConnectorService(
         return NotionConnectorStatus(isConfigured(), list.any { it.status == ConnectorStatus.ACTIVE }, list)
     }
 
+    @Transactional(readOnly = true)
+    fun requireWritableConnection(ownerId: UUID, connectionId: UUID) {
+        val connection = requireOwned(ownerId, connectionId)
+        if (connection.status == ConnectorStatus.INVALID) throw expiredError()
+        if (connection.status != ConnectorStatus.ACTIVE || !connection.scopes.contains("insert_content")) {
+            throw ConflictException("NOTION_CONNECTION_NOT_WRITABLE", "쓰기 권한이 있는 활성 Notion 연결이 필요합니다.")
+        }
+    }
+
     @Transactional
     fun verifyRead(ownerId: UUID, connectionId: UUID, query: String = ""): NotionReadVerification {
         val connection = requireOwned(ownerId, connectionId)
-        require(connection.status == ConnectorStatus.ACTIVE) { "Notion connection is not active" }
-        val result = withToken(connection) { token ->
-            val bot = gateway.self(token)
-            val items = gateway.search(token, query, 10)
-            bot to items
+        if (connection.status == ConnectorStatus.INVALID) throw expiredError()
+        if (connection.status != ConnectorStatus.ACTIVE) {
+            throw ConflictException("NOTION_CONNECTION_NOT_ACTIVE", "활성 Notion 연결만 읽기 검증할 수 있습니다.")
+        }
+        val result = try {
+            withToken(connection) { token ->
+                val bot = gateway.self(token)
+                val items = gateway.search(token, query, 10)
+                bot to items
+            }
+        } catch (error: HttpClientErrorException) {
+            if (error.statusCode.value() == 429) {
+                throw ServiceUnavailableException("NOTION_RATE_LIMITED", "Notion 요청이 일시적으로 제한되었습니다. 잠시 후 다시 시도해 주세요.")
+            }
+            throw error
         }
         connection.lastVerifiedAt = clock.instant()
         return NotionReadVerification(connection.id, result.first.name, connection.displayName, result.second, connection.lastVerifiedAt!!)
@@ -124,36 +173,95 @@ class NotionConnectorService(
         )))
     }
 
-    @Transactional
     fun approvePage(ownerId: UUID, requestId: UUID, idempotencyKey: String): NotionPageWriteView {
         requireIdempotency(idempotencyKey)
-        val workspaceId = workspaces.findWorkspaceId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
+        val workspaceId = workspaces.findWorkspaceId(ownerId)
+            ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
+        val claim = transactions.execute { claimPage(ownerId, workspaceId, requestId, idempotencyKey) }
+            ?: throw IllegalStateException("Notion 발행 의도를 저장하지 못했습니다.")
+        if (!claim.dispatch) return claim.view
+
+        var dispatched = false
+        val outcome = try {
+            val connection = requireOwned(ownerId, requireNotNull(claim.connectionId))
+            val page = withToken(connection, onTokenRejected = { dispatched = false }) {
+                dispatched = true
+                gateway.createPage(it, requireNotNull(claim.parentPageId), requireNotNull(claim.title), claim.paragraphs)
+            }
+            NotionDispatchOutcome(NotionPageWriteStatus.SUCCEEDED, page = page)
+        } catch (error: Exception) {
+            val knownRejection = error is HttpClientErrorException && error.statusCode.isKnownProviderRejection()
+            val status = if (!dispatched || knownRejection) NotionPageWriteStatus.FAILED else NotionPageWriteStatus.AMBIGUOUS
+            NotionDispatchOutcome(status, error = error)
+        }
+        return transactions.execute { completePage(workspaceId, requestId, outcome.status, outcome.page, outcome.error) }
+            ?: throw IllegalStateException("Notion 발행 결과를 저장하지 못했습니다.")
+    }
+
+    private fun claimPage(ownerId: UUID, workspaceId: UUID, requestId: UUID, idempotencyKey: String): NotionPagePublishClaim {
         val request = pageWrites.findOwnedForUpdate(requestId, workspaceId)
             ?: throw NotFoundException("NOTION_WRITE_NOT_FOUND", "Notion 발행 요청을 찾을 수 없습니다.")
         if (request.approvalIdempotencyKey != null && request.approvalIdempotencyKey != idempotencyKey) {
             throw ConflictException("NOTION_WRITE_ALREADY_DECIDED", "이미 다른 승인 요청으로 처리된 Notion 발행입니다.")
         }
-        if (request.status == NotionPageWriteStatus.SUCCEEDED || request.status == NotionPageWriteStatus.FAILED) return view(request)
-        if (request.status != NotionPageWriteStatus.PREVIEWED) throw ConflictException("NOTION_WRITE_INVALID_STATE", "미리보기 상태에서만 승인할 수 있습니다.")
-        val connection = requireOwned(ownerId, request.connectionId)
+        if (request.status != NotionPageWriteStatus.PREVIEWED) {
+            return NotionPagePublishClaim(view(request), false)
+        }
+        requireOwned(ownerId, request.connectionId)
         request.approvalIdempotencyKey = idempotencyKey
         request.approvedBy = ownerId
         request.approvedAt = clock.instant()
-        request.status = NotionPageWriteStatus.APPROVED
         request.status = NotionPageWriteStatus.PUBLISHING
-        return try {
-            val result = withToken(connection) { gateway.createPage(it, request.parentPageId, request.title, paragraphs(request)) }
-            request.notionPageId = result.id
-            request.notionUrl = result.url
-            request.status = NotionPageWriteStatus.SUCCEEDED
-            view(request)
-        } catch (error: Exception) {
-            request.status = NotionPageWriteStatus.FAILED
-            request.failureCode = "NOTION_PAGE_CREATE_FAILED"
-            request.failureMessage = (error.message ?: "Notion 페이지 생성 실패").take(500)
-            view(request)
-        }
+        pageWrites.flush()
+        return NotionPagePublishClaim(
+            view(request), true, request.connectionId, request.parentPageId, request.title, paragraphs(request),
+        )
     }
+
+    private fun completePage(
+        workspaceId: UUID,
+        requestId: UUID,
+        status: NotionPageWriteStatus,
+        page: NotionCreatedPage?,
+        error: Exception?,
+    ): NotionPageWriteView {
+        val request = pageWrites.findOwnedForUpdate(requestId, workspaceId)
+            ?: throw NotFoundException("NOTION_WRITE_NOT_FOUND", "Notion 발행 요청을 찾을 수 없습니다.")
+        if (request.status != NotionPageWriteStatus.PUBLISHING) return view(request)
+        request.status = status
+        if (status == NotionPageWriteStatus.SUCCEEDED) {
+            request.notionPageId = requireNotNull(page).id
+            request.notionUrl = page.url
+        } else if (status == NotionPageWriteStatus.FAILED) {
+            if (error is ConflictException && error.code == NOTION_CONNECTION_EXPIRED_CODE) {
+                request.failureCode = NOTION_CONNECTION_EXPIRED_CODE
+                request.failureMessage = NOTION_CONNECTION_EXPIRED_MESSAGE
+            } else {
+                request.failureCode = "NOTION_PAGE_CREATE_REJECTED"
+                request.failureMessage = sanitizeFailure(error?.message ?: "Notion이 페이지 생성을 거부했습니다.")
+            }
+        } else {
+            request.failureCode = "NOTION_PAGE_CREATE_AMBIGUOUS"
+            request.failureMessage = "Notion 요청은 전송되었지만 페이지 생성 여부를 확인할 수 없습니다. 대상 페이지를 확인한 뒤 운영자에게 문의하세요."
+        }
+        return view(request)
+    }
+
+    @Transactional
+    fun reconcileStalePublishing(workspaceId: UUID, requestId: UUID, staleBefore: Instant): Boolean {
+        val request = pageWrites.findOwnedForUpdate(requestId, workspaceId) ?: return false
+        if (request.status != NotionPageWriteStatus.PUBLISHING || !request.updatedAt.isBefore(staleBefore)) return false
+        request.status = NotionPageWriteStatus.AMBIGUOUS
+        request.failureCode = NOTION_PAGE_CREATE_AMBIGUOUS_CODE
+        request.failureMessage = NOTION_PAGE_CREATE_AMBIGUOUS_MESSAGE
+        return true
+    }
+
+    private fun HttpStatusCode.isKnownProviderRejection(): Boolean = is4xxClientError && value() != 408 && value() != 429
+
+    private fun sanitizeFailure(value: String): String = value
+        .replace(Regex("(?i)(access[_ -]?token|refresh[_ -]?token|api[_ -]?key|secret|password)\\s*[:=]\\s*[^\\s,;]+"), "$1=***")
+        .take(500)
 
     @Transactional(readOnly = true)
     fun pageWrite(ownerId: UUID, requestId: UUID): NotionPageWriteView {
@@ -171,22 +279,56 @@ class NotionConnectorService(
         connection.encryptedRefreshToken = null
     }
 
-    private fun <T> withToken(connection: ConnectorConnection, action: (String) -> T): T {
+    private fun <T> withToken(connection: ConnectorConnection, onTokenRejected: () -> Unit = {}, action: (String) -> T): T {
+        if (connection.status == ConnectorStatus.INVALID) throw expiredConnection(connection)
         fun accessToken(): CharArray = encryptor.decrypt(EncryptedSecret(connection.encryptedAccessToken, connection.keyVersion))
         var chars = accessToken()
         try {
             return try { action(String(chars)) } catch (_: NotionTokenInvalidException) {
+                onTokenRejected()
                 chars.fill('\u0000')
-                val refreshCipher = connection.encryptedRefreshToken ?: run { connection.status = ConnectorStatus.INVALID; throw UnauthorizedException("NOTION_TOKEN_INVALID", "Notion 연결이 만료되었습니다. 다시 연결해 주세요.") }
+                val refreshCipher = connection.encryptedRefreshToken ?: throw expiredConnection(connection)
                 val refreshChars = encryptor.decrypt(EncryptedSecret(refreshCipher, connection.keyVersion))
-                val refreshed = try { gateway.refresh(String(refreshChars)) } finally { refreshChars.fill('\u0000') }
+                val refreshed = try {
+                    gateway.refresh(String(refreshChars))
+                } catch (_: NotionTokenInvalidException) {
+                    throw expiredConnection(connection)
+                } catch (error: HttpClientErrorException) {
+                    if (error.statusCode.isKnownProviderRejection()) throw expiredConnection(connection)
+                    throw error
+                } finally {
+                    refreshChars.fill('\u0000')
+                }
+                if (refreshed.accessToken.isBlank()) throw expiredConnection(connection)
+                val result = try {
+                    action(refreshed.accessToken)
+                } catch (_: NotionTokenInvalidException) {
+                    onTokenRejected()
+                    throw expiredConnection(connection)
+                }
                 val access = encrypt(refreshed.accessToken)
                 connection.encryptedAccessToken = access.cipherText; connection.keyVersion = access.keyVersion
                 refreshed.refreshToken?.takeIf(String::isNotBlank)?.let { connection.encryptedRefreshToken = encrypt(it).cipherText }
-                action(refreshed.accessToken)
+                connections.saveAndFlush(connection)
+                result
             }
         } finally { chars.fill('\u0000') }
     }
+
+    private fun expiredConnection(connection: ConnectorConnection): ConflictException {
+        invalidationTransactions.executeWithoutResult {
+            val stored = connections.findByIdAndWorkspaceId(connection.id, connection.workspaceId)
+                ?.takeIf { it.provider == ConnectorProvider.NOTION }
+            if (stored != null) {
+                stored.status = ConnectorStatus.INVALID
+                connections.saveAndFlush(stored)
+            }
+        }
+        connection.status = ConnectorStatus.INVALID
+        return expiredError()
+    }
+
+    private fun expiredError() = ConflictException(NOTION_CONNECTION_EXPIRED_CODE, NOTION_CONNECTION_EXPIRED_MESSAGE)
 
     private fun requireOwned(ownerId: UUID, id: UUID): ConnectorConnection {
         val workspaceId = workspaces.findWorkspaceId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")

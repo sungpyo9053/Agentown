@@ -2,14 +2,15 @@ package com.agentvillage.builder
 
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.*
-import com.agentvillage.builder.domain.BuilderRun
-import com.agentvillage.builder.domain.BuilderRunMode
-import com.agentvillage.builder.domain.BuilderRunStatus
-import com.agentvillage.builder.domain.WorkflowStatus
+import com.agentvillage.builder.domain.*
+import com.agentvillage.builder.infrastructure.BuilderApprovalRepository
 import com.agentvillage.builder.infrastructure.BuilderRunRepository
+import com.agentvillage.builder.infrastructure.BuilderStepRunRepository
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.connector.notion.application.NotionConnectorService
+import com.agentvillage.connector.notion.domain.NotionPageWriteStatus
+import com.agentvillage.connector.notion.infrastructure.NotionPageWriteRepository
 import com.agentvillage.connector.notion.infrastructure.NotionCreatedPage
 import com.agentvillage.connector.notion.infrastructure.NotionOauthGateway
 import com.agentvillage.connector.notion.infrastructure.NotionOauthResult
@@ -28,9 +29,12 @@ import org.mockito.kotlin.whenever
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.mock.mockito.MockBean
+import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.context.event.EventListener
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
@@ -55,6 +59,9 @@ import java.util.concurrent.atomic.AtomicInteger
     "connectors.notion.client-id=notion-client",
     "connectors.notion.client-secret=notion-secret",
     "connectors.notion.redirect-uri=https://reviewdr.kr/api/connectors/notion/oauth/callback",
+    "builder.production.reconciliation.stale-after-seconds=60",
+    "builder.production.reconciliation.interval-ms=86400000",
+    "builder.production.reconciliation.batch-size=2",
 ])
 class BuilderProductionExecutionIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var builder: BuilderService
@@ -63,10 +70,134 @@ class BuilderProductionExecutionIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var jdbc: JdbcTemplate
     @Autowired lateinit var runs: BuilderRunRepository
+    @Autowired lateinit var approvals: BuilderApprovalRepository
+    @Autowired lateinit var steps: BuilderStepRunRepository
+    @Autowired lateinit var pageWrites: NotionPageWriteRepository
+    @Autowired lateinit var reconciler: BuilderPublishingReconciler
     @Autowired lateinit var mvc: MockMvc
     @Autowired lateinit var mapper: ObjectMapper
     @MockBean lateinit var generator: ProductionContentGenerator
     @MockBean lateinit var gateway: NotionOauthGateway
+
+    @Test
+    fun `startup and scheduled reconciliation is bounded and preserves evidence while skipping fresh or ineligible records`() {
+        val owner = account("publishing-recovery")
+        val active = activate(owner, design(owner))
+        val connectionId = connectNotion(owner, "publishing-recovery-workspace")
+        whenever(generator.generate(any())).thenReturn(validOutput())
+        val stale = (1..3).map { index ->
+            preparePublishing(owner, active, connectionId, "stale-$index", staleRun = true, staleRequest = true)
+        }
+        val freshRun = preparePublishing(owner, active, connectionId, "fresh-run", staleRun = false, staleRequest = false)
+        val freshRequest = preparePublishing(owner, active, connectionId, "fresh-request", staleRun = true, staleRequest = false)
+        val waiting = production.start(
+            owner,
+            active.workflowId,
+            ProductionRunRequest(mapOf("topic" to "승인 대기 보존"), connectionId, "12345678901234567890123456789012"),
+            "waiting-${UUID.randomUUID()}",
+        )
+        await(owner, waiting.id, BuilderRunStatus.WAITING_APPROVAL)
+        makeOld("builder_runs", waiting.id)
+
+        val preserved = publishingEvidence(stale.first().runId)
+        val startup = BuilderPublishingReconciler::class.java.getDeclaredMethod("reconcileAtStartup")
+        assertThat(startup.getAnnotation(EventListener::class.java).value.toList()).contains(ApplicationReadyEvent::class)
+        reconciler.reconcileAtStartup()
+        assertThat(stale.count { production.get(owner, it.runId).status == BuilderRunStatus.AMBIGUOUS }).isEqualTo(2)
+
+        val scheduled = BuilderPublishingReconciler::class.java.getDeclaredMethod("reconcileOnSchedule")
+        assertThat(scheduled.getAnnotation(Scheduled::class.java).fixedDelayString)
+            .isEqualTo("\${builder.production.reconciliation.interval-ms:30000}")
+        reconciler.reconcileOnSchedule()
+        assertThat(stale.map { production.get(owner, it.runId).status }).containsOnly(BuilderRunStatus.AMBIGUOUS)
+        assertThat(production.get(owner, freshRun.runId).status).isEqualTo(BuilderRunStatus.PUBLISHING)
+        assertThat(production.get(owner, freshRequest.runId).status).isEqualTo(BuilderRunStatus.PUBLISHING)
+        assertThat(pageWrites.findById(freshRun.requestId).orElseThrow().status).isEqualTo(NotionPageWriteStatus.PUBLISHING)
+        assertThat(pageWrites.findById(freshRequest.requestId).orElseThrow().status).isEqualTo(NotionPageWriteStatus.PUBLISHING)
+        assertThat(production.get(owner, waiting.id).status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
+
+        val recovered = production.get(owner, stale.first().runId)
+        assertThat(recovered.currentNodeId).isNull()
+        assertThat(recovered.failureCode).isEqualTo("NOTION_PAGE_CREATE_AMBIGUOUS")
+        assertThat(recovered.failureMessage).contains("중복 페이지 생성을 막기 위해").contains("대상 Notion 페이지")
+        assertThat(recovered.steps.last().status).isEqualTo(BuilderStepStatus.FAILED)
+        assertThat(recovered.steps.last().errorMessage).isEqualTo(recovered.failureMessage)
+        assertThat(publishingEvidence(stale.first().runId)).isEqualTo(preserved)
+        stale.forEach { fixture ->
+            val request = pageWrites.findById(fixture.requestId).orElseThrow()
+            assertThat(request.status).isEqualTo(NotionPageWriteStatus.AMBIGUOUS)
+            assertThat(request.failureCode).isEqualTo("NOTION_PAGE_CREATE_AMBIGUOUS")
+            assertThat(request.failureMessage).isEqualTo(production.get(owner, fixture.runId).failureMessage)
+        }
+        verify(gateway, times(0)).createPage(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `concurrent stale reconciliation is exact once and recovered publication is terminal`() {
+        val owner = account("publishing-race")
+        val active = activate(owner, design(owner))
+        val connectionId = connectNotion(owner, "publishing-concurrent-recovery-workspace")
+        whenever(generator.generate(any())).thenReturn(validOutput())
+        val fixture = preparePublishing(owner, active, connectionId, "concurrent-recovery", staleRun = true, staleRequest = true)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val recovered = listOf(
+                pool.submit<Int> { production.reconcileStalePublishing() },
+                pool.submit<Int> { production.reconcileStalePublishing() },
+            ).sumOf { it.get(10, TimeUnit.SECONDS) }
+            assertThat(recovered).isEqualTo(1)
+        } finally {
+            pool.shutdownNow()
+        }
+        assertThat(production.get(owner, fixture.runId).status).isEqualTo(BuilderRunStatus.AMBIGUOUS)
+        assertThat(production.decide(owner, fixture.runId, true, "repeat-approval").status).isEqualTo(BuilderRunStatus.AMBIGUOUS)
+        assertThatThrownBy { production.retry(owner, fixture.runId, "ambiguous-retry") }
+            .isInstanceOf(ConflictException::class.java)
+        assertThat(production.reconcileStalePublishing()).isZero()
+        verify(gateway, times(0)).createPage(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `late provider completion cannot replace stale ambiguous recovery`() {
+        val owner = account("publishing-late")
+        val active = activate(owner, design(owner))
+        val connectionId = connectNotion(owner, "publishing-late-completion-workspace")
+        whenever(generator.generate(any())).thenReturn(validOutput())
+        val enteredProvider = CountDownLatch(1)
+        val releaseProvider = CountDownLatch(1)
+        whenever(gateway.createPage(any(), any(), any(), any())).thenAnswer {
+            enteredProvider.countDown()
+            check(releaseProvider.await(10, TimeUnit.SECONDS))
+            NotionCreatedPage("late-page", "https://notion.so/late-page")
+        }
+        val run = production.start(
+            owner,
+            active.workflowId,
+            ProductionRunRequest(mapOf("topic" to "늦은 완료"), connectionId, "12345678901234567890123456789012"),
+            "late-start-${UUID.randomUUID()}",
+        )
+        await(owner, run.id, BuilderRunStatus.WAITING_APPROVAL)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val completion = pool.submit<RunView> { production.decide(owner, run.id, true, "late-approval") }
+            assertThat(enteredProvider.await(10, TimeUnit.SECONDS)).isTrue()
+            val requestId = requireNotNull(runs.findById(run.id).orElseThrow().externalWriteRequestId)
+            makeOld("builder_runs", run.id)
+            makeOld("notion_page_write_requests", requestId)
+            assertThat(production.reconcileStalePublishing()).isEqualTo(1)
+            releaseProvider.countDown()
+            assertThat(completion.get(10, TimeUnit.SECONDS).status).isEqualTo(BuilderRunStatus.AMBIGUOUS)
+        } finally {
+            releaseProvider.countDown()
+            pool.shutdownNow()
+        }
+        val recovered = production.get(owner, run.id)
+        assertThat(recovered.status).isEqualTo(BuilderRunStatus.AMBIGUOUS)
+        assertThat(recovered.output).doesNotContainKeys("notionPageId", "notionUrl")
+        assertThat(pageWrites.findById(requireNotNull(runs.findById(run.id).orElseThrow().externalWriteRequestId)).orElseThrow().status)
+            .isEqualTo(NotionPageWriteStatus.AMBIGUOUS)
+        verify(gateway, times(1)).createPage(any(), any(), any(), any())
+    }
 
     @Test
     fun `workflow production history is owner scoped newest first bounded and destination safe`() {
@@ -397,6 +528,82 @@ class BuilderProductionExecutionIntegrationTest : IntegrationTestSupport() {
         }.getValue("state")
         return notion.complete("code-$externalId", state, null).id
     }
+
+    private data class PublishingFixture(val runId: UUID, val requestId: UUID)
+
+    private fun preparePublishing(
+        ownerId: UUID,
+        active: BuilderSnapshot,
+        connectionId: UUID,
+        suffix: String,
+        staleRun: Boolean,
+        staleRequest: Boolean,
+    ): PublishingFixture {
+        val started = production.start(
+            ownerId,
+            active.workflowId,
+            ProductionRunRequest(
+                mapOf("topic" to "복구 $suffix", "sourceText" to "보존할 원문 $suffix"),
+                connectionId,
+                "12345678901234567890123456789012",
+            ),
+            "publishing-$suffix-${UUID.randomUUID()}",
+        )
+        await(ownerId, started.id, BuilderRunStatus.WAITING_APPROVAL)
+        val run = runs.findById(started.id).orElseThrow()
+        val requestId = requireNotNull(run.externalWriteRequestId)
+        val approval = approvals.findByRunIdAndStatus(run.id, ApprovalStatus.PENDING)!!
+        approval.status = ApprovalStatus.APPROVED
+        approval.idempotencyKey = "publishing-approval-$suffix"
+        approval.decidedBy = ownerId
+        approval.decidedAt = Instant.now()
+        approvals.save(approval)
+        val approvalStep = steps.findAllByRunIdOrderBySequenceNo(run.id).last { it.status == BuilderStepStatus.WAITING_APPROVAL }
+        approvalStep.status = BuilderStepStatus.SUCCEEDED
+        approvalStep.outputJson = approvalStep.inputJson + ("approved" to true)
+        steps.save(approvalStep)
+        val writeNode = active.graph!!.nodes.single { it.nodeType == NodeType.NOTION_CREATE_PAGE.wireName }
+        steps.saveAndFlush(BuilderStepRun(
+            runId = run.id,
+            nodeId = writeNode.id,
+            nodeType = NodeType.NOTION_CREATE_PAGE.wireName,
+            sequenceNo = steps.findAllByRunIdOrderBySequenceNo(run.id).maxOf { it.sequenceNo } + 1,
+            status = BuilderStepStatus.RUNNING,
+            inputJson = mapOf("writeRequestId" to requestId.toString()),
+        ))
+        run.status = BuilderRunStatus.PUBLISHING
+        run.currentNodeId = writeNode.id
+        runs.saveAndFlush(run)
+        val request = pageWrites.findById(requestId).orElseThrow()
+        request.approvalIdempotencyKey = "publishing-approval-$suffix"
+        request.approvedBy = ownerId
+        request.approvedAt = Instant.now()
+        request.status = NotionPageWriteStatus.PUBLISHING
+        pageWrites.saveAndFlush(request)
+        if (staleRun) makeOld("builder_runs", run.id)
+        if (staleRequest) makeOld("notion_page_write_requests", request.id)
+        return PublishingFixture(run.id, request.id)
+    }
+
+    private fun makeOld(table: String, id: UUID) {
+        require(table in setOf("builder_runs", "notion_page_write_requests"))
+        jdbc.update("update $table set updated_at=? where id=?", Timestamp.from(Instant.now().minusSeconds(600)), id)
+    }
+
+    private fun publishingEvidence(runId: UUID): Map<String, Any> = mapOf(
+        "run" to jdbc.queryForMap(
+            "select input_json::text, output_json::text, destination_json::text, external_write_request_id, attempt_count from builder_runs where id=?",
+            runId,
+        ),
+        "approval" to jdbc.queryForMap(
+            "select status, idempotency_key, decided_by, decided_at from builder_approvals where run_id=?",
+            runId,
+        ),
+        "successfulSteps" to jdbc.queryForList(
+            "select node_id, node_type, sequence_no, input_json::text, output_json::text from builder_step_runs where run_id=? and status='SUCCEEDED' order by sequence_no",
+            runId,
+        ),
+    )
 
     private fun validOutput() = ProductionContentOutput(
         title = "주간 개발 상태 보고서",

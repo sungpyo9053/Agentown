@@ -44,6 +44,9 @@ llm:
 execution:
   stub-enabled: ${EXECUTION_STUB_ENABLED:true}
   poll-interval-ms: ${EXECUTION_POLL_INTERVAL_MS:500}
+  heartbeat-interval-ms: ${EXECUTION_HEARTBEAT_INTERVAL_MS:30000}
+  lease-seconds: ${EXECUTION_LEASE_SECONDS:120}
+  recovery-interval-ms: ${EXECUTION_RECOVERY_INTERVAL_MS:30000}
 auth:
   email:
     provider: ${EMAIL_PROVIDER:stub}
@@ -68,6 +71,11 @@ security:
     enabled: ${RATE_LIMIT_ENABLED:true}
     trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
 builder:
+  production:
+    reconciliation:
+      stale-after-seconds: ${BUILDER_PRODUCTION_RECONCILIATION_STALE_AFTER_SECONDS:300}
+      interval-ms: ${BUILDER_PRODUCTION_RECONCILIATION_INTERVAL_MS:30000}
+      batch-size: ${BUILDER_PRODUCTION_RECONCILIATION_BATCH_SIZE:20}
   meta-agent:
     mode: ${BUILDER_META_AGENT_MODE:real}
     codex-command: ${BUILDER_CODEX_COMMAND:codex}
