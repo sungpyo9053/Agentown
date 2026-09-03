@@ -17,6 +17,7 @@ interface BuilderMessageRepository : JpaRepository<BuilderMessage, UUID> {
 }
 interface BuilderRequirementRepository : JpaRepository<BuilderRequirementEntity, UUID> { fun findByConversationId(conversationId: UUID): BuilderRequirementEntity? }
 interface BuilderProposalRepository : JpaRepository<BuilderProposalEntity, UUID> { fun findByConversationId(conversationId: UUID): BuilderProposalEntity? }
+interface AgentGenerationDraftRepository : JpaRepository<AgentGenerationDraftEntity, UUID> { fun findByConversationId(conversationId: UUID): AgentGenerationDraftEntity? }
 interface BuilderWorkflowRepository : JpaRepository<BuilderWorkflow, UUID> {
     fun findByIdAndWorkspaceId(id: UUID, workspaceId: UUID): BuilderWorkflow?
     fun findByConversationId(conversationId: UUID): BuilderWorkflow?

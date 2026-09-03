@@ -1,6 +1,7 @@
 package com.agentvillage.builder
 
 import com.agentvillage.builder.application.*
+import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.agentvillage.common.exception.BadRequestException
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -20,6 +21,7 @@ class AgentCompilerTwentyCaseE2ETest {
     private val mapper = jacksonObjectMapper()
     private val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
     private val pipeline = StructuredMetaAgentPipeline(DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+    private val validator = WorkflowGraphValidator(WorkflowNodeCatalog(), mapper)
 
     data class Case(
         val id: String,
@@ -51,6 +53,19 @@ class AgentCompilerTwentyCaseE2ETest {
             if (case.forbiddenNodes.isNotEmpty()) {
                 assertThat(nodeTypes).doesNotContainAnyElementsOf(case.forbiddenNodes)
             }
+            val plan = bundle.proposal.graphPlan!!
+            val graph = WorkflowGraph(
+                workflowId = UUID.randomUUID(),
+                entryNodeId = plan.entryNodeId,
+                nodes = plan.nodes.mapIndexed { index, node ->
+                    WorkflowNode(node.id, node.nodeType, node.label, NodePosition(index * 260.0, 100.0), node.config)
+                },
+                edges = plan.edges.map { edge ->
+                    WorkflowEdge(edge.id, edge.source, edge.target, edge.condition, edge.bindings.associate { it.targetField to it.sourceField })
+                },
+            )
+            val validation = validator.validate(graph, bundle.requirement, bundle.proposal, bundle.agentDefinitions, case.instruction)
+            assertThat(validation.valid).withFailMessage("${case.id}: ${validation.issues}").isTrue()
             val files = HarnessPackageRenderer(mapper).render(bundle)
             assertThat(files.getValue("examples/sample-input.json")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
             val directory = root.resolve(case.id)

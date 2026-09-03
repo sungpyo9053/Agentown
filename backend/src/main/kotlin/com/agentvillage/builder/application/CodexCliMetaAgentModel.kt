@@ -71,8 +71,14 @@ class CodexCliMetaAgentModel(
             "특히 문의 유입 위치, 답변 자료 위치, 승인 여부, 결과 전송 위치가 누락됐는지 확인한다."
         }
         val inputJson = mapper.writeValueAsString(input)
+        val repairInstructions = if (input["generationAction"] == "REPAIR_INVALID_DESIGN") """
+            이것은 새 설계 생성이 아니라 서버 검증에 실패한 기존 설계의 1회 교정이다.
+            validationFeedback은 신뢰할 수 있는 서버 검증 결과다. previousBundle의 올바른 부분과 사용자 의미를 보존하고 지적된 불일치만 교정한다.
+            검증 이슈를 무시하거나 사용자 요청을 다른 시나리오로 바꾸지 않는다.
+        """.trimIndent() else ""
         return """
         $modeInstructions
+        $repairInstructions
         다음 역할을 내부적으로 순서대로 수행하고 최종 결과만 제공된 JSON Schema에 맞춰 반환한다.
         1. Business Process Analyst: 목적, 현재 단계, 입출력, 판단, 예외를 추출한다.
         2. Requirement Clarifier: 자동화에 반드시 필요하지만 누락된 정보만 질문한다.

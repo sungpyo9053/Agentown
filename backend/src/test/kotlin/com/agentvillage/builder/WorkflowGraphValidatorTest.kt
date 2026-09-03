@@ -115,4 +115,28 @@ class WorkflowGraphValidatorTest {
         assertThat(result.issues.map { it.message }).anyMatch { it.contains("Slack") }
         assertThat(result.issues.map { it.message }).anyMatch { it.contains("Notion/FAQ") }
     }
+
+    @Test fun `routing an unsupported FAQ answer to assignee review is not an execution approval gate`() {
+        val requirement = AutomationRequirement(
+            objective = "FAQ 근거로 답하고 없으면 담당자 확인 필요 상태를 반환한다.",
+            trigger = "수동 문의 입력",
+            inputs = listOf("고객 문의", "FAQ 자료"),
+            outputs = listOf("답변 또는 담당자 확인 필요 상태"),
+            steps = listOf("FAQ 검색", "근거 확인", "답변 작성"),
+            decisions = listOf("FAQ 근거 존재 여부"),
+            exceptions = listOf("근거 없음"),
+            humanApprovalRequired = false,
+        )
+        val proposal = AutomationProposal("FAQ 답변", "근거가 없으면 담당자에게 보낸다.", listOf("FAQ 검색"), listOf("FAQ Mock"), emptyList(), "담당자 확인 필요 상태로 종료")
+        val nodes = listOf(
+            WorkflowNode("manual", NodeType.MANUAL_TRIGGER.wireName, "문의 입력", NodePosition(0.0, 0.0)),
+            WorkflowNode("search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색", NodePosition(1.0, 0.0), mapOf("source" to "FAQ", "queryField" to "customerInquiry", "connectionStatus" to "UNRESOLVED")),
+            WorkflowNode("end", NodeType.WORKFLOW_END.wireName, "완료", NodePosition(2.0, 0.0)),
+        )
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "manual", nodes = nodes, edges = listOf(WorkflowEdge("e1", "manual", "search"), WorkflowEdge("e2", "search", "end")))
+
+        val result = validator.validate(graph, requirement, proposal, emptyList(), "FAQ를 찾아 고객 질문에 답하고 근거가 없으면 담당자 검토로 보내는 에이전트")
+
+        assertThat(result.issues).noneMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
+    }
 }

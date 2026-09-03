@@ -23,7 +23,20 @@ Natural language
 - Mock Slack, Notion and News node contracts already provide safe step-run persistence and approval pause/resume.
 - `HarnessPackageRenderer` already exported the graph and derived Agent/Guide Markdown.
 
-The compiler extension adds a runtime-neutral Agent Design, trusted resource resolution, an independent design review, the `agentown-agent-package/v1` contract and a fixed Python Mock adapter. No database migration is needed: draft design fields remain in the existing proposal JSONB and immutable approved graphs remain in `builder_workflow_versions`.
+The compiler extension adds a runtime-neutral Agent Design, trusted resource resolution, an independent design review, the `agentown-agent-package/v1` contract and a fixed Python Mock adapter. Migration V27 adds a durable generation draft. Requirements and proposals still use their existing JSONB records, while immutable approved graphs remain in `builder_workflow_versions`.
+
+## Stateful generation and graph translation
+
+Agent generation follows a bounded, persisted state machine inspired by Nexent's NL2Agent workflow:
+
+1. Save the original instruction as `STARTED` in an independent transaction before the model call.
+2. Save each complete structured response as a `GENERATED` checkpoint.
+3. Reload that checkpoint from PostgreSQL before treating it as compiler input.
+4. Translate and validate the graph against the server catalog and the original instruction.
+5. On failure, persist `VALIDATION_FAILED` and make one repair call with the trusted validation issues and prior bundle.
+6. Mark `COMPLETED` in the design transaction only after graph validation and package completeness checks pass. A timeout or second failure remains `FAILED` with the source instruction and last checkpoint preserved.
+
+The graph translator follows the Agent-Builder separation between a visual plan and an executable flow. It accepts only exact server-catalog node types, rejects missing endpoints and cycles, computes deterministic topological order and layout, and preserves edge conditions and field bindings. The runner then evaluates those edges rather than using canvas order.
 
 ## Compiler stages
 

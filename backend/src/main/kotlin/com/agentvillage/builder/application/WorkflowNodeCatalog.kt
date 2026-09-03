@@ -270,10 +270,18 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         }
 
         compareFacet("Slack", containsAny(source, "slack", "슬랙"), containsAny(structured, "slack", "슬랙"), rejectAddition = true)
-        compareFacet("Notion/FAQ", containsAny(source, "notion", "노션", "faq"), containsAny(structured, "notion", "노션", "faq"), rejectAddition = true)
+        compareFacet(
+            "Notion/FAQ",
+            containsAny(source, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
+            containsAny(structured, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
+            rejectAddition = true,
+        )
         compareFacet("분류", containsAny(source, "분류", "카테고리", "classify", "classification"), containsAny(structured, "분류", "카테고리", "classify", "classification"))
         compareFacet("생성", requestsGeneration(source), requestsGeneration(structured))
-        val sourceApproval = containsAny(source, "승인", "검토") && !containsAny(source, "승인 없이", "검토 없이", "승인 불필요")
+        val sourceApproval = !containsAny(source, "승인 없이", "검토 없이", "승인 불필요") && (
+            containsAny(source, "승인") ||
+                Regex("검토\\s*(후|하고|한 뒤|를 거쳐|가 끝나면)").containsMatchIn(source)
+            )
         compareFacet("사람 승인", sourceApproval, requirement.humanApprovalRequired)
         return issues
     }
@@ -318,7 +326,8 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         }
         val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
         val requestsClassification = containsAny(requested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
-        val requestsGeneration = if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
+        val deterministicOnly = NodeType.DATA_CSV_COMPARE.wireName in types && !hasGeneration
+        val requestsGeneration = !deterministicOnly && if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
 
         fun mismatch(code: String, message: String, nodeId: String? = null) {
             issues += ValidationIssue(code, message, nodeId)

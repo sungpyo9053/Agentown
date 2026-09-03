@@ -54,6 +54,22 @@ class BuilderProposalEntity(
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "guide_definitions_json", nullable = false, columnDefinition = "jsonb") var guideDefinitionsJson: List<Map<String, Any?>>,
 ) : AuditedEntity()
 
+enum class AgentGenerationDraftState { STARTED, GENERATED, VALIDATION_FAILED, COMPLETED, FAILED }
+
+@Entity @Table(name = "builder_agent_generation_drafts")
+class AgentGenerationDraftEntity(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "conversation_id", nullable = false, unique = true) val conversationId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "source_instruction", nullable = false, columnDefinition = "text") var sourceInstruction: String,
+    @Column(name = "design_mode", nullable = false, length = 40) var designMode: String,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) var state: AgentGenerationDraftState = AgentGenerationDraftState.STARTED,
+    @Column(nullable = false) var attempt: Int = 0,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "bundle_json", columnDefinition = "jsonb") var bundleJson: Map<String, Any?>? = null,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "validation_issues_json", nullable = false, columnDefinition = "jsonb") var validationIssuesJson: List<Map<String, Any?>> = emptyList(),
+    @Column(name = "error_message", length = 500) var errorMessage: String? = null,
+) : AuditedEntity()
+
 @Entity @Table(name = "builder_workflows")
 class BuilderWorkflow(
     @Id val id: UUID = UUID.randomUUID(),

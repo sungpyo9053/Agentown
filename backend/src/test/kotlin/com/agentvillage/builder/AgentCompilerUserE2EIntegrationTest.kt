@@ -2,11 +2,16 @@ package com.agentvillage.builder
 
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.builder.application.AgentGenerationDraftService
+import com.agentvillage.builder.application.PipelineContext
+import com.agentvillage.builder.application.StructuredMetaAgentPipeline
+import com.agentvillage.builder.domain.AgentGenerationDraftState
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
+import com.agentvillage.builder.infrastructure.AgentGenerationDraftRepository
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -15,11 +20,15 @@ import java.util.UUID
 class AgentCompilerUserE2EIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var service: BuilderService
     @Autowired lateinit var identities: IdentityService
+    @Autowired lateinit var generationDrafts: AgentGenerationDraftService
+    @Autowired lateinit var generationDraftRepository: AgentGenerationDraftRepository
 
     @Test fun `TC01 evidence found and not found produce truthful structured outcomes`() {
         val owner = owner("faq")
         var snapshot = service.createConversation(owner.id, key("conversation"))
         snapshot = service.sendMessage(owner.id, snapshot.conversationId, "고객 문의가 들어오면 FAQ를 검색해서 답변 초안을 만들고, 근거가 없으면 담당자 확인이 필요하다고 표시하는 에이전트를 만들어줘.", key("message"))
+        assertThat(generationDraftRepository.findByConversationId(snapshot.conversationId)?.state).isEqualTo(AgentGenerationDraftState.COMPLETED)
+        assertThat(generationDraftRepository.findByConversationId(snapshot.conversationId)?.attempt).isEqualTo(1)
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, key("approve"))
 
         val found = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "배송이 늦어지고 있는데 언제 받을 수 있나요?"), key("found"))
@@ -100,12 +109,22 @@ class AgentCompilerUserE2EIntegrationTest : IntegrationTestSupport() {
         val snapshot = service.createConversation(owner.id, key("conversation"), BuilderConversationPurpose.AGENT_DEVELOPMENT)
         val instruction = "CSV 파일 두 개를 정확히 비교하는 에이전트를 만들어줘"
 
+        generationDrafts.start(
+            PipelineContext(UUID.randomUUID(), owner.id, snapshot.workspaceId, snapshot.conversationId, snapshot.workflowId),
+            instruction,
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+
         service.recordGenerationFailure(owner.id, snapshot.conversationId, instruction, key("failed-message"), "생성 시간 초과")
 
         val failed = service.snapshot(owner.id, snapshot.conversationId)
         assertThat(failed.status).isEqualTo(WorkflowStatus.FAILED)
         assertThat(failed.messages.map { it.content }).anyMatch { it == instruction }
         assertThat(failed.messages.map { it.content }).anyMatch { it.contains("입력은 보존되었습니다") }
+        val draft = generationDraftRepository.findByConversationId(snapshot.conversationId)!!
+        assertThat(draft.state).isEqualTo(AgentGenerationDraftState.FAILED)
+        assertThat(draft.sourceInstruction).isEqualTo(instruction)
+        assertThat(draft.errorMessage).contains("시간 초과")
     }
 
     private fun owner(prefix: String) = identities.register(RegisterUserCommand("$prefix-${UUID.randomUUID()}@example.com", "password123", "${prefix}_${UUID.randomUUID().toString().take(8)}", "검증 사용자"))

@@ -80,6 +80,8 @@ class BuilderService(
     private val usageLimiter: BuilderUsageLimiter,
     private val jobProgress: BuilderJobProgressService,
     private val validator: WorkflowGraphValidator,
+    private val graphTranslator: WorkflowGraphTranslator,
+    private val generationDrafts: AgentGenerationDraftService,
     private val catalog: WorkflowNodeCatalog,
     private val teamDeployments: AutomationTeamDeploymentService,
     private val packageRenderer: HarnessPackageRenderer,
@@ -148,6 +150,7 @@ class BuilderService(
     @Transactional
     fun recordGenerationFailure(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String, message: String) {
         val context = context(ownerId, conversationId)
+        generationDrafts.fail(conversationId, message)
         if (messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey) == null) {
             messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = context.workflow.currentVersionId, idempotencyKey = idempotencyKey))
         }
@@ -171,7 +174,27 @@ class BuilderService(
         }
         val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
         val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
-        val bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode)
+        generationDrafts.start(pipelineContext, instruction, mode)
+        var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode)
+        generationDrafts.checkpoint(context.conversation.id, bundle)
+        bundle = generationDrafts.reloadBundle(context.conversation.id)
+        if (bundle.clarificationQuestions.isEmpty()) {
+            val firstValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+            if (!firstValidation.valid) {
+                generationDrafts.validationFailed(context.conversation.id, firstValidation.issues)
+                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, firstValidation.issues, bundle)
+                generationDrafts.checkpoint(context.conversation.id, bundle)
+                bundle = generationDrafts.reloadBundle(context.conversation.id)
+                val repairedValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+                if (!repairedValidation.valid) {
+                    generationDrafts.validationFailed(context.conversation.id, repairedValidation.issues)
+                    throw BadRequestException(
+                        if (repairedValidation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
+                        repairedValidation.issues.joinToString(" ") { it.message },
+                    )
+                }
+            }
+        }
         val requirement = bundle.requirement
         val questions = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) emptyList() else bundle.clarificationQuestions
         require(requirement.objective.isNotBlank() && requirement.steps.isNotEmpty())
@@ -182,8 +205,23 @@ class BuilderService(
         if (questions.isNotEmpty()) {
             if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
             messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계를 진행하려면 아래 ${questions.size}가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요."))
-        } else saveDesign(context, bundle, instruction, jobId)
+        } else {
+            saveDesign(context, bundle, instruction, jobId)
+            requireCompletePackage(packageRenderer.render(bundle))
+            generationDrafts.complete(context.conversation.id)
+        }
     }
+
+    private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =
+        runCatching {
+            validator.validate(graphTranslator.translate(workflowId, bundle.proposal), bundle.requirement, bundle.proposal, bundle.agentDefinitions, sourceInstruction)
+        }.getOrElse { exception ->
+            WorkflowValidationResult(
+                valid = false,
+                graphHash = "",
+                issues = listOf(ValidationIssue("WORKFLOW_GRAPH_TRANSLATION_FAILED", exception.message ?: "그래프 변환에 실패했습니다.")),
+            )
+        }
 
     private fun saveDesign(context: OwnedContext, bundle: MetaAgentDesignBundle, sourceInstruction: String, jobId: UUID?) {
         jobProgress.running(jobId, BuilderGenerationStage.DESIGN_SAVING)
@@ -788,17 +826,7 @@ class BuilderService(
     }
 
     private fun compileGraph(workflowId: UUID, proposal: AutomationProposal): WorkflowGraph {
-        val plan = proposal.graphPlan
-            ?: throw BadRequestException("WORKFLOW_GRAPH_PLAN_MISSING", "설계안에 실행 graphPlan이 없습니다. 설계를 다시 생성해 주세요.")
-        val nodes = plan.nodes.mapIndexed { index, node ->
-            WorkflowNode(node.id, node.nodeType, node.label, NodePosition(40.0 + index * 260.0, 100.0), node.config)
-        }
-        return WorkflowGraph(
-            workflowId = workflowId,
-            entryNodeId = plan.entryNodeId,
-            nodes = nodes,
-            edges = plan.edges.map { edge -> WorkflowEdge(edge.id, edge.source, edge.target, edge.conditionSpec?.serialize() ?: edge.condition, edge.bindings.associate { it.targetField to it.sourceField }) },
-        )
+        return graphTranslator.translate(workflowId, proposal)
     }
 
     private fun saveVersion(workflow: BuilderWorkflow, graph: WorkflowGraph, summary: String, approved: Boolean, templateOverride: BuilderWorkflowVersion? = null): BuilderWorkflowVersion {

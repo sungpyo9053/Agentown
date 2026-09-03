@@ -199,8 +199,22 @@ class StructuredMetaAgentPipeline(
         "design_guides",
     )
 
-    fun generateDesign(context: PipelineContext, instruction: String, mode: DesignMode = DesignMode.AUTOMATION): MetaAgentDesignBundle {
-        val input = mapOf("instruction" to instruction, "designMode" to mode.name)
+    fun generateDesign(
+        context: PipelineContext,
+        instruction: String,
+        mode: DesignMode = DesignMode.AUTOMATION,
+        validationFeedback: List<ValidationIssue> = emptyList(),
+        previousBundle: MetaAgentDesignBundle? = null,
+    ): MetaAgentDesignBundle {
+        val input = buildMap<String, Any?> {
+            put("instruction", instruction)
+            put("designMode", mode.name)
+            if (validationFeedback.isNotEmpty()) {
+                put("generationAction", "REPAIR_INVALID_DESIGN")
+                put("validationFeedback", validationFeedback)
+                put("previousBundle", previousBundle)
+            }
+        }
         val startedAt = System.nanoTime()
         designStages.forEach { stage ->
             audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
