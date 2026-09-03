@@ -34,10 +34,11 @@ private class SimpleNodeContract(
     override val type: NodeType,
     override val requiredPermissions: Set<String> = emptySet(),
     private val requiredConfig: Set<String> = emptySet(),
+    private val inputValidator: (Map<String, Any?>) -> List<String> = { emptyList() },
     private val simulator: (Map<String, Any?>, Map<String, Any?>) -> NodeSimulation,
 ) : WorkflowNodeContract {
     override fun validateConfig(config: Map<String, Any?>) = requiredConfig.filter { config[it] == null || config[it].toString().isBlank() }.map { "필수 설정 '$it'이 없습니다." }
-    override fun validateInput(input: Map<String, Any?>) = emptyList<String>()
+    override fun validateInput(input: Map<String, Any?>) = inputValidator(input)
     override fun simulate(config: Map<String, Any?>, input: Map<String, Any?>) = simulator(config, input)
 }
 
@@ -127,7 +128,12 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.UNRESOLVED_TOOL, requiredConfig = setOf("toolName", "connectionStatus", "reason")) { config, input ->
             NodeSimulation(input + mapOf("requiresUserAction" to true, "unresolvedTool" to config["toolName"], "reason" to config["reason"], "externalCallPerformed" to false))
         },
-        SimpleNodeContract(NodeType.DATA_CSV_COMPARE, requiredConfig = setOf("keyColumns", "comparisonMode")) { config, input ->
+        SimpleNodeContract(NodeType.DATA_CSV_COMPARE, requiredConfig = setOf("keyColumns", "comparisonMode"), inputValidator = { input ->
+            buildList {
+                if (input["csvA"] == null && input["rowsA"] == null) add("CSV 비교 입력 'csvA' 또는 'rowsA'가 필요합니다.")
+                if (input["csvB"] == null && input["rowsB"] == null) add("CSV 비교 입력 'csvB' 또는 'rowsB'가 필요합니다.")
+            }
+        }) { config, input ->
             val before = csvRows(input["csvA"] ?: input["rowsA"])
             val after = csvRows(input["csvB"] ?: input["rowsB"])
             val requestedKeys = (config["keyColumns"] as? List<*>)?.map { it.toString() }.orEmpty()

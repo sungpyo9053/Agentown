@@ -29,7 +29,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             put("skills/README.md", "# Skills\n\n이 패키지에 고정된 Skill이 있으면 이 폴더에 추가합니다. 현재는 서버 카탈로그의 Template Skill만 참조합니다.\n")
             put("tools/tools.yaml", toolsYaml(resources))
             put("mcp.json", pretty(mapOf("mcpServers" to emptyMap<String, Any>())))
-            put("examples/sample-input.json", pretty(normalized.proposal.agentDesign?.simulationScenarios?.firstOrNull()?.input ?: mapOf("text" to "샘플 입력")))
+            put("examples/sample-input.json", pretty(sampleInput(normalized)))
             put("runtime-targets.json", pretty(mapOf(
                 "targets" to listOf(
                     mapOf("key" to "python-local", "mode" to "MOCK_TEST_ONLY", "entrypoint" to "runners/python/runner.py"),
@@ -77,6 +77,21 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             normalized.agentDefinitions.forEach { put("agents/${it.key}.md", agentMarkdown(it)) }
             if (normalized.agentDefinitions.isEmpty()) put("agents/README.md", "# Agents\n\n이 패키지는 결정론적 Function만 사용하며 AI Agent가 없습니다.\n")
             normalized.guideDefinitions.forEach { put("guides/${it.key}.md", guideMarkdown(it)) }
+        }
+    }
+
+    private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any?> {
+        val nodeTypes = bundle.proposal.graphPlan?.nodes.orEmpty().map { it.nodeType }.toSet()
+        return when {
+            "data.csv.compare" in nodeTypes -> linkedMapOf(
+                "csvA" to "id,name\n1,old\n2,remove\n",
+                "csvB" to "id,name\n1,new\n3,add\n",
+            )
+            "knowledge.search.mock" in nodeTypes -> linkedMapOf(
+                "customerInquiry" to "사내 복지포인트는 언제 지급되나요?",
+                "mockSearchResults" to emptyList<Any>(),
+            )
+            else -> linkedMapOf("text" to "검증할 샘플 입력", "message" to "검증할 샘플 입력")
         }
     }
 
@@ -265,6 +280,8 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             elif kind == "parallel.map.mock": data["parallelResults"] = [{"subject": item, "result": "Mock research"} for item in config.get("items", [])]
             elif kind == "tool.unresolved": data.update({"requiresUserAction": True, "unresolvedTool": config.get("toolName"), "externalCallPerformed": False})
             elif kind == "data.csv.compare":
+                if not (("csvA" in data or "rowsA" in data) and ("csvB" in data or "rowsB" in data)):
+                    fail("CSV input requires csvA and csvB (or rowsA and rowsB)", steps)
                 before_rows = csv_rows(data.get("csvA", data.get("rowsA", [])))
                 after_rows = csv_rows(data.get("csvB", data.get("rowsB", [])))
                 requested_keys = [key for key in config.get("keyColumns", []) if key != "사용자 지정 키"]

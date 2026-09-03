@@ -24,7 +24,7 @@ object BuilderMvpSupportPolicy {
             }
             capability(normalized, "Google Workspace 쓰기", "google drive", "구글 드라이브", "google sheets", "구글 시트", "google calendar", "구글 캘린더", "microsoft forms")
             capability(normalized, "CRM 쓰기", "hubspot", "salesforce", "crm 상태", "crm에", "crm으로", "crm 상담", "crm 반영", "연락처를 만들")
-            capability(normalized, "개발 도구 쓰기·배포", "jira", "github에 쓰", "깃허브에 쓰", "커밋해", "커밋까지", "자동 배포", "운영 서버까지")
+            capability(normalized, "개발 도구 쓰기·배포", "jira", "github에 쓰", "깃허브에 쓰", "커밋해", "커밋까지", "자동 배포", "운영 배포", "운영 서버까지")
             capability(normalized, "회계·상거래 시스템 쓰기", "quickbooks", "shopify", "erp")
             val socialPublishNegated = listOf("실제 게시하지", "게시하지 마", "게시하지 않").any(normalized::contains)
             if (!socialPublishNegated) capability(normalized, "소셜 네트워크 게시", "instagram", "linkedin", "자동 게시", "실제 게시")

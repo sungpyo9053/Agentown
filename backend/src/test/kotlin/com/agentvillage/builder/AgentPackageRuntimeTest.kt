@@ -60,10 +60,10 @@ class AgentPackageRuntimeTest {
             StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
         )
         val files = HarnessPackageRenderer(mapper).render(bundle).toMutableMap()
-        files["examples/sample-input.json"] = mapper.writeValueAsString(mapOf(
-            "customerInquiry" to "사내 복지포인트는 언제 지급되나요?",
-            "mockSearchResults" to emptyList<Any>(),
-        ))
+        val sampleInput = mapper.readTree(files.getValue("examples/sample-input.json"))
+        assertThat(sampleInput["customerInquiry"].asText()).isEqualTo("사내 복지포인트는 언제 지급되나요?")
+        assertThat(sampleInput["mockSearchResults"]).isEmpty()
+        assertThat(files.getValue("examples/sample-input.json")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
         files.forEach { (path, content) ->
             val target = directory.resolve(path)
             Files.createDirectories(target.parent)
@@ -98,10 +98,10 @@ class AgentPackageRuntimeTest {
             StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
         )
         val files = HarnessPackageRenderer(mapper).render(bundle).toMutableMap()
-        files["examples/sample-input.json"] = mapper.writeValueAsString(mapOf(
-            "csvA" to "id,name\n1,old\n2,remove\n",
-            "csvB" to "id,name\n1,new\n3,add\n",
-        ))
+        val sampleInput = mapper.readTree(files.getValue("examples/sample-input.json"))
+        assertThat(sampleInput["csvA"].asText()).contains("1,old", "2,remove")
+        assertThat(sampleInput["csvB"].asText()).contains("1,new", "3,add")
+        assertThat(files.getValue("examples/sample-input.json")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
         files.forEach { (path, content) ->
             val target = directory.resolve(path)
             Files.createDirectories(target.parent)
@@ -116,5 +116,12 @@ class AgentPackageRuntimeTest {
         assertThat(process.waitFor()).withFailMessage(output).isZero()
         assertThat(output).contains("\"status\": \"SUCCEEDED\"", "\"changeType\": \"ADDED\"", "\"changeType\": \"REMOVED\"", "\"changeType\": \"MODIFIED\"")
             .doesNotContain("instruction")
+
+        Files.writeString(directory.resolve("examples/sample-input.json"), "{}")
+        val missingInput = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString())
+            .redirectErrorStream(true).start()
+        val missingInputOutput = missingInput.inputStream.bufferedReader().readText()
+        assertThat(missingInput.waitFor()).isNotZero()
+        assertThat(missingInputOutput).contains("\"status\": \"FAILED\"", "CSV input requires csvA and csvB")
     }
 }
