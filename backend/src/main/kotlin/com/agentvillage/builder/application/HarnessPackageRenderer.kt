@@ -49,9 +49,9 @@ class HarnessPackageRenderer(
                 "message" to (runtimeDefinition.exceptionOrNull()?.message ?: "TFrameX 실행이 구성되지 않았습니다."),
             )))
             put("runners/python/runner.py", pythonTFrameXRunner())
-            put("runtime/pyproject.toml", runtimeResource("pyproject.toml"))
-            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py").forEach { name ->
-                put("runtime/agentown_tframex_adapter/$name", runtimeResource("agentown_tframex_adapter/$name"))
+            put("runtime/pyproject.toml", TFrameXRuntimeResources.read("pyproject.toml"))
+            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py").forEach { name ->
+                put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
             put(".env.example", environmentExample(resources))
             put("README.md", packageReadme(normalized))
@@ -220,11 +220,6 @@ class HarnessPackageRenderer(
         `.venv/bin/python runners/python/runner.py` executes this package through the same Agentown TFrameX Adapter used by the service.
         If an Agent, Tool, connector, or Codex authentication is unavailable, execution returns `EXECUTION_NOT_CONFIGURED` and never substitutes Mock output.
     """.trimIndent() + "\n"
-
-    private fun runtimeResource(path: String): String = javaClass.getResourceAsStream("/tframex-runtime/$path")
-        ?.bufferedReader()
-        ?.use { it.readText() }
-        ?: error("Pinned TFrameX runtime resource is missing: $path")
 
     private fun pythonTFrameXRunner() = """
         #!/usr/bin/env python3

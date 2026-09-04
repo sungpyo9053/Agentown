@@ -4,9 +4,18 @@ WORKDIR /workspace
 COPY settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY backend/build.gradle.kts backend/build.gradle.kts
 COPY backend/src backend/src
+COPY core-runtime core-runtime
+RUN test -f core-runtime/pyproject.toml
+RUN test -f core-runtime/agentown_tframex_adapter/adapter.py
 RUN --mount=type=cache,target=/home/gradle/.gradle/caches \
     --mount=type=cache,target=/home/gradle/.gradle/wrapper \
     gradle :backend:bootJar --no-daemon
+RUN jar tf /workspace/backend/build/libs/backend-0.1.0-SNAPSHOT.jar \
+    | grep -q '^BOOT-INF/classes/tframex-runtime/pyproject.toml$'
+RUN jar tf /workspace/backend/build/libs/backend-0.1.0-SNAPSHOT.jar \
+    | grep -q '^BOOT-INF/classes/tframex-runtime/agentown_tframex_adapter/adapter.py$'
+RUN jar tf /workspace/backend/build/libs/backend-0.1.0-SNAPSHOT.jar \
+    | grep -q '^BOOT-INF/classes/tframex-runtime/agentown_tframex_adapter/server.py$'
 
 FROM alpine:3.20 AS codex
 RUN apk add --no-cache curl \
