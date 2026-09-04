@@ -1,6 +1,6 @@
 # Agent Development Open Beta E2E Scorecard
 
-Date: 2026-09-04  
+Date: 2026-09-05  
 Target: authenticated users on `https://reviewdr.kr/develop`  
 Release verdict: **FAIL — remediation cycle in progress**
 
@@ -29,7 +29,7 @@ An item passes only when a fresh production UI request creates a synchronized im
 | F-15 | Real Agent execution configuration | Missing Codex executable/auth is `EXECUTION_NOT_CONFIGURED`; configured run invokes actual Agent | PENDING | No fixed sample fallback remains locally; production configured execution required. |
 | F-16 | External-write safety | No undeclared network write; declared write requires capability and human approval | PENDING | Blind read-only case made no external call; write-capability safety case required. |
 | F-17 | Observability and administrator metrics | Anonymized events retain natural-language request, generation/run/version/package/capability history | PENDING | Admin implementation exists; production event-to-dashboard reconciliation required. |
-| F-18 | Recovery, retry, concurrency | Queued/running recovery, retry policy, per-user limits and idempotency survive restart/failure | PENDING | Operational fault-injection evidence required. |
+| F-18 | Recovery, retry, concurrency | Queued/running recovery, retry policy, per-user limits and idempotency survive restart/failure | PENDING | Local fault injection now proves one retry for transient Codex timeout/empty/CLI/start failure, retry exhaustion with one durable failure, and no retry after cancellation. Production restart and concurrency evidence remains required. |
 
 ## Security and release gates
 
@@ -51,3 +51,4 @@ An item passes only when a fresh production UI request creates a synchronized im
 6. Validate every Agent contract and the final output contract before success.
 7. Run source differential, backend, package, container and staging gates; deploy the exact SHA.
 8. Run fresh blind production cases and update this scorecard. Repeat until every mandatory row passes.
+9. Retry one transient Codex generation failure with the same durable job and idempotency key; preserve one explicit failed result if the retry is exhausted and never restart a cancelled job.

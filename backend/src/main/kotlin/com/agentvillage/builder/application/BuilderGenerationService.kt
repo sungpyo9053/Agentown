@@ -135,20 +135,39 @@ class BuilderGenerationWorker(
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     fun execute(event: BuilderGenerationRequested) {
-        try {
-            builder.sendMessage(event.ownerId, progressJob(event.jobId).conversationId, progressJob(event.jobId).instruction, progressJob(event.jobId).idempotencyKey, event.jobId)
-            progress.complete(event.jobId)
-        } catch (exception: Exception) {
-            val code = (exception as? ApiException)?.code ?: "BUILDER_GENERATION_FAILED"
-            if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
-            else {
-                val job = progressJob(event.jobId)
-                usageLimiter.releaseFailedClaim(event.ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
-                builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
-                progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+        var retryCount = 0
+        while (true) {
+            val job = progressJob(event.jobId)
+            try {
+                builder.sendMessage(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, event.jobId)
+                progress.complete(event.jobId)
+                return
+            } catch (exception: Exception) {
+                val code = (exception as? ApiException)?.code ?: "BUILDER_GENERATION_FAILED"
+                if (code in RETRYABLE_GENERATION_CODES && retryCount < MAX_AUTOMATIC_RETRIES) {
+                    retryCount += 1
+                    continue
+                }
+                if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
+                else {
+                    usageLimiter.releaseFailedClaim(event.ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
+                    builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
+                    progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+                }
+                return
             }
         }
     }
 
     private fun progressJob(jobId: UUID): BuilderGenerationJob = progress.requireJob(jobId)
+
+    private companion object {
+        const val MAX_AUTOMATIC_RETRIES = 1
+        val RETRYABLE_GENERATION_CODES = setOf(
+            "BUILDER_CODEX_TIMEOUT",
+            "BUILDER_CODEX_EMPTY_OUTPUT",
+            "BUILDER_CODEX_EXEC_FAILED",
+            "BUILDER_CODEX_START_FAILED",
+        )
+    }
 }
