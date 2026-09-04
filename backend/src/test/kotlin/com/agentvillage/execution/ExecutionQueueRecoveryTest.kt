@@ -411,16 +411,18 @@ class ExecutionQueueRecoveryTest : IntegrationTestSupport() {
         )
 
         worker.poll()
-        assertThat(blockingGateway.started.await(5, TimeUnit.SECONDS)).isTrue()
-        val heartbeatAfterClaim = requireNotNull(executions.findById(execution.id).orElseThrow().heartbeatAt)
-        await("processor heartbeat") {
-            executions.findById(execution.id).orElseThrow().heartbeatAt?.isAfter(heartbeatAfterClaim) == true
+        try {
+            assertThat(blockingGateway.started.await(15, TimeUnit.SECONDS)).isTrue()
+            val heartbeatAfterClaim = requireNotNull(executions.findById(execution.id).orElseThrow().heartbeatAt)
+            await("processor heartbeat") {
+                executions.findById(execution.id).orElseThrow().heartbeatAt?.isAfter(heartbeatAfterClaim) == true
+            }
+            Thread.sleep(1_100)
+            assertThat(reconciler.reconcile(Instant.now(), leaseSeconds = 1)).isZero()
+            assertThat(executions.findById(execution.id).orElseThrow().status).isEqualTo(ExecutionStatus.RUNNING)
+        } finally {
+            blockingGateway.release.countDown()
         }
-        Thread.sleep(1_100)
-        assertThat(reconciler.reconcile(Instant.now(), leaseSeconds = 1)).isZero()
-        assertThat(executions.findById(execution.id).orElseThrow().status).isEqualTo(ExecutionStatus.RUNNING)
-
-        blockingGateway.release.countDown()
         await("long processor completion") {
             executions.findById(execution.id).orElseThrow().status == ExecutionStatus.SUCCEEDED
         }

@@ -20,8 +20,11 @@ class BuilderConversation(
     @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
     @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
     @Column(nullable = false, length = 160) var title: String = "새 업무 자동화",
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) val purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION,
     @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
 ) : AuditedEntity()
+
+enum class BuilderConversationPurpose { AUTOMATION, AGENT_DEVELOPMENT }
 
 @Entity @Table(name = "builder_messages")
 class BuilderMessage(
@@ -51,6 +54,22 @@ class BuilderProposalEntity(
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "guide_definitions_json", nullable = false, columnDefinition = "jsonb") var guideDefinitionsJson: List<Map<String, Any?>>,
 ) : AuditedEntity()
 
+enum class AgentGenerationDraftState { STARTED, GENERATED, VALIDATION_FAILED, COMPLETED, FAILED }
+
+@Entity @Table(name = "builder_agent_generation_drafts")
+class AgentGenerationDraftEntity(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "conversation_id", nullable = false, unique = true) val conversationId: UUID,
+    @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
+    @Column(name = "source_instruction", nullable = false, columnDefinition = "text") var sourceInstruction: String,
+    @Column(name = "design_mode", nullable = false, length = 40) var designMode: String,
+    @Enumerated(EnumType.STRING) @Column(nullable = false, length = 40) var state: AgentGenerationDraftState = AgentGenerationDraftState.STARTED,
+    @Column(nullable = false) var attempt: Int = 0,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "bundle_json", columnDefinition = "jsonb") var bundleJson: Map<String, Any?>? = null,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "validation_issues_json", nullable = false, columnDefinition = "jsonb") var validationIssuesJson: List<Map<String, Any?>> = emptyList(),
+    @Column(name = "error_message", length = 500) var errorMessage: String? = null,
+) : AuditedEntity()
+
 @Entity @Table(name = "builder_workflows")
 class BuilderWorkflow(
     @Id val id: UUID = UUID.randomUUID(),
@@ -72,6 +91,7 @@ class BuilderWorkflowVersion(
     @Column(name = "template_version_id") val templateVersionId: UUID?,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "execution_contract_json", nullable = false, columnDefinition = "jsonb") val executionContractJson: Map<String, Any?>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "graph_json", nullable = false, columnDefinition = "jsonb") val graphJson: Map<String, Any?>,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "design_snapshot_json", nullable = false, columnDefinition = "jsonb") val designSnapshotJson: Map<String, Any?> = emptyMap(),
     @Column(name = "graph_hash", nullable = false, length = 64) val graphHash: String,
     @Column(name = "change_summary", nullable = false, length = 500) val changeSummary: String,
     @Column(nullable = false) var approved: Boolean = false,

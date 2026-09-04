@@ -1,0 +1,33 @@
+{
+  "model": "gpt-5.6-luna",
+  "mode": "REAL_CODEX_STRUCTURED_OUTPUT",
+  "cases": {
+    "A_FAQ_DRAFT": {
+      "input": "FAQ를 검색해 고객 답변 초안을 만들어줘.",
+      "agentKeys": ["answer-writer"],
+      "nodeTypes": ["manual.trigger", "knowledge.search.mock", "ai.generate"],
+      "externalExecutionConfigured": false
+    },
+    "B_CSV_COMPARE": {
+      "input": "CSV 파일 두 개를 정확하게 비교해 변경된 행을 알려줘.",
+      "agentKeys": [],
+      "nodeTypes": ["manual.trigger", "data.csv.compare"],
+      "executionStrategy": "DETERMINISTIC"
+    },
+    "C_DAILY_NEWS": {
+      "input": "매일 오전 8시에 AI 뉴스 세 개를 요약해 Slack으로 보내되 전송 전에 승인받아줘.",
+      "agentKeys": ["news-summary-writer"],
+      "nodeTypes": ["schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "human.approval", "slack.send.mock"],
+      "externalExecutionConfigured": false
+    },
+    "D_REPLACE_OUTPUT": {
+      "input": "아까 만든 에이전트에서 Slack 전송을 이메일 전송으로 바꿔줘.",
+      "operation": "ReplaceNode",
+      "preservesNodeIds": true,
+      "preservesEdges": true,
+      "createsNewWorkflowVersion": true,
+      "newNodeType": "email.send.mock",
+      "connectionStatus": "UNRESOLVED"
+    }
+  }
+}

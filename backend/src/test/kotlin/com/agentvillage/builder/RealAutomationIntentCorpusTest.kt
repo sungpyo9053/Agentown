@@ -64,7 +64,7 @@ class RealAutomationIntentCorpusTest {
         val credentials = mock<CredentialDirectory>()
         val limiter = mock<BuilderUsageLimiter>()
         whenever(limiter.isUnlimited(any())).thenReturn(true)
-        val model = CodexCliMetaAgentModel(credentials, runner, limiter, mapper, modelName)
+        val model = CodexCliMetaAgentModel(credentials, runner, mapper, modelName)
         val runs = mock<MetaAgentRunRepository>()
         whenever(runs.save(any())).thenAnswer { it.arguments[0] }
         val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())

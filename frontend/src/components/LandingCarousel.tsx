@@ -8,7 +8,7 @@ import { blockFontClassName } from "@/lib/fonts";
 /* 가로로 넘어가는 히어로. 첫 장은 기존 랜딩 그대로 두고
    뒤로 메시지 장을 이어 붙여 슬로건을 단계적으로 강조합니다. */
 
-const slideLabels = ["Intro", "혼자", "회사", "팀원", "시작"];
+const slideLabels = ["Intro", "말하기", "설계", "테스트", "시작"];
 
 const AUTOPLAY_MS = 6000;
 
@@ -66,12 +66,12 @@ export function LandingCarousel() {
       <Slide label={slideLabels[0]} index={0} count={count}>
         <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-start lg:gap-12">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Agentown</p>
+            <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Agentown · Agent Compiler</p>
             <h1 className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(2.75rem,7.5vw,8rem)] text-ink`}>
-              I&apos;m a CEO.<br />Everyone has<br />an AI now.
+              말하면,<br />AI 팀이<br />완성됩니다.
             </h1>
-            <p className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(1.75rem,3.2vw,3rem)] text-ink`}>Assemble your AI team.</p>
-            <Body className="mt-6" sentences={["혼자 다 하지 않아도 됩니다.", "내 회사를 만들고, 필요한 AI 팀원을 뽑고, 목표를 맡기세요.", "풀고 싶은 문제 하나면 시작할 수 있어요."]} />
+            <p className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(1.75rem,3.2vw,3rem)] text-ink`}>Describe it. Test it. Take it anywhere.</p>
+            <Body className="mt-6" sentences={["하고 싶은 일을 자연어로 설명하세요.", "필요한 에이전트와 도구·워크플로를 자동으로 설계합니다.", "샘플로 시험하고 실행 패키지로 가져갈 수 있어요."]} />
           </div>
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
             <div className="flex flex-wrap items-center gap-3 lg:justify-end">
@@ -83,42 +83,42 @@ export function LandingCarousel() {
         </div>
       </Slide>
 
-      {/* 2 — 문제 제기 */}
+      {/* 2 — 자연어 입력 */}
       <Slide label={slideLabels[1]} index={1} count={count}>
-        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">The problem</p>
+        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 01 · Describe</p>
         <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
-          혼자 다 하려니까<br /><span className="text-mute">아무것도</span><br />끝나지 않는다.
+          기술 대신<br /><span className="text-mute">하고 싶은 일만</span><br />말하세요.
         </h2>
-        <Body className="mt-7" sentences={["기획도, 조사도, 검수도, 발행도 전부 한 사람 몫이었죠.", "AI를 써봐도 매번 처음부터 다시 설명해야 했고요."]} />
+        <Body className="mt-7" sentences={["노드, 프롬프트, API를 먼저 배울 필요가 없습니다.", "모호한 부분만 쉬운 질문으로 확인하고 요구사항을 구조화합니다."]} />
       </Slide>
 
-      {/* 3 — 회사를 만든다 */}
+      {/* 3 — 에이전트 설계 */}
       <Slide label={slideLabels[2]} index={2} count={count}>
-        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 01</p>
+        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 02 · Compile</p>
         <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
-          그래서<br />회사를<br />차렸습니다.
+          필요한 것만<br />골라서<br />설계합니다.
         </h2>
-        <Body className="mt-7" sentences={["이름을 정하고, 무슨 일을 하는 곳인지 적고, 사무실을 꾸밉니다.", "문제 하나면 회사 하나가 시작돼요."]} />
+        <Body className="mt-7" sentences={["AI 에이전트, 일반 기능, 도구, 승인 단계를 비용에 맞게 조합합니다.", "입력·출력 스키마와 워크플로를 같은 서버 버전으로 검증합니다."]} />
       </Slide>
 
-      {/* 4 — 팀원을 모은다 */}
+      {/* 4 — 샘플 테스트 */}
       <Slide label={slideLabels[3]} index={3} count={count}>
-        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 02</p>
+        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 03 · Test</p>
         <h2 className={`${blockFontClassName} font-block-tight mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
-          Assemble<br />your<br />AI team.
+          연결 전에<br />샘플로<br />돌려보세요.
         </h2>
-        <Body className="mt-7" sentences={["리서처, 작가, 검수자, 발행 담당.", "필요한 역할을 뽑고 각자의 일하는 기준을 정해주면 팀이 완성됩니다."]} />
+        <Body className="mt-7" sentences={["Mock 데이터로 단계별 입력·출력과 최종 결과를 먼저 확인합니다.", "실제 외부 연결이 필요한 지점과 미해결 항목도 숨기지 않습니다."]} />
       </Slide>
 
       {/* 5 — 시작 */}
       <Slide label={slideLabels[4]} index={4} count={count}>
         <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr] lg:items-start lg:gap-12">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 03</p>
+            <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Step 04 · Export</p>
             <h2 className={`${blockFontClassName} mt-6 text-[clamp(2.5rem,6.8vw,7rem)] text-ink`}>
-              이제<br />맡기고<br />퇴근하세요.
+              만들고,<br />시험하고,<br />가져가세요.
             </h2>
-            <Body className="mt-7" sentences={["목표를 정해두면 팀이 순서대로 일합니다.", "중요한 순간에만 당신의 승인을 기다려요."]} />
+            <Body className="mt-7" sentences={["검증된 Agent Package와 Python Mock 실행기를 내려받을 수 있습니다.", "Slack·Notion 같은 실제 연결은 사용자의 인증 설정 뒤 선택한 환경에서 실행합니다."]} />
           </div>
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
             <div className="flex flex-wrap items-center gap-3 lg:justify-end">

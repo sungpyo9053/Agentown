@@ -63,10 +63,13 @@ class ReleaseControlIntegrationTest : IntegrationTestSupport() {
             .andExpect(status().isOk).andExpect(jsonPath("$.releaseKey").value("release-agent-sync")).andExpect(jsonPath("$.status").value("APPROVAL_REQUIRED"))
         mvc.perform(get("/api/internal/releases/release-agent-sync").header("X-Release-Agent-Token", "integration-release-token"))
             .andExpect(status().isOk).andExpect(jsonPath("$.candidateSha").value(SHA)).andExpect(jsonPath("$.preflightHash").value(PREFLIGHT))
-
         val corrected = payload.replace("Release 동기화", "운영 배포 동기화").replace("승인 후보를 같은 저장소에서 확인합니다.", "운영자가 검증된 변경 내용을 한국어로 확인합니다.")
         mvc.perform(post("/api/internal/releases/candidates").header("X-Release-Agent-Token", "integration-release-token").contentType(MediaType.APPLICATION_JSON).content(corrected))
             .andExpect(status().isOk).andExpect(jsonPath("$.purpose").value("운영 배포 동기화")).andExpect(jsonPath("$.userSummary").value("운영자가 검증된 변경 내용을 한국어로 확인합니다."))
+
+        val changed = corrected.replace(SHA, "c".repeat(40)).replace(PREFLIGHT, "e".repeat(64))
+        mvc.perform(post("/api/internal/releases/candidates").header("X-Release-Agent-Token", "integration-release-token").contentType(MediaType.APPLICATION_JSON).content(changed))
+            .andExpect(status().isOk).andExpect(jsonPath("$.status").value("APPROVAL_REQUIRED")).andExpect(jsonPath("$.candidateSha").value("c".repeat(40)))
     }
 
     @Test fun `release agent rejects English only user facing metadata`() {

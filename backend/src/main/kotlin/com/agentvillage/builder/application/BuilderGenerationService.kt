@@ -3,12 +3,14 @@ package com.agentvillage.builder.application
 import com.agentvillage.builder.domain.BuilderGenerationJob
 import com.agentvillage.builder.domain.BuilderGenerationStatus
 import com.agentvillage.builder.domain.BuilderGenerationStage
+import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.builder.infrastructure.BuilderConversationRepository
 import com.agentvillage.builder.infrastructure.BuilderGenerationJobRepository
 import com.agentvillage.builder.infrastructure.BuilderWorkflowRepository
 import com.agentvillage.builder.infrastructure.BuilderWorkspaceRepository
 import com.agentvillage.common.exception.ApiException
 import com.agentvillage.common.exception.BadRequestException
+import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.common.exception.NotFoundException
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.scheduling.annotation.Async
@@ -46,21 +48,27 @@ class BuilderGenerationService(
     private val runner: CodexCliRunner,
 ) {
     @Transactional
-    fun enqueue(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String): BuilderGenerationJobView {
+    fun enqueue(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): BuilderGenerationJobView {
         if (idempotencyKey.isBlank() || idempotencyKey.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.")
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
         val conversation = conversations.findByIdAndWorkspaceId(conversationId, workspace.id) ?: throw NotFoundException("BUILDER_CONVERSATION_NOT_FOUND", "대화를 찾을 수 없습니다.")
+        requirePurpose(conversation.purpose, purpose)
         val workflow = workflows.findByConversationId(conversation.id) ?: throw NotFoundException("WORKFLOW_NOT_FOUND", "워크플로우를 찾을 수 없습니다.")
-        jobs.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let { return view(it) }
+        jobs.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let {
+            if (it.conversationId != conversation.id) throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 대화에서 사용한 Idempotency-Key입니다.")
+            return view(it)
+        }
         val job = jobs.save(BuilderGenerationJob(workspaceId = workspace.id, conversationId = conversation.id, workflowId = workflow.id, instruction = instruction.trim(), idempotencyKey = idempotencyKey))
         publisher.publishEvent(BuilderGenerationRequested(ownerId, job.id))
         return view(job)
     }
 
     @Transactional(readOnly = true)
-    fun get(ownerId: UUID, jobId: UUID): BuilderGenerationJobView {
+    fun get(ownerId: UUID, jobId: UUID, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): BuilderGenerationJobView {
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
-        return view(jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다."))
+        val job = jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다.")
+        requireJobPurpose(workspace.id, job.conversationId, purpose)
+        return view(job)
     }
 
     @Transactional(readOnly = true)
@@ -76,10 +84,11 @@ class BuilderGenerationService(
     }
 
     @Transactional
-    fun cancel(ownerId: UUID, jobId: UUID, idempotencyKey: String): BuilderGenerationJobView {
+    fun cancel(ownerId: UUID, jobId: UUID, idempotencyKey: String, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): BuilderGenerationJobView {
         if (idempotencyKey.isBlank() || idempotencyKey.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.")
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
         val job = jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다.")
+        requireJobPurpose(workspace.id, job.conversationId, purpose)
         if (job.status !in setOf(BuilderGenerationStatus.SUCCEEDED, BuilderGenerationStatus.FAILED, BuilderGenerationStatus.CANCELLED)) {
             job.status = BuilderGenerationStatus.CANCELLED
             job.stage = BuilderGenerationStage.CANCELLED
@@ -89,6 +98,16 @@ class BuilderGenerationService(
             runner.cancel(job.id)
         }
         return view(job)
+    }
+
+    private fun requireJobPurpose(workspaceId: UUID, conversationId: UUID, purpose: BuilderConversationPurpose) {
+        val conversation = conversations.findByIdAndWorkspaceId(conversationId, workspaceId)
+            ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다.")
+        requirePurpose(conversation.purpose, purpose)
+    }
+
+    private fun requirePurpose(actual: BuilderConversationPurpose, expected: BuilderConversationPurpose) {
+        if (actual != expected) throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다.")
     }
 
     private fun view(job: BuilderGenerationJob): BuilderGenerationJobView {
@@ -108,7 +127,11 @@ class BuilderGenerationService(
 }
 
 @Component
-class BuilderGenerationWorker(private val builder: BuilderService, private val progress: BuilderJobProgressService) {
+class BuilderGenerationWorker(
+    private val builder: BuilderService,
+    private val progress: BuilderJobProgressService,
+    private val usageLimiter: BuilderUsageLimiter,
+) {
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     fun execute(event: BuilderGenerationRequested) {
@@ -118,7 +141,12 @@ class BuilderGenerationWorker(private val builder: BuilderService, private val p
         } catch (exception: Exception) {
             val code = (exception as? ApiException)?.code ?: "BUILDER_GENERATION_FAILED"
             if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
-            else progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+            else {
+                val job = progressJob(event.jobId)
+                usageLimiter.releaseFailedClaim(event.ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
+                builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
+                progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
+            }
         }
     }
 

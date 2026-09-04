@@ -1,5 +1,5 @@
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public retryAfterSeconds?: number) { super(message); }
 }
 
 function cookie(name: string) {
@@ -25,7 +25,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: "요청을 처리하지 못했습니다." }));
-    throw new ApiError(response.status, response.status === 401 ? "로그인 후 연결할 수 있습니다." : error.message);
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    throw new ApiError(
+      response.status,
+      response.status === 401 ? "로그인 후 연결할 수 있습니다." : error.message,
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined,
+    );
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

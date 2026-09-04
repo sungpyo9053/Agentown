@@ -108,6 +108,10 @@ test("reload restores recoverable generation and conversation changes clear it w
   await page.getByRole("button", { name: "새 자동화" }).click();
   await expect(page.getByLabel("저장된 업무 자동화")).toHaveValue("conversation-c");
   await expect(page.getByText("Codex 설계를 시작하지 못했습니다")).toHaveCount(0);
+  const requestInput = page.getByLabel("업무 설명 또는 수정 요청");
+  await expect(requestInput).toBeEnabled();
+  await expect(page.getByRole("button", { name: "분석 시작" })).toBeDisabled();
+  await requestInput.fill("새 자동화 검증 입력");
   await expect(page.getByRole("button", { name: "분석 시작" })).toBeEnabled();
   expect(generationMutations).toEqual([]);
 });

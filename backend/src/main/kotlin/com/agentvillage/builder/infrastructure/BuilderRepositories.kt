@@ -14,6 +14,7 @@ interface BuilderConversationRepository : JpaRepository<BuilderConversation, UUI
     fun findByIdAndWorkspaceId(id: UUID, workspaceId: UUID): BuilderConversation?
     fun findByWorkspaceIdAndIdempotencyKey(workspaceId: UUID, idempotencyKey: String): BuilderConversation?
     fun findTop20ByWorkspaceIdOrderByCreatedAtDesc(workspaceId: UUID): List<BuilderConversation>
+    fun findTop20ByWorkspaceIdAndPurposeOrderByCreatedAtDesc(workspaceId: UUID, purpose: BuilderConversationPurpose): List<BuilderConversation>
 }
 interface BuilderMessageRepository : JpaRepository<BuilderMessage, UUID> {
     fun findAllByConversationIdOrderByCreatedAt(conversationId: UUID): List<BuilderMessage>
@@ -21,6 +22,7 @@ interface BuilderMessageRepository : JpaRepository<BuilderMessage, UUID> {
 }
 interface BuilderRequirementRepository : JpaRepository<BuilderRequirementEntity, UUID> { fun findByConversationId(conversationId: UUID): BuilderRequirementEntity? }
 interface BuilderProposalRepository : JpaRepository<BuilderProposalEntity, UUID> { fun findByConversationId(conversationId: UUID): BuilderProposalEntity? }
+interface AgentGenerationDraftRepository : JpaRepository<AgentGenerationDraftEntity, UUID> { fun findByConversationId(conversationId: UUID): AgentGenerationDraftEntity? }
 interface BuilderWorkflowRepository : JpaRepository<BuilderWorkflow, UUID> {
     fun findByIdAndWorkspaceId(id: UUID, workspaceId: UUID): BuilderWorkflow?
     fun findByConversationId(conversationId: UUID): BuilderWorkflow?
@@ -93,6 +95,7 @@ interface BuilderGenerationJobRepository : JpaRepository<BuilderGenerationJob, U
 }
 interface BuilderUsageRecordRepository : JpaRepository<BuilderUsageRecord, UUID> {
     fun findByOwnerIdAndIdempotencyKey(ownerId: UUID, idempotencyKey: String): BuilderUsageRecord?
+    fun countByOwnerIdAndConversationId(ownerId: UUID, conversationId: UUID): Long
 }
 interface BuilderAutomationTeamRepository : JpaRepository<BuilderAutomationTeam, UUID> {
     fun findByWorkflowVersionId(workflowVersionId: UUID): BuilderAutomationTeam?

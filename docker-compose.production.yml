@@ -23,6 +23,9 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_village}
       DB_USERNAME: ${POSTGRES_USER:-agent_village}
       DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      # Transitional release: production recorded V22/V23 before V21 existed.
+      # Apply the known V21 gap, then V24 makes the resulting schema idempotent.
+      SPRING_FLYWAY_OUT_OF_ORDER: "true"
       LLM_KEY_VERSION: ${LLM_KEY_VERSION:-v1}
       LLM_MASTER_KEYS: ${LLM_MASTER_KEYS:?Set versioned LLM_MASTER_KEYS}
       COOKIE_SECURE: "true"
@@ -30,6 +33,7 @@ services:
       RATE_LIMIT_ENABLED: "true"
       TRUST_FORWARDED_FOR: "true"
       EXECUTION_STUB_ENABLED: "false"
+      DESIGNER_TEMPLATE_ENABLED: "true"
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-ses}
       EMAIL_EXPOSE_DEVELOPMENT_VALUES: "false"
       EMAIL_WEBHOOK_URL: ${EMAIL_WEBHOOK_URL:-}
@@ -44,6 +48,8 @@ services:
       BUILDER_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
       BUILDER_UNLIMITED_OWNER_IDS: ${BUILDER_UNLIMITED_OWNER_IDS:-}
       BUILDER_SHARED_CODEX_HOME: /home/app/.codex
+      CONTENT_OPERATIONS_PLATFORM_MODEL: ${CONTENT_OPERATIONS_PLATFORM_MODEL:-gpt-5.6-luna}
+      CONTENT_OPERATIONS_MONTHLY_MANAGED_LIMIT: ${CONTENT_OPERATIONS_MONTHLY_MANAGED_LIMIT:-30}
       RELEASE_COMMIT_SHA: ${RELEASE_COMMIT_SHA:-unknown}
       RELEASE_ARTIFACT: ${RELEASE_ARTIFACT:-docker-compose-local-build}
       RELEASE_AGENT_TOKEN: ${RELEASE_AGENT_TOKEN:-}

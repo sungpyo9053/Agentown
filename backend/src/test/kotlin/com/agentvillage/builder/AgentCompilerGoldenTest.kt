@@ -39,6 +39,7 @@ class AgentCompilerGoldenTest {
         assertThat(shapes[0]).contains("knowledge.search.mock", "ai.generate")
         assertThat(shapes[1]).contains("data.csv.compare")
         assertThat(shapes[1]).doesNotContain("ai.generate", "ai.classify")
+        assertThat(b.agentDefinitions).isEmpty()
         assertThat(shapes[2]).contains("schedule.trigger", "human.approval", "slack.send.mock")
     }
 

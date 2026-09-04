@@ -55,6 +55,27 @@ class ReleaseManagerTest(unittest.TestCase):
         self.contract["approved_commit_sha"] = "0" * 40
         self.assertFalse(self.manager.preflight(self.contract, require_clean=False)["passed"])
 
+    def test_candidate_must_advance_the_previous_production_release(self):
+        base = self.sha
+        subprocess.run(["git", "checkout", "-qb", "production"], cwd=self.root, check=True)
+        (self.root / "production.txt").write_text("develop route\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "production feature"], cwd=self.root, check=True)
+        previous = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        subprocess.run(["git", "checkout", "-qb", "candidate", base], cwd=self.root, check=True)
+        (self.root / "candidate.txt").write_text("compiler fix\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "divergent candidate"], cwd=self.root, check=True)
+        candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.contract.update({"approved_commit_sha": candidate, "previous_release_sha": previous})
+        atomic_json(self.verification, {"commit_sha": candidate, "commands": [{"command": "test", "status": "PASSED"}]})
+
+        report = self.manager.preflight(self.contract)
+        checks = {item["id"]: item for item in report["checks"]}
+
+        self.assertFalse(checks["candidate_advances_previous_release"]["passed"])
+        self.assertFalse(report["passed"])
+
     def test_untracked_only_worktree_is_blocked(self):
         (self.root / "untracked.txt").write_text("not part of approved SHA\n")
         report = self.manager.preflight(self.contract)
@@ -106,6 +127,22 @@ class ReleaseManagerTest(unittest.TestCase):
         report = self.manager.preflight(self.contract)
         checks = {item["id"]: item for item in report["checks"]}
         self.assertFalse(checks["secret_scan"]["passed"]); self.assertFalse(checks["migration_compatible"]["passed"])
+
+    def test_secret_scan_checks_candidate_files_not_removed_patch_lines(self):
+        secret = self.root / "temporary-credential.txt"
+        synthetic_secret = "abcdefgh" + "ijklmnop"
+        secret.write_text(f"password={synthetic_secret}\n")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "temporary secret"], cwd=self.root, check=True)
+        secret.unlink()
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "remove secret"], cwd=self.root, check=True)
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        self.contract["approved_commit_sha"] = sha
+        atomic_json(self.verification, {"commit_sha": sha, "commands": [{"command": "test", "status": "PASSED"}]})
+        report = self.manager.preflight(self.contract)
+        checks = {item["id"]: item for item in report["checks"]}
+        self.assertTrue(checks["secret_scan"]["passed"])
 
     def test_cli_style_approval_is_sha_bound_and_idempotent_reapproval_rejected(self):
         report = self.manager.preflight(self.contract); self.contract.update({"preflight_hash": report["preflight_hash"], "status": "RELEASE_APPROVAL_REQUIRED"}); atomic_json(self.active, self.contract)
@@ -279,6 +316,43 @@ class ReleaseManagerTest(unittest.TestCase):
 
 
 class SshReleaseAdapterTest(unittest.TestCase):
+    def test_adapter_uploads_compose_from_exact_source_worktree(self):
+        with tempfile.TemporaryDirectory() as raw:
+            operational = Path(raw) / "operational"
+            source = Path(raw) / "source"
+            (operational / "harness" / "deploy").mkdir(parents=True)
+            (source / "harness" / "deploy").mkdir(parents=True)
+            (operational / "harness" / "deploy" / "docker-compose.release.yml").write_text("stale\n")
+            source_compose = source / "harness" / "deploy" / "docker-compose.release.yml"
+            source_compose.write_text("candidate\n")
+            key = Path(raw) / "release.pem"
+            key.write_text("test-only\n")
+            sha = "a" * 40
+            copied_sources = []
+
+            def runner(command, **kwargs):
+                if command and command[0] == "git" and "archive" in command:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"archive")
+                if command and command[0] == "scp":
+                    copied_sources.append(Path(command[-2]))
+                if command[:3] == ["git", "-C", str(source)] and "status" in command:
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                if command[:3] == ["git", "-C", str(source)] and "rev-parse" in command:
+                    return subprocess.CompletedProcess(command, 0, f"{sha}\n", "")
+                if command and command[0] == "ssh" and "agentown-release-verify" in command[-1]:
+                    return subprocess.CompletedProcess(command, 0, f'{{"commitSha":"{sha}"}}\n{{"status":"UP"}}\n', "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            environment = {
+                "AGENTOWN_RELEASE_SSH_KEY": str(key), "AGENTOWN_STAGING_HOST": "staging.invalid",
+                "AGENTOWN_PRODUCTION_HOST": "production.invalid",
+            }
+            with patch.dict("os.environ", environment):
+                result = SshReleaseAdapter(operational, source, runner)("staging", {"approved_commit_sha": sha})
+            self.assertTrue(result["smoke_passed"])
+            self.assertIn(source_compose, copied_sources)
+            self.assertNotIn(operational / "harness" / "deploy" / "docker-compose.release.yml", copied_sources)
+
     def test_adapter_requires_clean_exact_sha_worktree(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "source"

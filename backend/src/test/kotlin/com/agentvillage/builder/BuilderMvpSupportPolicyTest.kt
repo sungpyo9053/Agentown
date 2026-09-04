@@ -62,4 +62,23 @@ class BuilderMvpSupportPolicyTest {
             )
         }.doesNotThrowAnyException()
     }
+
+    @Test
+    fun `commit and production deployment automation is rejected instead of reframed as a ready agent`() {
+        assertThatThrownBy {
+            BuilderMvpSupportPolicy.requireSupported(
+                AutomationRequirement(
+                    objective = "커밋과 운영 배포까지 자동화한다.",
+                    trigger = "사용자 요청",
+                    inputs = listOf("백엔드 변경사항"),
+                    outputs = listOf("커밋", "운영 배포"),
+                    steps = listOf("커밋 작성", "운영 배포 실행"),
+                    decisions = emptyList(),
+                    exceptions = emptyList(),
+                    humanApprovalRequired = true,
+                ),
+            )
+        }.isInstanceOf(BadRequestException::class.java)
+            .hasMessageContaining("개발 도구 쓰기·배포")
+    }
 }

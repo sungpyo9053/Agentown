@@ -183,7 +183,11 @@ class MetaAgentPipelineSafetyTest {
         assertThat(result.proposal.templateSelection?.templateKey).isEqualTo("daily-market-news-report")
         assertThat(result.proposal.economics?.estimatedAiCallsPerRun).isEqualTo(1)
         assertThat(result.proposal.graphPlan!!.nodes.map { it.nodeType }).containsExactly(
-            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "human.approval", "slack.send.mock",
+            "schedule.trigger", "news.search.mock", "data.deduplicate", "ai.generate", "template.render", "human.approval", "slack.send.mock", "workflow.end",
         )
+        assertThat(result.proposal.resourcePlan?.simulationReady).isTrue()
+        assertThat(result.proposal.resourcePlan?.productionReady).isFalse()
+        assertThat(result.proposal.resourcePlan?.bindings?.map { it.resourceKey })
+            .contains("connector.news.mock", "connector.slack.mock", "platform.structured-ai")
     }
 }

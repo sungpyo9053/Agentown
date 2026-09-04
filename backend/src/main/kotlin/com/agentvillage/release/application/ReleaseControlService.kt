@@ -36,12 +36,12 @@ class ReleaseControlService(private val releases: ReleaseRepository, private val
         existing.detail = command.detail
         if (existing.candidateSha != command.candidateSha || existing.preflightHash != command.preflightHash) {
             val previous = existing.status
-            existing.candidateSha = command.candidateSha; existing.preflightHash = command.preflightHash
-            existing.approvalIdempotencyKey = null; existing.approvalEnvironment = null; existing.approvedBy = null; existing.approvedAt = null; existing.approvalPreflightHash = null; existing.scheduledAt = null; existing.status = ReleaseStatus.CANDIDATE
+            existing.candidateSha = command.candidateSha; existing.preflightHash = command.preflightHash; existing.stagingStatus = command.stagingStatus; existing.detail = command.detail
+            existing.approvalIdempotencyKey = null; existing.approvalEnvironment = null; existing.approvedBy = null; existing.approvedAt = null; existing.approvalPreflightHash = null; existing.scheduledAt = null; existing.status = if (ready) ReleaseStatus.APPROVAL_REQUIRED else ReleaseStatus.CANDIDATE
             event(existing, null, previous, existing.status, "APPROVAL_INVALIDATED", "후보 SHA 또는 사전검증 결과 변경")
         } else if (existing.status == ReleaseStatus.CANDIDATE && ready) {
             val previous = existing.status
-            existing.status = ReleaseStatus.APPROVAL_REQUIRED
+            existing.stagingStatus = command.stagingStatus; existing.detail = command.detail; existing.status = ReleaseStatus.APPROVAL_REQUIRED
             event(existing, null, previous, existing.status, "READY", "실제 환경 계약과 스테이징 검증 확인")
         }
         return existing

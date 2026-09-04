@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LayoutDashboard, Building2, Users, Settings, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { LayoutDashboard, Building2, Users, FilePenLine, Settings, PanelLeftClose, PanelLeftOpen, WandSparkles } from "lucide-react";
 import { SessionNav } from "@/components/SessionNav";
 import { AgentownLogo } from "@/components/MarketingShell";
 import { blockFontClassName } from "@/lib/fonts";
@@ -45,6 +45,8 @@ const groups = [
     { href: "/assemble/harness", label: "하네스 구성" },
     { href: "/assemble/automation", label: "업무 자동화" },
   ] },
+  { key: "develop", icon: WandSparkles, label: "에이전트 개발", href: "/develop", items: [] as { href: string; label: string }[] },
+  { key: "content", icon: FilePenLine, label: "콘텐츠 운영", href: "/content", items: [] as { href: string; label: string }[] },
   { key: "settings", icon: Settings, label: "Setting", href: "/settings/subscription", items: [
     { href: "/settings/subscription", label: "구독 관리" },
     { href: "/settings/preferences", label: "환경 설정" },
@@ -53,9 +55,9 @@ const groups = [
   ] },
 ];
 
-const groupPrefix: Record<string, string> = { board: "/dashboard", management: "/management", assemble: "/assemble", settings: "/settings" };
+const groupPrefix: Record<string, string> = { board: "/dashboard", management: "/management", assemble: "/assemble", develop: "/develop", content: "/content", settings: "/settings" };
 
-export function AppShell({ title, kicker, children }: { title: string; kicker: string; children: React.ReactNode }) {
+export function AppShell({ title, kicker, children, workspace = false }: { title: string; kicker: string; children: React.ReactNode; workspace?: boolean }) {
   const pathname = usePathname() ?? "";
   const home = useQuery({ queryKey: ["home"], queryFn: () => api<HomeSummary>("/mini-homes/me"), retry: false });
   const companyName = home.data?.title ?? "내 회사";
@@ -112,10 +114,10 @@ export function AppShell({ title, kicker, children }: { title: string; kicker: s
         </div>
       </header>
 
-      <main className="flex-1 px-6 py-10 md:px-10">
-        <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">{kicker}</p>
-        <h1 className={`${blockFontClassName} mt-2 text-5xl text-ink md:text-6xl`}>{title}</h1>
-        <section className="mt-10">{children}</section>
+      <main className={workspace ? "min-h-0 flex-1" : "flex-1 px-6 py-10 md:px-10"}>
+        {!workspace && <><p className="text-xs font-medium uppercase tracking-[.2em] text-mute">{kicker}</p>
+        <h1 className={`${blockFontClassName} mt-2 text-5xl text-ink md:text-6xl`}>{title}</h1></>}
+        <section className={workspace ? "h-[calc(100vh-4rem)]" : "mt-10"} aria-label={workspace ? title : undefined}>{children}</section>
       </main>
     </div>
   </div>;

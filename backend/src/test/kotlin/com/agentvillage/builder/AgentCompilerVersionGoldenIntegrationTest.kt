@@ -30,7 +30,6 @@ class AgentCompilerVersionGoldenIntegrationTest : IntegrationTestSupport() {
         val originalVersion = snapshot.currentVersionId!!
         val originalNodeIds = snapshot.graph!!.nodes.map { it.id }
         val originalEdges = snapshot.graph!!.edges
-
         snapshot = service.applyPatch(
             owner.id,
             snapshot.workflowId,
@@ -39,14 +38,12 @@ class AgentCompilerVersionGoldenIntegrationTest : IntegrationTestSupport() {
             snapshot.validation!!.graphHash,
             "golden-patch-$suffix",
         )
-
         assertThat(snapshot.currentVersionId).isNotEqualTo(originalVersion)
         assertThat(snapshot.versions).hasSize(2)
         assertThat(snapshot.graph!!.nodes.map { it.id }).containsExactlyElementsOf(originalNodeIds)
         assertThat(snapshot.graph!!.edges).isEqualTo(originalEdges)
         assertThat(snapshot.graph!!.nodes.map { it.nodeType }).contains("email.send.mock").doesNotContain("slack.reply.mock")
         assertThat(snapshot.graph!!.nodes.single { it.nodeType == "email.send.mock" }.config["connectionStatus"]).isEqualTo("UNRESOLVED")
-
         val packageFiles = service.harnessPackage(owner.id, snapshot.workflowId)
         assertThat(packageFiles.keys).contains(
             "agent.yaml", "workflow.yaml", "schemas/input.schema.json", "schemas/output.schema.json",
@@ -54,6 +51,6 @@ class AgentCompilerVersionGoldenIntegrationTest : IntegrationTestSupport() {
         )
         val packageVersion = mapper.readTree(packageFiles.getValue("version.json"))["workflowVersionId"].asText()
         assertThat(packageVersion).isEqualTo(snapshot.currentVersionId.toString())
-        assertThat(packageFiles.getValue("tools/tools.yaml")).contains("email.send.mock", "UNRESOLVED")
+        assertThat(packageFiles.getValue("tools/tools.yaml")).contains("connector.email.mock", "requires_user_action: true")
     }
 }

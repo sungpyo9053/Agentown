@@ -22,13 +22,9 @@ object BuilderMvpSupportPolicy {
             if (listOf("로컬저장", "로컬 저장", "내 컴퓨터", "파일로 저장", "다운로드", "폴더에 저장").any(normalized::contains)) {
                 add("로컬 파일 저장")
             }
-            val emailSendNegated = listOf("이메일은 보내지", "메일은 보내지", "실제 이메일은 보내지", "실제 메일은 보내지").any(normalized::contains)
-            if (!emailSendNegated && listOf("이메일 전송", "메일로 전송", "메일 발송", "email delivery", "이메일로 보내").any(normalized::contains)) {
-                add("이메일 전송")
-            }
             capability(normalized, "Google Workspace 쓰기", "google drive", "구글 드라이브", "google sheets", "구글 시트", "google calendar", "구글 캘린더", "microsoft forms")
             capability(normalized, "CRM 쓰기", "hubspot", "salesforce", "crm 상태", "crm에", "crm으로", "crm 상담", "crm 반영", "연락처를 만들")
-            capability(normalized, "개발 도구 쓰기·배포", "jira", "github", "커밋", "자동 배포", "운영 서버까지")
+            capability(normalized, "개발 도구 쓰기·배포", "jira", "github에 쓰", "깃허브에 쓰", "커밋해", "커밋까지", "자동 배포", "운영 배포", "운영 서버까지")
             capability(normalized, "회계·상거래 시스템 쓰기", "quickbooks", "shopify", "erp")
             val socialPublishNegated = listOf("실제 게시하지", "게시하지 마", "게시하지 않").any(normalized::contains)
             if (!socialPublishNegated) capability(normalized, "소셜 네트워크 게시", "instagram", "linkedin", "자동 게시", "실제 게시")

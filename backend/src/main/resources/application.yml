@@ -47,6 +47,9 @@ execution:
   heartbeat-interval-ms: ${EXECUTION_HEARTBEAT_INTERVAL_MS:30000}
   lease-seconds: ${EXECUTION_LEASE_SECONDS:120}
   recovery-interval-ms: ${EXECUTION_RECOVERY_INTERVAL_MS:30000}
+designer:
+  template-enabled: ${DESIGNER_TEMPLATE_ENABLED:true}
+  platform-model: ${DESIGNER_PLATFORM_MODEL:gpt-5.6-luna}
 auth:
   email:
     provider: ${EMAIL_PROVIDER:stub}
@@ -81,6 +84,7 @@ builder:
     codex-command: ${BUILDER_CODEX_COMMAND:codex}
     model: ${BUILDER_CODEX_MODEL:gpt-5.6-luna}
     timeout-seconds: ${BUILDER_CODEX_TIMEOUT_SECONDS:120}
+    max-revisions-per-conversation: ${BUILDER_MAX_REVISIONS_PER_CONVERSATION:2}
     unlimited-owner-ids: ${BUILDER_UNLIMITED_OWNER_IDS:}
     shared-codex-home: ${BUILDER_SHARED_CODEX_HOME:/var/lib/agentown-codex}
 connectors:

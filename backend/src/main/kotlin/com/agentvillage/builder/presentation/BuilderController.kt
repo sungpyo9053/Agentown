@@ -4,6 +4,7 @@ import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.application.BuilderProductionExecutionService
 import com.agentvillage.builder.application.ProductionRunRequest
 import com.agentvillage.builder.application.WorkflowNodeCatalog
+import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
@@ -37,40 +38,57 @@ class BuilderController(
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) = service.createConversation(user.userId, key)
 
     @GetMapping("/conversations/{conversationId}")
-    fun get(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId)
+    fun get(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): Any {
+        automationConversation(user, conversationId)
+        return service.snapshot(user.userId, conversationId)
+    }
 
     @GetMapping("/conversations")
     fun conversations(@AuthenticationPrincipal user: AuthenticatedUser) = service.listConversations(user.userId)
 
     @PostMapping("/conversations/{conversationId}/messages")
-    fun message(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID, @RequestHeader("Idempotency-Key") key: String, @Valid @RequestBody request: BuilderMessageRequest) =
-        generation.enqueue(user.userId, conversationId, request.content, key)
+    fun message(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID, @RequestHeader("Idempotency-Key") key: String, @Valid @RequestBody request: BuilderMessageRequest): Any {
+        automationConversation(user, conversationId)
+        return generation.enqueue(user.userId, conversationId, request.content, key, BuilderConversationPurpose.AUTOMATION)
+    }
 
     @GetMapping("/generation-jobs/{jobId}")
-    fun generationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID) = generation.get(user.userId, jobId)
+    fun generationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID) = generation.get(user.userId, jobId, BuilderConversationPurpose.AUTOMATION)
 
     @GetMapping("/conversations/{conversationId}/generation-jobs/latest-recoverable")
     fun latestRecoverableGenerationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): ResponseEntity<com.agentvillage.builder.application.BuilderGenerationJobView> =
         generation.latestRecoverable(user.userId, conversationId)?.let { ResponseEntity.ok(it) } ?: ResponseEntity.noContent().build()
 
     @PostMapping("/generation-jobs/{jobId}/cancel")
-    fun cancelGeneration(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID, @RequestHeader("Idempotency-Key") key: String) = generation.cancel(user.userId, jobId, key)
+    fun cancelGeneration(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID, @RequestHeader("Idempotency-Key") key: String) = generation.cancel(user.userId, jobId, key, BuilderConversationPurpose.AUTOMATION)
 
     @GetMapping("/conversations/{conversationId}/requirement")
-    fun requirement(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).requirement
+    fun requirement(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): Any? {
+        automationConversation(user, conversationId)
+        return service.snapshot(user.userId, conversationId).requirement
+    }
 
     @GetMapping("/conversations/{conversationId}/proposal")
-    fun proposal(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).let { mapOf("proposal" to it.proposal, "agents" to it.agentDefinitions, "guides" to it.guideDefinitions) }
+    fun proposal(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): Any {
+        automationConversation(user, conversationId)
+        return service.snapshot(user.userId, conversationId).let { mapOf("proposal" to it.proposal, "agents" to it.agentDefinitions, "guides" to it.guideDefinitions) }
+    }
 
     @PostMapping("/workflows/{workflowId}/design-decision")
-    fun decideDesign(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: DesignDecisionRequest) =
-        service.decideDesign(user.userId, workflowId, request.approve, key)
+    fun decideDesign(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: DesignDecisionRequest): Any {
+        automationWorkflow(user, workflowId)
+        return service.decideDesign(user.userId, workflowId, request.approve, key)
+    }
 
     @GetMapping("/workflows/{workflowId}/graph")
-    fun graph(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID) = service.workflowSnapshot(user.userId, workflowId).let { mapOf("graph" to it.graph, "validation" to it.validation, "currentVersionId" to it.currentVersionId) }
+    fun graph(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID): Any {
+        automationWorkflow(user, workflowId)
+        return service.workflowSnapshot(user.userId, workflowId).let { mapOf("graph" to it.graph, "validation" to it.validation, "currentVersionId" to it.currentVersionId) }
+    }
 
     @GetMapping("/workflows/{workflowId}/package")
     fun downloadPackage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID): ResponseEntity<ByteArray> {
+        automationWorkflow(user, workflowId)
         val files = service.harnessPackage(user.userId, workflowId)
         val bytes = ByteArrayOutputStream().use { output ->
             ZipOutputStream(output).use { zip ->
@@ -89,26 +107,40 @@ class BuilderController(
     }
 
     @GetMapping("/workflows/{workflowId}/versions")
-    fun versions(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID) = service.workflowSnapshot(user.userId, workflowId).versions
+    fun versions(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID): Any {
+        automationWorkflow(user, workflowId)
+        return service.workflowSnapshot(user.userId, workflowId).versions
+    }
 
     @PostMapping("/workflows/{workflowId}/patches")
-    fun patch(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @Valid @RequestBody request: GraphPatchRequest) =
-        service.applyPatch(user.userId, workflowId, request.instruction, request.baseVersionId, request.expectedGraphHash, key)
+    fun patch(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @Valid @RequestBody request: GraphPatchRequest): Any {
+        automationWorkflow(user, workflowId)
+        return service.applyPatch(user.userId, workflowId, request.instruction, request.baseVersionId, request.expectedGraphHash, key)
+    }
 
     @PostMapping("/workflows/{workflowId}/versions/{versionId}/restore")
-    fun restore(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @PathVariable versionId: UUID, @RequestHeader("Idempotency-Key") key: String) =
-        service.restoreVersion(user.userId, workflowId, versionId, key)
+    fun restore(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @PathVariable versionId: UUID, @RequestHeader("Idempotency-Key") key: String): Any {
+        automationWorkflow(user, workflowId)
+        return service.restoreVersion(user.userId, workflowId, versionId, key)
+    }
 
     @PostMapping("/workflows/{workflowId}/simulations")
-    fun simulate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: SimulationRequest) =
-        service.startSimulation(user.userId, workflowId, request.input, key)
+    fun simulate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: SimulationRequest): Any {
+        automationWorkflow(user, workflowId)
+        return service.startSimulation(user.userId, workflowId, request.input, key)
+    }
 
     @GetMapping("/simulations/{runId}")
-    fun simulation(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID) = service.getRun(user.userId, runId)
+    fun simulation(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID): Any {
+        automationRun(user, runId)
+        return service.getRun(user.userId, runId)
+    }
 
     @PostMapping("/simulations/{runId}/approval")
-    fun executionApproval(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ExecutionDecisionRequest) =
-        service.decideExecution(user.userId, runId, request.approve, key)
+    fun executionApproval(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ExecutionDecisionRequest): Any {
+        automationRun(user, runId)
+        return service.decideExecution(user.userId, runId, request.approve, key)
+    }
 
     @PostMapping("/workflows/{workflowId}/production-runs")
     fun productionRun(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ProductionRunRequest) =
@@ -130,19 +162,37 @@ class BuilderController(
         production.retry(user.userId, runId, key)
 
     @GetMapping("/conversations/{conversationId}/activation-readiness")
-    fun readiness(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).let {
-        mapOf("ready" to (it.status.name == "READY_TO_ACTIVATE"), "status" to it.status, "blockingReasons" to if (it.status.name == "READY_TO_ACTIVATE") emptyList<String>() else listOf("검증된 시뮬레이션을 완료해야 합니다."))
+    fun readiness(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): Any {
+        automationConversation(user, conversationId)
+        return service.snapshot(user.userId, conversationId).let {
+            mapOf("ready" to (it.status.name == "READY_TO_ACTIVATE"), "status" to it.status, "blockingReasons" to if (it.status.name == "READY_TO_ACTIVATE") emptyList<String>() else listOf("검증된 시뮬레이션을 완료해야 합니다."))
+        }
     }
 
     @PostMapping("/workflows/{workflowId}/activate")
-    fun activate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String) = service.activate(user.userId, workflowId, key)
+    fun activate(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String): Any {
+        automationWorkflow(user, workflowId)
+        return service.activate(user.userId, workflowId, key)
+    }
 
     @PostMapping("/workflows/{workflowId}/stop")
-    fun stop(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String) = service.stop(user.userId, workflowId, key)
+    fun stop(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String): Any {
+        automationWorkflow(user, workflowId)
+        return service.stop(user.userId, workflowId, key)
+    }
 
     @GetMapping("/active-automation-teams")
     fun activeTeams(@AuthenticationPrincipal user: AuthenticatedUser) = service.activeAutomationTeams(user.userId)
 
     @GetMapping("/node-catalog")
     fun nodeCatalog() = catalog.allowedTypes().sorted()
+
+    private fun automationConversation(user: AuthenticatedUser, conversationId: UUID) =
+        service.requireConversationPurpose(user.userId, conversationId, BuilderConversationPurpose.AUTOMATION)
+
+    private fun automationWorkflow(user: AuthenticatedUser, workflowId: UUID) =
+        service.requireWorkflowPurpose(user.userId, workflowId, BuilderConversationPurpose.AUTOMATION)
+
+    private fun automationRun(user: AuthenticatedUser, runId: UUID) =
+        service.requireRunPurpose(user.userId, runId, BuilderConversationPurpose.AUTOMATION)
 }

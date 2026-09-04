@@ -37,6 +37,17 @@ data class RunView(
     val failureCode: String?,
     val failureMessage: String?,
 )
+
+data class AgentDefinitionUpdate(
+    val name: String,
+    val role: String,
+    val behaviorRules: List<String>,
+    val forbiddenRules: List<String>,
+    val evidenceRequirements: List<String>,
+    val toolKeys: List<String>,
+    val skillKeys: List<String>,
+    val memoryScope: String,
+)
 data class BuilderSnapshot(
     val workspaceId: UUID,
     val conversationId: UUID,
@@ -73,6 +84,8 @@ class BuilderService(
     private val usageLimiter: BuilderUsageLimiter,
     private val jobProgress: BuilderJobProgressService,
     private val validator: WorkflowGraphValidator,
+    private val graphTranslator: WorkflowGraphTranslator,
+    private val generationDrafts: AgentGenerationDraftService,
     private val catalog: WorkflowNodeCatalog,
     private val teamDeployments: AutomationTeamDeploymentService,
     private val packageRenderer: HarnessPackageRenderer,
@@ -80,14 +93,37 @@ class BuilderService(
     private val mapper: ObjectMapper,
 ) {
     @Transactional
-    fun createConversation(ownerId: UUID, idempotencyKey: String): BuilderSnapshot {
+    fun createConversation(ownerId: UUID, idempotencyKey: String, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val workspace = workspaces.findByOwnerId(ownerId) ?: workspaces.save(BuilderWorkspace(ownerId = ownerId))
-        conversations.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let { return snapshot(ownerId, it.id) }
+        conversations.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let {
+            if (it.purpose != purpose) throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 제품 흐름에서 사용한 Idempotency-Key입니다.")
+            return snapshot(ownerId, it.id)
+        }
         val workflowId = UUID.randomUUID()
-        val conversation = conversations.save(BuilderConversation(workspaceId = workspace.id, workflowId = workflowId, idempotencyKey = idempotencyKey))
-        workflows.save(BuilderWorkflow(id = workflowId, workspaceId = workspace.id, conversationId = conversation.id, name = "새 업무 자동화"))
+        val initialName = if (purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) "새 AI 에이전트" else "새 업무 자동화"
+        val conversation = conversations.save(BuilderConversation(workspaceId = workspace.id, workflowId = workflowId, title = initialName, purpose = purpose, idempotencyKey = idempotencyKey))
+        workflows.save(BuilderWorkflow(id = workflowId, workspaceId = workspace.id, conversationId = conversation.id, name = initialName))
         return snapshot(ownerId, conversation.id)
+    }
+
+    @Transactional(readOnly = true)
+    fun requireConversationPurpose(ownerId: UUID, conversationId: UUID, purpose: BuilderConversationPurpose) {
+        val conversation = context(ownerId, conversationId).conversation
+        if (conversation.purpose != purpose) throw NotFoundException("BUILDER_CONVERSATION_NOT_FOUND", "요청한 대화를 찾을 수 없습니다.")
+    }
+
+    @Transactional(readOnly = true)
+    fun requireWorkflowPurpose(ownerId: UUID, workflowId: UUID, purpose: BuilderConversationPurpose) {
+        val conversation = workflowContext(ownerId, workflowId).conversation
+        if (conversation.purpose != purpose) throw NotFoundException("WORKFLOW_NOT_FOUND", "워크플로우를 찾을 수 없습니다.")
+    }
+
+    @Transactional(readOnly = true)
+    fun requireRunPurpose(ownerId: UUID, runId: UUID, purpose: BuilderConversationPurpose) {
+        val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
+        val run = runs.findByIdAndWorkspaceId(runId, workspace.id) ?: throw NotFoundException("BUILDER_RUN_NOT_FOUND", "실행을 찾을 수 없습니다.")
+        requireWorkflowPurpose(ownerId, run.workflowId, purpose)
     }
 
     @Transactional
@@ -95,6 +131,7 @@ class BuilderService(
         requireIdempotency(idempotencyKey)
         val context = context(ownerId, conversationId)
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 수정하거나 실행할 수 없습니다. 새 자동화를 만들어 주세요.")
+        if (context.workflow.status == WorkflowStatus.FAILED) transition(context.workflow, WorkflowStatus.DRAFT)
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
@@ -111,12 +148,30 @@ class BuilderService(
             analyzeAndDesign(context, instruction, idempotencyKey, jobId)
         } else if (workflow.status == WorkflowStatus.NEEDS_CLARIFICATION) {
             analyzeAndDesign(context, cumulativeInstruction(conversationId), idempotencyKey, jobId, consumeUsage = false)
-        } else if (isRejectedDraft(context)) {
-            analyzeAndDesign(context, cumulativeInstruction(conversationId), idempotencyKey, jobId, consumeUsage = false)
+        } else if (isRejectedDraft(context) || (workflow.status == WorkflowStatus.DRAFT && context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT)) {
+            analyzeAndDesign(
+                context,
+                cumulativeInstruction(conversationId),
+                idempotencyKey,
+                jobId,
+                consumeUsage = false,
+                revision = context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT,
+            )
         } else {
             throw ConflictException("BUILDER_MESSAGE_NOT_APPLICABLE", "현재 단계에서는 수정 요청이나 승인 작업을 사용해 주세요.")
         }
         return snapshot(ownerId, conversationId)
+    }
+
+    @Transactional
+    fun recordGenerationFailure(ownerId: UUID, conversationId: UUID, instruction: String, idempotencyKey: String, message: String) {
+        val context = context(ownerId, conversationId)
+        generationDrafts.fail(conversationId, message)
+        if (messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey) == null) {
+            messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = context.workflow.currentVersionId, idempotencyKey = idempotencyKey))
+        }
+        context.workflow.status = WorkflowStatus.FAILED
+        messages.save(BuilderMessage(conversationId = conversationId, role = "ASSISTANT", content = "생성에 실패했습니다. 입력은 보존되었습니다. 다시 시도해 주세요: ${message.take(300)}", workflowVersionId = context.workflow.currentVersionId))
     }
 
     private fun analyzeAndDesign(
@@ -125,13 +180,39 @@ class BuilderService(
         idempotencyKey: String,
         jobId: UUID?,
         consumeUsage: Boolean = true,
+        revision: Boolean = false,
     ) {
         val pipelineContext = context.pipeline(jobId)
         pipeline.preflight(pipelineContext)
-        if (consumeUsage) usageLimiter.claim(pipelineContext, idempotencyKey)
-        val bundle = pipeline.generateDesign(pipelineContext, instruction)
+        if (consumeUsage) {
+            if (revision) usageLimiter.claimRevision(pipelineContext, idempotencyKey)
+            else usageLimiter.claim(pipelineContext, idempotencyKey)
+        }
+        val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
+        val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
+        generationDrafts.start(pipelineContext, instruction, mode)
+        var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, userInstruction = instruction)
+        generationDrafts.checkpoint(context.conversation.id, bundle)
+        bundle = generationDrafts.reloadBundle(context.conversation.id)
+        if (bundle.clarificationQuestions.isEmpty()) {
+            val firstValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+            if (!firstValidation.valid) {
+                generationDrafts.validationFailed(context.conversation.id, firstValidation.issues)
+                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, firstValidation.issues, bundle, userInstruction = instruction)
+                generationDrafts.checkpoint(context.conversation.id, bundle)
+                bundle = generationDrafts.reloadBundle(context.conversation.id)
+                val repairedValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+                if (!repairedValidation.valid) {
+                    generationDrafts.validationFailed(context.conversation.id, repairedValidation.issues)
+                    throw BadRequestException(
+                        if (repairedValidation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
+                        repairedValidation.issues.joinToString(" ") { it.message },
+                    )
+                }
+            }
+        }
         val requirement = bundle.requirement
-        val questions = bundle.clarificationQuestions
+        val questions = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) emptyList() else bundle.clarificationQuestions
         require(requirement.objective.isNotBlank() && requirement.steps.isNotEmpty())
         val map = mapper.convertValue(requirement, object : TypeReference<Map<String, Any?>>() {}).toMutableMap()
         map["clarificationQuestions"] = mapper.convertValue(questions, object : TypeReference<List<Map<String, Any?>>>() {})
@@ -140,8 +221,23 @@ class BuilderService(
         if (questions.isNotEmpty()) {
             if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
             messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계를 진행하려면 아래 ${questions.size}가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요."))
-        } else saveDesign(context, bundle, instruction, jobId)
+        } else {
+            saveDesign(context, bundle, instruction, jobId)
+            requireCompletePackage(packageRenderer.render(bundle))
+            generationDrafts.complete(context.conversation.id)
+        }
     }
+
+    private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =
+        runCatching {
+            validator.validate(graphTranslator.translate(workflowId, bundle.proposal), bundle.requirement, bundle.proposal, bundle.agentDefinitions, sourceInstruction)
+        }.getOrElse { exception ->
+            WorkflowValidationResult(
+                valid = false,
+                graphHash = "",
+                issues = listOf(ValidationIssue("WORKFLOW_GRAPH_TRANSLATION_FAILED", exception.message ?: "그래프 변환에 실패했습니다.")),
+            )
+        }
 
     private fun saveDesign(context: OwnedContext, bundle: MetaAgentDesignBundle, sourceInstruction: String, jobId: UUID?) {
         jobProgress.running(jobId, BuilderGenerationStage.DESIGN_SAVING)
@@ -166,7 +262,12 @@ class BuilderService(
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화입니다.")
-        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
+        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let {
+            if (it.workflowId != workflowId || it.approvalType != ApprovalType.DESIGN) {
+                throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 워크플로우 또는 승인 작업에서 사용한 Idempotency-Key입니다.")
+            }
+            return snapshot(ownerId, context.conversation.id)
+        }
         if (context.workflow.status != WorkflowStatus.WAITING_DESIGN_APPROVAL) throw ConflictException("INVALID_WORKFLOW_STATE", "설계 승인 대기 상태에서만 처리할 수 있습니다.")
         val design = if (approve) storedDesign(context.conversation.id) else null
         val graph = design?.let {
@@ -209,6 +310,63 @@ class BuilderService(
         return snapshot(ownerId, context.conversation.id)
     }
 
+    @Transactional
+    fun updateAgentDefinition(ownerId: UUID, workflowId: UUID, agentKey: String, update: AgentDefinitionUpdate, idempotencyKey: String): BuilderSnapshot {
+        requireIdempotency(idempotencyKey)
+        val context = workflowContext(ownerId, workflowId)
+        messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
+        val version = currentVersion(context.workflow)
+        val proposalEntity = proposals.findByConversationId(context.conversation.id)
+            ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "에이전트 설계안을 찾을 수 없습니다.")
+        val proposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+        val requirementEntity = requirements.findByConversationId(context.conversation.id)
+            ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "에이전트 요구사항을 찾을 수 없습니다.")
+        val requirement = mapper.convertValue(requirementEntity.structuredJson.filterKeys { it != "clarificationQuestions" }, AutomationRequirement::class.java)
+        val agents: List<AgentDefinition> = mapper.convertValue(proposalEntity.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java))
+        val guides: List<GuideDefinition> = mapper.convertValue(proposalEntity.guideDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, GuideDefinition::class.java))
+        val index = agents.indexOfFirst { it.key == agentKey }
+        if (index < 0) throw NotFoundException("AGENT_DEFINITION_NOT_FOUND", "수정할 에이전트를 찾을 수 없습니다.")
+        if (update.name.isBlank() || update.name.length > 80 || update.role.isBlank() || update.role.length > 1_000) {
+            throw BadRequestException("INVALID_AGENT_DEFINITION", "에이전트 이름과 역할을 확인해 주세요.")
+        }
+        val bindings = proposal.resourcePlan?.bindings.orEmpty()
+        val allowedTools = bindings.filter { it.resourceKind == ResourceKind.TOOL }.map { it.resourceKey }.toSet()
+        val allowedSkills = bindings.filter { it.resourceKind == ResourceKind.SKILL }.map { it.resourceKey }.toSet()
+        if (!allowedTools.containsAll(update.toolKeys) || !allowedSkills.containsAll(update.skillKeys)) {
+            throw BadRequestException("UNBOUND_AGENT_RESOURCE", "설계에 바인딩되지 않은 도구나 스킬은 선택할 수 없습니다.")
+        }
+        val boundMemoryScopes = bindings.filter { it.resourceKind == ResourceKind.MEMORY }
+            .mapNotNull { binding ->
+                setOf("SESSION", "CONVERSATION", "PROJECT").firstOrNull { scope ->
+                    binding.resourceKey.equals(scope, true) || binding.resourceKey.endsWith(".${scope.lowercase()}")
+                }
+            }.toSet()
+        if (update.memoryScope !in (boundMemoryScopes + "NONE")) {
+            throw BadRequestException("UNBOUND_AGENT_MEMORY", "서버 설계에 바인딩되지 않은 메모리 범위는 선택할 수 없습니다.")
+        }
+        fun rules(values: List<String>) = values.map(String::trim).filter(String::isNotBlank).distinct().take(20)
+        val updatedAgents = agents.toMutableList().also { list ->
+            list[index] = list[index].copy(
+                name = update.name.trim(), role = update.role.trim(),
+                behaviorRules = rules(update.behaviorRules), forbiddenRules = rules(update.forbiddenRules),
+                evidenceRequirements = rules(update.evidenceRequirements), toolKeys = update.toolKeys.distinct(),
+                skillKeys = update.skillKeys.distinct(), memoryScope = update.memoryScope,
+            )
+        }
+        val designBundle = MetaAgentDesignBundle(requirement, emptyList(), proposal.copy(agentDesign = null), updatedAgents, guides)
+        val updatedProposal = proposal.copy(agentDesign = AgentDesignAssembler().assemble(designBundle, agentDevelopment = true))
+        proposalEntity.proposalJson = mapper.convertValue(updatedProposal, mapType())
+        proposalEntity.agentDefinitionsJson = mapper.convertValue(updatedAgents, listMapType())
+        val saved = saveVersion(context.workflow, graph(version), "${update.name.trim()} 속성 수정", approved = false, templateOverride = version)
+        context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
+        messages.save(BuilderMessage(
+            conversationId = context.conversation.id, role = "ASSISTANT",
+            content = "${update.name.trim()}의 역할, 규칙, 리소스 설정을 새 버전 ${saved.versionNo}에 반영했습니다.",
+            workflowVersionId = saved.id, idempotencyKey = idempotencyKey,
+        ))
+        return snapshot(ownerId, context.conversation.id)
+    }
+
     private fun applyNaturalPatch(context: OwnedContext, instruction: String, sourceMessageId: UUID) {
         val current = currentVersion(context.workflow)
         val graph = graph(current)
@@ -219,7 +377,7 @@ class BuilderService(
             val derived = templateCatalog.derivePreview(baseTemplateVersionId, instruction)
             val proposalEntity = proposals.findByConversationId(context.conversation.id)
                 ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
-            val proposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+            val proposal = normalizeProposal(mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java))
             val selection = requireNotNull(proposal.templateSelection)
             val contract = mapper.convertValue(derived.executionContract, TemplateExecutionContract::class.java)
             proposalEntity.proposalJson = mapper.convertValue(proposal.copy(
@@ -240,56 +398,106 @@ class BuilderService(
             ))
             return
         }
-        if (isSlackToEmailPatch(instruction)) {
+        if (!isHumanApprovalAdditionPatch(instruction) && !isCsvSummaryPatch(instruction) && !isSlackToEmailPatch(instruction)) throw BadRequestException("UNSUPPORTED_GRAPH_PATCH", UNSUPPORTED_GRAPH_PATCH_MESSAGE)
+        if (isCsvSummaryPatch(instruction)) {
+            val compare = graph.nodes.singleOrNull { it.nodeType == NodeType.DATA_CSV_COMPARE.wireName }
+                ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "CSV 비교 Function을 찾지 못했습니다.")
+            val renderer = graph.nodes.singleOrNull { it.nodeType == NodeType.TEMPLATE_RENDER.wireName }
+                ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "CSV 표 Renderer를 찾지 못했습니다.")
+            val oldEdge = graph.edges.singleOrNull { it.source == compare.id && it.target == renderer.id }
+                ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "CSV 비교와 표 Renderer 연결을 찾지 못했습니다.")
+            val agent = AgentDefinition(
+                "change-summary-writer", "변경사항 요약자", "결정적 CSV 비교 결과에서 중요한 변경만 사람이 이해하기 쉽게 요약한다.",
+                listOf(FieldDefinition("changedRows", "array", true, "결정적 CSV 비교 결과")), listOf(FieldDefinition("summary", "string", true, "중요 변경 요약")),
+                listOf("원본 비교 결과를 보존한다", "중요 변경의 이유를 간결히 설명한다"), listOf("변경 행을 새로 만들지 않는다", "비교 Function을 대체하지 않는다"), listOf("changedRows"),
+            )
+            val summaryNode = WorkflowNode("change-summary-${current.versionNo + 1}", NodeType.AI_GENERATE.wireName, "중요 변경 요약", NodePosition((compare.position.x + renderer.position.x) / 2, compare.position.y), mapOf("instruction" to "CSV 변경 행 중 중요한 부분을 사람이 이해하기 쉽게 요약", "agentKey" to agent.key))
+            val patch = GraphPatch(current.id, current.graphHash, listOf(
+                RemoveEdge(oldEdge.id), AddNode(summaryNode),
+                AddEdge(WorkflowEdge("e-${compare.id}-${summaryNode.id}", compare.id, summaryNode.id, bindings = mapOf("changedRows" to "changedRows"))),
+                AddEdge(WorkflowEdge("e-${summaryNode.id}-${renderer.id}", summaryNode.id, renderer.id, bindings = mapOf("changedRows" to "changedRows", "summary" to "summary"))),
+            ), "CSV 비교 결과 요약 Agent 추가")
+            val patched = applyPatch(graph, patch)
+            val requirementEntity = requirements.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "자동화 요구사항을 찾을 수 없습니다.")
+            val requirement = storedRequirement(context.conversation.id).copy(steps = storedRequirement(context.conversation.id).steps + "중요 변경 요약", outputs = storedRequirement(context.conversation.id).outputs + "중요 변경 요약")
+            requirementEntity.structuredJson = mapper.convertValue(requirement, mapType()) + mapOf("clarificationQuestions" to emptyList<Any>())
+            val proposalEntity = proposals.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
+            val proposal = normalizeProposal(mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java))
+            val plan = requireNotNull(proposal.graphPlan)
+            val summaryPlan = WorkflowNodePlan(summaryNode.id, summaryNode.nodeType, summaryNode.label, summaryNode.config)
+            val patchedPlan = plan.copy(nodes = plan.nodes.flatMap { if (it.id == compare.id) listOf(it, summaryPlan) else listOf(it) }, edges = plan.edges.filterNot { it.id == oldEdge.id } + listOf(
+                WorkflowEdgePlan("e-${compare.id}-${summaryNode.id}", compare.id, summaryNode.id, bindings = listOf(WorkflowFieldBinding("changedRows", "changedRows"))),
+                WorkflowEdgePlan("e-${summaryNode.id}-${renderer.id}", summaryNode.id, renderer.id, bindings = listOf(WorkflowFieldBinding("changedRows", "changedRows"), WorkflowFieldBinding("summary", "summary"))),
+            ))
+            val agents: List<AgentDefinition> = mapper.convertValue(proposalEntity.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java))
+            val patchedAgents = agents + agent
+            proposalEntity.proposalJson = mapper.convertValue(proposal.copy(capabilities = proposal.capabilities + "중요 변경 요약", graphPlan = patchedPlan, resourcePlan = null, agentDesign = null), mapType())
+            proposalEntity.agentDefinitionsJson = mapper.convertValue(patchedAgents, listMapType())
+            val storedProposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+            requireValidDesign(patched, requirement, storedProposal, patchedAgents)
+            val version = saveVersion(context.workflow, patched, patch.summary, approved = false)
+            context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
+            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "기존 CSV 비교 Function을 유지하고 중요 변경 요약 Agent만 추가해 새 버전 ${version.versionNo}로 저장했습니다.", workflowVersionId = version.id))
+            return
+        }
+        if (!isPatchInstruction(instruction)) throw BadRequestException("UNSUPPORTED_GRAPH_PATCH", "MVP에서는 'Slack 답변 전 담당자 승인 추가' 수정만 지원합니다.")
+        val replaceSlackWithEmail = listOf("이메일", "메일").any(instruction::contains) &&
+            listOf("Slack", "슬랙").any { instruction.contains(it, true) } && listOf("바꿔", "변경", "대신").any(instruction::contains)
+        if (replaceSlackWithEmail) {
             val slack = graph.nodes.firstOrNull { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName) }
                 ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "변경할 Slack 전송 노드를 찾지 못했습니다.")
-            val replacement = slack.copy(
-                nodeType = NodeType.EMAIL_SEND_MOCK.wireName,
-                label = "이메일 전송 (Mock · 연결 필요)",
-                config = mapOf("recipient" to "사용자 지정 이메일", "rendererKey" to "plain-text.v1", "connectionStatus" to "UNRESOLVED"),
-                connectionId = null,
-            )
-            val patch = GraphPatch(current.id, current.graphHash, listOf(ReplaceNode(slack.id, replacement)), "Slack 전송을 이메일 Mock 전송으로 변경")
+            val recipient = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").find(instruction)?.value ?: "연결 시 입력 필요"
+            val replacement = slack.copy(nodeType = NodeType.EMAIL_SEND_MOCK.wireName, label = "이메일 전송 (Mock · 연결 필요)", config = mapOf("recipient" to recipient, "rendererKey" to "plain-text.v1", "connectionStatus" to "UNRESOLVED"), connectionId = null)
+            val hour = Regex("(?:오전\\s*)?(\\d{1,2})시").find(instruction)?.groupValues?.get(1)?.toIntOrNull()
+            val schedule = graph.nodes.firstOrNull { it.nodeType == NodeType.SCHEDULE_TRIGGER.wireName }
+            val renderer = graph.nodes.firstOrNull { it.nodeType == NodeType.TEMPLATE_RENDER.wireName }
+            val operations = buildList<GraphPatchOperation> {
+                add(ReplaceNode(slack.id, replacement))
+                if (hour != null && schedule != null) add(UpdateNodeConfig(schedule.id, mapOf("cron" to "0 0 $hour * * *", "timezone" to "Asia/Seoul")))
+                if (renderer != null) add(UpdateNodeConfig(renderer.id, mapOf("rendererKey" to "plain-text.v1")))
+            }
+            val patchSummary = if (hour == null) "Slack 전송을 이메일 Mock 전송으로 변경" else "실행 시간을 ${hour}시로 바꾸고 Slack 전송을 이메일 Mock 전송으로 변경"
+            val patch = GraphPatch(current.id, current.graphHash, operations, patchSummary)
             val patched = applyPatch(graph, patch)
-            val requirementEntity = requirements.findByConversationId(context.conversation.id)
-                ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "자동화 요구사항을 찾을 수 없습니다.")
+            val requirementEntity = requirements.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "자동화 요구사항을 찾을 수 없습니다.")
             val currentRequirement = mapper.convertValue(requirementEntity.structuredJson.filterKeys { it != "clarificationQuestions" }, AutomationRequirement::class.java)
-            val synchronizedOutputs = currentRequirement.outputs
-                .map { it.replace("Slack 스레드", "이메일").replace("Slack", "이메일") }
-                .let { outputs ->
-                    val hasEmailDelivery = outputs.any { output ->
-                        output.contains("이메일") && listOf("전송", "발송", "전달", "회신", "답변", "보내").any(output::contains)
-                    }
-                    if (hasEmailDelivery) outputs else outputs + "이메일 전송 (Mock · 연결 필요)"
-                }
-                .distinct()
             val patchedRequirement = currentRequirement.copy(
-                outputs = synchronizedOutputs,
-                steps = currentRequirement.steps.map { step -> if (step.contains("Slack") && listOf("답변", "전송", "회신").any(step::contains)) "이메일 전송 (Mock · 연결 필요)" else step },
+                trigger = if (hour != null) "매일 ${hour}시 예약 실행" else currentRequirement.trigger,
+                outputs = currentRequirement.outputs
+                    .map { it.replace("Slack 스레드", "이메일").replace("Slack", "이메일") }
+                    .let { outputs -> if (outputs.any { it.contains("이메일") }) outputs else outputs + "이메일 전송 (Mock · 연결 필요)" }
+                    .distinct(),
+                steps = currentRequirement.steps.map { step -> when {
+                    hour != null && (step.contains("실행") || step.contains("Schedule", true)) -> "매일 ${hour}시 실행"
+                    step.contains("Slack") && listOf("답변", "전송", "회신").any(step::contains) -> "이메일 전송 (Mock · 연결 필요)"
+                    else -> step
+                } },
+                unresolvedQuestions = if (recipient == "연결 시 입력 필요") currentRequirement.unresolvedQuestions + UnresolvedQuestion("email-recipient", "받는 이메일 주소를 입력해 주세요.", true) else currentRequirement.unresolvedQuestions,
             )
             requirementEntity.structuredJson = mapper.convertValue(patchedRequirement, mapType()) + mapOf("clarificationQuestions" to emptyList<Any>())
-            val proposalEntity = proposals.findByConversationId(context.conversation.id)
-                ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
-            val currentProposal = mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java)
+            val proposalEntity = proposals.findByConversationId(context.conversation.id) ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
+            val currentProposal = normalizeProposal(mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java))
             val patchedProposal = currentProposal.copy(
-                capabilities = currentProposal.capabilities.map { capability -> if (capability.contains("Slack") && listOf("답변", "전송", "회신", "미리보기").any(capability::contains)) "이메일 전송 (Mock · 연결 필요)" else capability },
+                capabilities = currentProposal.capabilities.map { if (it.contains("Slack") && listOf("답변", "전송", "회신", "미리보기").any(it::contains)) "이메일 전송 (Mock · 연결 필요)" else it },
                 integrations = (currentProposal.integrations.filterNot { it.contains("Slack") } + listOf("Slack Mock (문의 수신)", "Email Mock · 연결 필요")).distinct(),
-                graphPlan = currentProposal.graphPlan?.copy(
-                    nodes = currentProposal.graphPlan.nodes.map { node -> if (node.id == slack.id) WorkflowNodePlan(replacement.id, replacement.nodeType, replacement.label, replacement.config) else node },
-                ),
+                graphPlan = currentProposal.graphPlan?.copy(nodes = currentProposal.graphPlan.nodes.map { node -> when (node.id) {
+                    slack.id -> WorkflowNodePlan(replacement.id, replacement.nodeType, replacement.label, replacement.config)
+                    schedule?.id -> WorkflowNodePlan(node.id, node.nodeType, if (hour != null) "매일 ${hour}시 실행" else node.label, if (hour != null) node.config + mapOf("cron" to "0 0 $hour * * *", "timezone" to "Asia/Seoul") else node.config)
+                    renderer?.id -> WorkflowNodePlan(node.id, node.nodeType, "이메일 템플릿 렌더링", node.config + ("rendererKey" to "plain-text.v1"))
+                    else -> node
+                } }),
+                resourcePlan = null,
+                agentDesign = null,
             )
             proposalEntity.proposalJson = mapper.convertValue(patchedProposal, mapType())
             val designAgents: List<AgentDefinition> = mapper.convertValue(proposalEntity.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java))
-            val validation = validator.validate(patched, patchedRequirement, patchedProposal, designAgents)
-            if (!validation.valid) throw BadRequestException("WORKFLOW_PATCH_INVALID", validation.issues.joinToString(" ") { it.message })
+            requireValidDesign(patched, patchedRequirement, patchedProposal, designAgents)
             val version = saveVersion(context.workflow, patched, patch.summary, approved = false)
-            pipeline.record(context.pipeline(), "compile_workflow", patch.operations.size, patched.nodes.size)
-            pipeline.record(context.pipeline(), "validate_workflow", patched.nodes.size, 0)
             context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
-            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "Graph Patch를 검증해 새 버전 ${version.versionNo}로 저장했습니다: ${patch.summary}", workflowVersionId = version.id))
+            val recipientNotice = if (recipient == "연결 시 입력 필요") " 받는 이메일 주소는 아직 없으므로 실행 연결 전에 입력해 주세요." else ""
+            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "Graph Patch를 검증해 새 버전 ${version.versionNo}로 저장했습니다: ${patch.summary}.$recipientNotice", workflowVersionId = version.id))
             return
         }
-        if (!isHumanApprovalAdditionPatch(instruction)) throw BadRequestException("UNSUPPORTED_GRAPH_PATCH", UNSUPPORTED_GRAPH_PATCH_MESSAGE)
         if (graph.nodes.any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }) {
             val version = saveVersion(context.workflow, graph, "담당자 승인 노드 확인 및 유지", approved = true)
             context.workflow.approvedVersionId = version.id
@@ -332,6 +540,7 @@ class BuilderService(
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 복원할 수 없습니다.")
         messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
         val target = versions.findByIdAndWorkflowId(versionId, workflowId) ?: throw NotFoundException("WORKFLOW_VERSION_NOT_FOUND", "버전을 찾을 수 없습니다.")
+        restoreDesignSnapshot(context.conversation.id, target.designSnapshotJson)
         val restored = saveVersion(context.workflow, graph(target), "버전 ${target.versionNo} 복원", approved = false, templateOverride = target)
         context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
         messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "버전 ${target.versionNo}을 새 버전 ${restored.versionNo}으로 복원했습니다.", workflowVersionId = restored.id, idempotencyKey = idempotencyKey))
@@ -342,7 +551,10 @@ class BuilderService(
     fun startSimulation(ownerId: UUID, workflowId: UUID, input: Map<String, Any?>, idempotencyKey: String): RunView {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
-        runs.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return runView(it) }
+        runs.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let {
+            if (it.workflowId != workflowId) throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 워크플로우 실행에서 사용한 Idempotency-Key입니다.")
+            return runView(it)
+        }
         if (context.workflow.status !in setOf(WorkflowStatus.READY_TO_SIMULATE, WorkflowStatus.READY_TO_ACTIVATE)) throw ConflictException("INVALID_WORKFLOW_STATE", "시뮬레이션 준비 상태가 아닙니다.")
         val design = storedDesign(context.conversation.id)
         BuilderMvpSupportPolicy.requireSupported(design.requirement)
@@ -370,7 +582,12 @@ class BuilderService(
         requireIdempotency(idempotencyKey)
         val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
         val run = runs.findByIdAndWorkspaceId(runId, workspace.id) ?: throw NotFoundException("RUN_NOT_FOUND", "실행을 찾을 수 없습니다.")
-        approvals.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let { return runView(run) }
+        approvals.findByWorkspaceIdAndIdempotencyKey(workspace.id, idempotencyKey)?.let {
+            if (it.runId != runId || it.approvalType != ApprovalType.EXECUTION) {
+                throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 실행 또는 승인 작업에서 사용한 Idempotency-Key입니다.")
+            }
+            return runView(run)
+        }
         val context = workflowContext(ownerId, run.workflowId)
         if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 자동화는 승인 후 재개할 수 없습니다.")
         val design = storedDesign(context.conversation.id)
@@ -383,34 +600,64 @@ class BuilderService(
         if (!approve) { waiting.status = BuilderStepStatus.FAILED; waiting.errorMessage = "사용자가 실행을 거절했습니다."; run.status = BuilderRunStatus.FAILED; workflowContext(ownerId, run.workflowId).workflow.status = WorkflowStatus.SIMULATION_FAILED; return runView(run) }
         waiting.status = BuilderStepStatus.SUCCEEDED; waiting.outputJson = waiting.inputJson + ("approved" to true)
         val graph = graph(versions.findById(run.workflowVersionId).orElseThrow())
-        val next = graph.edges.firstOrNull { it.source == waiting.nodeId }?.target ?: finishRun(context, run, waiting.outputJson.orEmpty())
-        if (next is String) executeFrom(context, run, graph, next, waiting.outputJson.orEmpty())
+        val edge = graph.edges.firstOrNull { it.source == waiting.nodeId }
+        if (edge == null) finishRun(context, run, graph, waiting.outputJson.orEmpty())
+        else executeFrom(context, run, graph, edge.target, bindEdge(waiting.outputJson.orEmpty(), edge))
         return runView(run)
     }
 
     private fun executeFrom(context: OwnedContext, run: BuilderRun, graph: WorkflowGraph, startNodeId: String, initialInput: Map<String, Any?>) {
+        val agents = storedDesign(context.conversation.id).agents.associateBy { it.key }
         var nodeId: String? = startNodeId; var value = initialInput; var sequence = stepRuns.findAllByRunIdOrderBySequenceNo(run.id).size
         while (nodeId != null) {
             val node = graph.nodes.first { it.id == nodeId }; val contract = catalog.require(node.nodeType)
             contract.validateInput(value).takeIf { it.isNotEmpty() }?.let { throw BadRequestException("INVALID_NODE_INPUT", it.joinToString()) }
-            val step = stepRuns.save(BuilderStepRun(runId = run.id, nodeId = node.id, nodeType = node.nodeType, sequenceNo = ++sequence, status = BuilderStepStatus.RUNNING, inputJson = mask(value)))
+            val agent = node.config["agentKey"]?.toString()?.let(agents::get)
+            val nodeInput = agent?.let { enrichAgentInput(it, value) } ?: value
+            agent?.let { validateFields(it.inputSchema, nodeInput, "${node.label} 입력") }
+                ?.let { throw BadRequestException("INVALID_NODE_INPUT", it) }
+            val step = stepRuns.save(BuilderStepRun(runId = run.id, nodeId = node.id, nodeType = node.nodeType, sequenceNo = ++sequence, status = BuilderStepStatus.RUNNING, inputJson = mask(nodeInput)))
             run.currentNodeId = node.id
-            val result = contract.simulate(node.config, value)
+            val simulated = contract.simulate(node.config, nodeInput)
+            val result = if (agent != null && node.nodeType == NodeType.AI_GENERATE.wireName) {
+                simulated.copy(output = materializeAgentOutput(simulated.output, agent))
+            } else simulated
             if (result.pauses) {
                 step.status = BuilderStepStatus.WAITING_APPROVAL; run.status = BuilderRunStatus.WAITING_APPROVAL
                 approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = run.workflowId, runId = run.id, approvalType = ApprovalType.EXECUTION, idempotencyKey = "run:${run.id}:node:${node.id}"))
                 return
             }
+            agent?.let { validateFields(it.outputSchema, projectOutput(result.output, it.outputSchema), "${node.label} 출력") }
+                ?.let { throw BadRequestException("INVALID_NODE_OUTPUT", it) }
             step.status = BuilderStepStatus.SUCCEEDED; step.outputJson = mask(result.output); value = result.output
-            nodeId = nextNode(graph, node, value)
+            val outgoing = graph.edges.filter { it.source == node.id }
+            val edge = nextEdge(graph, node, value)
+            if (node.nodeType == NodeType.CONDITION_BRANCH.wireName && outgoing.isNotEmpty()) {
+                value = value + ("branchMatched" to (edge != null))
+                step.outputJson = mask(value)
+            }
+            nodeId = edge?.target
+            if (edge != null) value = bindEdge(value, edge)
         }
-        finishRun(context, run, value)
+        finishRun(context, run, graph, value)
     }
 
-    private fun nextNode(graph: WorkflowGraph, node: WorkflowNode, output: Map<String, Any?>): String? {
+    private fun nextEdge(graph: WorkflowGraph, node: WorkflowNode, output: Map<String, Any?>): WorkflowEdge? {
         val outgoing = graph.edges.filter { it.source == node.id }
-        if (node.nodeType != NodeType.CONDITION_BRANCH.wireName) return outgoing.firstOrNull()?.target
-        return outgoing.firstOrNull { edge -> branchMatches(edge.condition, output) }?.target
+        if (node.nodeType != NodeType.CONDITION_BRANCH.wireName) return outgoing.firstOrNull()
+        return outgoing.firstOrNull { edge -> branchMatches(edge.condition, output) }
+    }
+
+    private fun bindEdge(output: Map<String, Any?>, edge: WorkflowEdge): Map<String, Any?> {
+        val bound = output.toMutableMap()
+        edge.bindings.forEach { (target, source) ->
+            when {
+                source == "context" -> bound[target] = output
+                output.containsKey(source) -> bound[target] = output[source]
+                else -> throw BadRequestException("INVALID_EDGE_BINDING", "${edge.id}의 '$source' 출력이 없어 '$target' 입력을 만들 수 없습니다.")
+            }
+        }
+        return bound
     }
 
     private fun branchMatches(condition: String, output: Map<String, Any?>): Boolean {
@@ -419,10 +666,84 @@ class BuilderService(
         return actual.toString().equals(match.groupValues[2], ignoreCase = true)
     }
 
-    private fun finishRun(context: OwnedContext, run: BuilderRun, output: Map<String, Any?>): String? {
-        run.status = BuilderRunStatus.SUCCEEDED; run.currentNodeId = null; run.outputJson = mask(output); run.requirementMatched = true
-        context.workflow.status = WorkflowStatus.READY_TO_ACTIVATE
-        pipeline.record(context.pipeline(), "review_simulation", output.size, 1)
+    private fun finishRun(context: OwnedContext, run: BuilderRun, graph: WorkflowGraph, output: Map<String, Any?>): String? {
+        val design = storedDesign(context.conversation.id)
+        val projected = projectOutput(output, design.proposal.outputSchema)
+        val issue = simulationOutcomeIssue(graph, output) ?: validateFields(design.proposal.outputSchema, projected, "최종 출력")
+        run.currentNodeId = null
+        val safetyMetadata = output["externalCallPerformed"]?.let { mapOf("externalCallPerformed" to it) }.orEmpty()
+        run.outputJson = mask(if (issue == null) projected + safetyMetadata else projected + safetyMetadata + ("validationError" to issue))
+        run.requirementMatched = issue == null
+        run.status = if (issue == null) BuilderRunStatus.SUCCEEDED else BuilderRunStatus.FAILED
+        context.workflow.status = if (issue == null) WorkflowStatus.READY_TO_ACTIVATE else WorkflowStatus.SIMULATION_FAILED
+        pipeline.record(context.pipeline(), "review_simulation", output.size, if (issue == null) 1 else 0)
+        return null
+    }
+
+    private fun projectOutput(output: Map<String, Any?>, fields: List<FieldDefinition>): Map<String, Any?> =
+        if (fields.isEmpty()) output else fields.mapNotNull { field -> output[field.name]?.let { field.name to it } }.toMap()
+
+    private fun enrichAgentInput(agent: AgentDefinition, input: Map<String, Any?>): Map<String, Any?> {
+        if (input.containsKey("text") || agent.inputSchema.none { it.required && it.name == "text" }) return input
+        val text = listOf("topic", "sourceText", "message", "customerInquiry", "normalizedText", "analysis")
+            .mapNotNull { key -> input[key]?.toString()?.takeIf(String::isNotBlank) }
+            .joinToString("\n")
+        return if (text.isBlank()) input else input + ("text" to text)
+    }
+
+    private fun materializeAgentOutput(output: Map<String, Any?>, agent: AgentDefinition): Map<String, Any?> {
+        val generatedText = listOf("draftResponse", "draft", "result", "summary", "report", "reproductionSteps")
+            .firstNotNullOfOrNull { output[it] as? String }
+            ?: "제공된 근거와 입력을 선언된 출력 계약에 맞춰 처리한 검증용 결과입니다."
+        val completed = output.toMutableMap()
+        agent.outputSchema.forEach { field ->
+            if (!completed.containsKey(field.name)) {
+                completed[field.name] = when (field.type.lowercase()) {
+                    "string" -> generatedText
+                    "array" -> emptyList<Any>()
+                    "object" -> emptyMap<String, Any?>()
+                    "boolean" -> false
+                    "number", "integer" -> 0
+                    else -> generatedText
+                }
+            }
+        }
+        return completed
+    }
+
+    private fun validateFields(fields: List<FieldDefinition>, value: Map<String, Any?>, label: String): String? {
+        fields.filter { it.required && !value.containsKey(it.name) }.firstOrNull()?.let { return "$label 필수 필드 '${it.name}'이 없습니다." }
+        fields.forEach { field ->
+            val actual = value[field.name] ?: return@forEach
+            val valid = when (field.type.lowercase()) {
+                "string" -> actual is String
+                "array" -> actual is List<*>
+                "object" -> actual is Map<*, *>
+                "boolean" -> actual is Boolean
+                "number", "integer" -> actual is Number
+                else -> true
+            }
+            if (!valid) return "$label 필드 '${field.name}'의 타입이 ${field.type}이 아닙니다."
+        }
+        return null
+    }
+
+    private fun simulationOutcomeIssue(graph: WorkflowGraph, output: Map<String, Any?>): String? {
+        if (output["branchMatched"] == false) return "조건 분기에 일치하는 안전한 실행 경로가 없습니다."
+        if (graph.nodes.any { it.nodeType == NodeType.CONDITION_BRANCH.wireName } && output.keys.none { it in setOf("evidenceFound", "category", "priceWithinBudget", "qualityPassed") }) {
+            return "조건 분기 결과가 최종 출력에 남지 않았습니다."
+        }
+        if (graph.nodes.any { it.nodeType == NodeType.KNOWLEDGE_SEARCH_MOCK.wireName } && output["evidenceFound"] == false && output["needsAssigneeReview"] != true) {
+            return "검색 근거가 없지만 담당자 확인 필요 상태가 없습니다."
+        }
+        val generationExpected = output["evidenceFound"] != false && (output["category"] == null || output["category"].toString().equals("BUG", true))
+        if (generationExpected && graph.nodes.any { it.nodeType == NodeType.AI_GENERATE.wireName }) {
+            val generated = listOf("draftResponse", "draft", "result", "report", "summary", "reproductionSteps").mapNotNull { output[it]?.toString() }.firstOrNull(String::isNotBlank)
+                ?: return "AI 단계가 유효한 업무 결과를 생성하지 않았습니다."
+            if (generated.trim().startsWith("[Mock]")) return "Mock AI가 구조화 결과 대신 지침 또는 입력을 되풀이했습니다."
+        }
+        if (graph.nodes.any { it.nodeType == NodeType.DATA_CSV_COMPARE.wireName } && !output.containsKey("changedRows")) return "CSV 비교 결과가 없습니다."
+        if (output.containsKey("unresolvedTool") && output["requiresUserAction"] != true) return "미지원 도구의 사용자 조치 상태가 없습니다."
         return null
     }
 
@@ -433,15 +754,15 @@ class BuilderService(
         val requirement = requirementEntity?.let { mapper.convertValue(it.structuredJson.filterKeys { key -> key != "clarificationQuestions" }, AutomationRequirement::class.java) }
         val questions: List<ClarificationQuestion> = requirementEntity?.structuredJson?.get("clarificationQuestions")?.let { mapper.convertValue(it, mapper.typeFactory.constructCollectionType(List::class.java, ClarificationQuestion::class.java)) } ?: emptyList()
         val proposalEntity = proposals.findByConversationId(conversationId)
-        val proposal = proposalEntity?.let { mapper.convertValue(it.proposalJson, AutomationProposal::class.java) }
+        val proposal = proposalEntity?.let { normalizeProposal(mapper.convertValue(it.proposalJson, AutomationProposal::class.java)) }
         val agents: List<AgentDefinition> = proposalEntity?.let { mapper.convertValue(it.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java)) } ?: emptyList()
         val guides: List<GuideDefinition> = proposalEntity?.let { mapper.convertValue(it.guideDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, GuideDefinition::class.java)) } ?: emptyList()
         val version = context.workflow.currentVersionId?.let { versions.findById(it).orElse(null) }
         val graph = version?.let(::graph)
         val validation = graph?.let {
-            if (requirement != null && proposal != null) validator.validate(it, requirement, proposal, agents, cumulativeInstruction(conversationId))
+            if (requirement != null && proposal != null) validator.validate(it, requirement, proposal, agents, if ((version?.versionNo ?: 1) == 1) cumulativeInstruction(conversationId) else null)
             else validator.validate(it)
-        }
+        }?.copy(graphHash = version!!.graphHash)
         return BuilderSnapshot(context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions, proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation, version?.id, context.workflow.approvedVersionId, messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) }, versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) })
     }
 
@@ -452,9 +773,9 @@ class BuilderService(
     }
 
     @Transactional(readOnly = true)
-    fun listConversations(ownerId: UUID): List<BuilderConversationSummary> {
+    fun listConversations(ownerId: UUID, purpose: BuilderConversationPurpose = BuilderConversationPurpose.AUTOMATION): List<BuilderConversationSummary> {
         val workspace = workspaces.findByOwnerId(ownerId) ?: return emptyList()
-        return conversations.findTop20ByWorkspaceIdOrderByCreatedAtDesc(workspace.id).mapNotNull { conversation ->
+        return conversations.findTop20ByWorkspaceIdAndPurposeOrderByCreatedAtDesc(workspace.id, purpose).mapNotNull { conversation ->
             workflows.findByConversationId(conversation.id)?.let { workflow ->
                 val versionNo = workflow.currentVersionId?.let { versions.findById(it).orElse(null)?.versionNo }
                 BuilderConversationSummary(conversation.id, workflow.id, workflow.name, workflow.status, versionNo, workflow.updatedAt)
@@ -462,11 +783,18 @@ class BuilderService(
         }
     }
 
+    private fun agentDevelopmentInstruction(instruction: String) = agentDevelopmentPrompt(instruction)
+
     @Transactional
     fun activate(ownerId: UUID, workflowId: UUID, idempotencyKey: String): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
-        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
+        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let {
+            if (it.workflowId != workflowId || it.approvalType != ApprovalType.ACTIVATION) {
+                throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 워크플로우 또는 승인 작업에서 사용한 Idempotency-Key입니다.")
+            }
+            return snapshot(ownerId, context.conversation.id)
+        }
         if (context.workflow.status != WorkflowStatus.READY_TO_ACTIVATE) throw ConflictException("INVALID_WORKFLOW_STATE", "성공한 시뮬레이션이 있는 버전만 회사에 배치할 수 있습니다.")
         val design = storedDesign(context.conversation.id)
         BuilderMvpSupportPolicy.requireSupported(design.requirement)
@@ -510,7 +838,12 @@ class BuilderService(
     fun stop(ownerId: UUID, workflowId: UUID, idempotencyKey: String): BuilderSnapshot {
         requireIdempotency(idempotencyKey)
         val context = workflowContext(ownerId, workflowId)
-        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let { return snapshot(ownerId, context.conversation.id) }
+        approvals.findByWorkspaceIdAndIdempotencyKey(context.workspace.id, idempotencyKey)?.let {
+            if (it.workflowId != workflowId || it.approvalType != ApprovalType.STOP) {
+                throw ConflictException("IDEMPOTENCY_KEY_REUSED", "다른 워크플로우 또는 승인 작업에서 사용한 Idempotency-Key입니다.")
+            }
+            return snapshot(ownerId, context.conversation.id)
+        }
         if (context.workflow.status == WorkflowStatus.STOPPED) return snapshot(ownerId, context.conversation.id)
         approvals.save(BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.STOP, idempotencyKey = idempotencyKey, status = ApprovalStatus.APPROVED, decidedBy = ownerId, decidedAt = Instant.now()))
         context.workflow.status = WorkflowStatus.STOPPED
@@ -527,17 +860,7 @@ class BuilderService(
     }
 
     private fun compileGraph(workflowId: UUID, proposal: AutomationProposal): WorkflowGraph {
-        val plan = proposal.graphPlan
-            ?: throw BadRequestException("WORKFLOW_GRAPH_PLAN_MISSING", "설계안에 실행 graphPlan이 없습니다. 설계를 다시 생성해 주세요.")
-        val nodes = plan.nodes.mapIndexed { index, node ->
-            WorkflowNode(node.id, node.nodeType, node.label, NodePosition(40.0 + index * 260.0, 100.0), node.config)
-        }
-        return WorkflowGraph(
-            workflowId = workflowId,
-            entryNodeId = plan.entryNodeId,
-            nodes = nodes,
-            edges = plan.edges.map { edge -> WorkflowEdge(edge.id, edge.source, edge.target, edge.condition, edge.bindings.associate { it.targetField to it.sourceField }) },
-        )
+        return graphTranslator.translate(workflowId, proposal)
     }
 
     private fun saveVersion(workflow: BuilderWorkflow, graph: WorkflowGraph, summary: String, approved: Boolean, templateOverride: BuilderWorkflowVersion? = null): BuilderWorkflowVersion {
@@ -554,6 +877,7 @@ class BuilderService(
             workflowId = workflow.id, versionNo = nextNo, parentVersionId = previous,
             templateVersionId = templateVersionId, executionContractJson = executionContract,
             graphJson = mapper.convertValue(graph, mapType()), graphHash = validator.hash(graph),
+            designSnapshotJson = designSnapshot(workflow.conversationId),
             changeSummary = summary, approved = approved,
         ))
         workflow.currentVersionId = entity.id
@@ -570,13 +894,43 @@ class BuilderService(
     private fun storedDesign(conversationId: UUID): StoredDesign {
         val proposalEntity = proposals.findByConversationId(conversationId)
             ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "자동화 설계안을 찾을 수 없습니다.")
+        val normalizedProposal = normalizeProposal(mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java))
         return StoredDesign(
             storedRequirement(conversationId),
-            mapper.convertValue(proposalEntity.proposalJson, AutomationProposal::class.java),
+            normalizedProposal,
             mapper.convertValue(proposalEntity.agentDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java)),
             mapper.convertValue(proposalEntity.guideDefinitionsJson, mapper.typeFactory.constructCollectionType(List::class.java, GuideDefinition::class.java)),
         )
     }
+    private fun designSnapshot(conversationId: UUID): Map<String, Any?> {
+        val design = storedDesign(conversationId)
+        return mapOf(
+            "requirement" to mapper.convertValue(design.requirement, mapType()),
+            "proposal" to mapper.convertValue(design.proposal, mapType()),
+            "agents" to mapper.convertValue(design.agents, listMapType()),
+            "guides" to mapper.convertValue(design.guides, listMapType()),
+        )
+    }
+    private fun restoreDesignSnapshot(conversationId: UUID, snapshot: Map<String, Any?>) {
+        if (snapshot.isEmpty()) return
+        val requirement = mapper.convertValue(snapshot["requirement"], AutomationRequirement::class.java)
+        val proposal = mapper.convertValue(snapshot["proposal"], AutomationProposal::class.java)
+        val agents: List<AgentDefinition> = mapper.convertValue(snapshot["agents"], mapper.typeFactory.constructCollectionType(List::class.java, AgentDefinition::class.java))
+        val guides: List<GuideDefinition> = mapper.convertValue(snapshot["guides"], mapper.typeFactory.constructCollectionType(List::class.java, GuideDefinition::class.java))
+        val requirementEntity = requirements.findByConversationId(conversationId)
+            ?: throw ConflictException("WORKFLOW_REQUIREMENT_NOT_FOUND", "에이전트 요구사항을 찾을 수 없습니다.")
+        val proposalEntity = proposals.findByConversationId(conversationId)
+            ?: throw ConflictException("WORKFLOW_PROPOSAL_NOT_FOUND", "에이전트 설계안을 찾을 수 없습니다.")
+        requirementEntity.structuredJson = mapper.convertValue(requirement, mapType()) + mapOf("clarificationQuestions" to emptyList<Any>())
+        proposalEntity.proposalJson = mapper.convertValue(proposal, mapType())
+        proposalEntity.agentDefinitionsJson = mapper.convertValue(agents, listMapType())
+        proposalEntity.guideDefinitionsJson = mapper.convertValue(guides, listMapType())
+        workflows.findByConversationId(conversationId)?.name = proposal.name
+    }
+
+    private fun normalizeProposal(proposal: AutomationProposal) = proposal.copy(
+        graphPlan = proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize),
+    )
     private fun requireValidDesign(
         graph: WorkflowGraph,
         requirement: AutomationRequirement,
@@ -593,9 +947,17 @@ class BuilderService(
         )
     }
     private fun requireCompletePackage(files: Map<String, String>) {
-        val required = setOf("AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json")
+        val required = setOf(
+            "agent.yaml", "workflow.yaml", "prompts/system.md", "prompts/reviewer.md",
+            "schemas/input.schema.json", "schemas/output.schema.json", "tools/tools.yaml", "mcp.json",
+            "examples/sample-input.json", "runtime-targets.json", "runners/python/runner.py", ".env.example", "README.md",
+            "AGENTS.md", "CODEX.md", "workflow.json", "design-bundle.json", "manifest.json",
+        )
         val missing = required.filter { files[it].isNullOrBlank() }
-        if (missing.isNotEmpty() || files.keys.none { it.startsWith("agents/") } || files.keys.none { it.startsWith("guides/") }) {
+        if (missing.isNotEmpty()) throw BadRequestException("HARNESS_PACKAGE_INVALID", "Agent Package 필수 파일이 없습니다: ${missing.joinToString()}")
+        listOf("schemas/input.schema.json", "schemas/output.schema.json", "mcp.json", "workflow.json", "design-bundle.json", "manifest.json")
+            .forEach { path -> runCatching { mapper.readTree(files[path]) }.getOrElse { throw BadRequestException("HARNESS_PACKAGE_INVALID", "$path JSON이 유효하지 않습니다.") } }
+        if (files.keys.none { it.startsWith("agents/") } || files.keys.none { it.startsWith("guides/") }) {
             throw BadRequestException("HARNESS_PACKAGE_INVALID", "하네스 패키지 필수 파일이 없습니다: ${missing.joinToString()}")
         }
     }
@@ -634,6 +996,12 @@ class BuilderService(
         ).any(value::contains)
         return approval && delivery && approvalGate
     }
+    private fun isPatchInstruction(value: String): Boolean {
+        val changeVerb = listOf("추가", "제거", "삭제", "바꿔", "변경", "대신", "하지 말고").any(value::contains)
+        val graphTarget = listOf("승인", "담당자", "Slack", "슬랙", "이메일", "메일", "전송", "답변", "노드", "실행 시간", "요약", "단계").any { value.contains(it, true) }
+        return changeVerb && graphTarget
+    }
+    private fun isCsvSummaryPatch(value: String) = value.contains("요약") && listOf("변경", "중요", "사람이 이해").any(value::contains)
     private fun isOutputTemplatePatch(value: String) = listOf("숫자를 더", "너무 길", "짧게", "관심 종목", "호재", "악재").any(value::contains)
     private fun requireIdempotency(key: String) { if (key.isBlank() || key.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.") }
     private fun mask(value: Map<String, Any?>): Map<String, Any?> = value.mapValues { (key, item) -> if (key.contains("token", true) || key.contains("secret", true) || key.contains("password", true)) "***" else item }
@@ -688,3 +1056,15 @@ class BuilderService(
         )
     }
 }
+
+internal fun agentDevelopmentPrompt(instruction: String) = """
+    다음 요청은 업무 자동화 배치가 아니라 사용자가 대화로 사용할 AI 에이전트 개발 요청입니다.
+    사용자가 별도로 지정하지 않았다면 실행 트리거는 '사용자가 채팅에서 요청할 때', 입력은 '현재 대화와 사용자 메시지',
+    출력은 '대화 화면의 에이전트 응답', 외부 서비스 연동은 '없음'으로 가정하세요.
+    완성된 에이전트 설계는 사용자가 검토하고 승인한 뒤 테스트하며, 승인 전 외부 작업은 수행하지 않습니다.
+    이 기본값들은 차단 질문으로 되묻지 말고 assumptions에 기록하세요. 요청 의미에 필요한 에이전트, 역할, 도구, 스킬,
+    메모리, 협업 순서와 검증 시나리오를 설계하되 고정 예시 흐름이나 사용자가 말하지 않은 외부 커넥터를 추가하지 마세요.
+
+    사용자 요청:
+    ${instruction.trim()}
+""".trimIndent()

@@ -26,9 +26,7 @@ class AgentCompilerRealGoldenTest {
         val runner = CodexCliRunner(command, 180, codexHome)
         require(runner.hasSharedAuth()) { "shared Codex auth is missing: $codexHome/auth.json" }
         val credentials = mock<CredentialDirectory>()
-        val limiter = mock<BuilderUsageLimiter>()
-        whenever(limiter.isUnlimited(any())).thenReturn(true)
-        val model = CodexCliMetaAgentModel(credentials, runner, limiter, mapper, System.getenv("REAL_CODEX_MODEL") ?: "gpt-5.6-luna")
+        val model = CodexCliMetaAgentModel(credentials, runner, mapper, System.getenv("REAL_CODEX_MODEL") ?: "gpt-5.6-luna")
         val runs = mock<MetaAgentRunRepository>()
         whenever(runs.save(any())).thenAnswer { it.arguments[0] }
         val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
