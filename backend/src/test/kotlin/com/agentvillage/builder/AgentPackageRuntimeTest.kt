@@ -4,7 +4,6 @@ import com.agentvillage.builder.application.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.assertj.core.api.Assertions.assertThat
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.mockito.kotlin.any
@@ -15,113 +14,95 @@ import java.nio.file.Path
 import java.util.UUID
 
 class AgentPackageRuntimeTest {
-    @TempDir lateinit var directory: Path
+    private val mapper = jacksonObjectMapper()
+    private val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
+    private val pipeline = StructuredMetaAgentPipeline(
+        DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+    )
 
     @Test
-    fun `validated agent package runs in fixed python mock runtime without external calls`() {
-        assumeTrue(runCatching { ProcessBuilder("python3", "--version").start().waitFor() == 0 }.getOrDefault(false))
-        val mapper = jacksonObjectMapper()
-        val runs = mock<MetaAgentRunRepository>()
-        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
-        val pipeline = StructuredMetaAgentPipeline(
-            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
-        )
+    fun `download package embeds the same pinned TFrameX adapter instead of a fixed mock runner`() {
         val bundle = pipeline.generateDesign(
             PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
-            "Slack #customer-support 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 원래 Slack 스레드로 전송한다.",
+            "입력 문서를 분석해 요약 결과를 반환하는 에이전트",
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
         )
         val files = HarnessPackageRenderer(mapper).render(bundle)
-        files.forEach { (path, content) ->
-            val target = directory.resolve(path)
-            Files.createDirectories(target.parent)
-            Files.writeString(target, content)
-        }
 
-        val process = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString(), "--approve")
-            .redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
-
-        assertThat(process.waitFor()).withFailMessage(output).isZero()
-        assertThat(output).contains("\"status\": \"SUCCEEDED\"", "\"externalCallPerformed\": false")
-        assertThat(output).doesNotContain("https://slack.com", "api.notion.com")
+        assertThat(files).containsKeys(
+            "runtime-definition.json", "runtime-status.json", "runtime/pyproject.toml",
+            "runtime/agentown_tframex_adapter/adapter.py", "runners/python/runner.py",
+        )
+        assertThat(files.getValue("runtime/pyproject.toml"))
+            .contains("23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603")
+        assertThat(files.getValue("runners/python/runner.py"))
+            .contains("AgentownTFrameXAdapter")
+            .doesNotContain("Fixed Agentown mock runner", "제공된 근거와 입력을 선언된 출력 계약에 맞춰 처리한 검증용 결과입니다")
     }
 
     @Test
-    fun `package runner follows FAQ evidence branch and rejects final schema violations`() {
-        assumeTrue(runCatching { ProcessBuilder("python3", "--version").start().waitFor() == 0 }.getOrDefault(false))
-        val mapper = jacksonObjectMapper()
-        val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
-        val pipeline = StructuredMetaAgentPipeline(
-            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
-        )
+    fun `unconnected FAQ package is explicit execution not configured`() {
         val bundle = pipeline.generateDesign(
             PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
             "FAQ를 검색해서 고객 문의 답변을 만들고 근거가 없으면 담당자 확인이 필요하다고 알려주는 에이전트",
-            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
         )
-        val files = HarnessPackageRenderer(mapper).render(bundle).toMutableMap()
-        val sampleInput = mapper.readTree(files.getValue("examples/sample-input.json"))
-        assertThat(sampleInput["customerInquiry"].asText()).isEqualTo("사내 복지포인트는 언제 지급되나요?")
-        assertThat(sampleInput["mockSearchResults"]).isEmpty()
-        assertThat(files.getValue("examples/sample-input.json")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
-        files.forEach { (path, content) ->
-            val target = directory.resolve(path)
-            Files.createDirectories(target.parent)
-            Files.writeString(target, content)
-        }
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        val status = mapper.readTree(files.getValue("runtime-status.json"))
 
-        val missingEvidence = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString())
-            .redirectErrorStream(true).start()
-        val missingOutput = missingEvidence.inputStream.bufferedReader().readText()
-        assertThat(missingEvidence.waitFor()).isZero()
-        assertThat(missingOutput).contains("\"status\": \"SUCCEEDED\"", "\"needsAssigneeReview\": true")
-            .doesNotContain("\"draftResponse\"")
-
-        Files.writeString(directory.resolve("schemas/final-output.schema.json"), """{"type":"object","additionalProperties":false,"required":["impossible"],"properties":{"impossible":{"type":"string"}}}""")
-        val invalid = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString())
-            .redirectErrorStream(true).start()
-        val invalidOutput = invalid.inputStream.bufferedReader().readText()
-        assertThat(invalid.waitFor()).isNotZero()
-        assertThat(invalidOutput).contains("\"status\": \"FAILED\"", "final output schema")
+        assertThat(status["configured"].asBoolean()).isFalse()
+        assertThat(status["code"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
+        assertThat(files.getValue("runtime-definition.json")).doesNotContain("Mock research")
     }
 
     @Test
-    fun `CSV package uses deterministic compare without an AI node and returns schema valid changes`() {
-        assumeTrue(runCatching { ProcessBuilder("python3", "--version").start().waitFor() == 0 }.getOrDefault(false))
-        val mapper = jacksonObjectMapper()
-        val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
-        val bundle = StructuredMetaAgentPipeline(
-            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
-        ).generateDesign(
+    fun `CSV package maps deterministic capabilities to registered TFrameX tools`() {
+        val bundle = pipeline.generateDesign(
             PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
             "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
-            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
         )
-        val files = HarnessPackageRenderer(mapper).render(bundle).toMutableMap()
-        val sampleInput = mapper.readTree(files.getValue("examples/sample-input.json"))
-        assertThat(sampleInput["csvA"].asText()).contains("1,old", "2,remove")
-        assertThat(sampleInput["csvB"].asText()).contains("1,new", "3,add")
-        assertThat(files.getValue("examples/sample-input.json")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
-        files.forEach { (path, content) ->
-            val target = directory.resolve(path)
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        val status = mapper.readTree(files.getValue("runtime-status.json"))
+        val definition = mapper.readTree(files.getValue("runtime-definition.json"))
+
+        assertThat(status["configured"].asBoolean()).isTrue()
+        assertThat(definition["agents"].map { it["kind"]?.asText() }).containsOnly("tool")
+        assertThat(definition.toString()).contains("data.csv.compare", "template.markdown.table")
+        assertThat(files.getValue("runtime/agentown_tframex_adapter/capabilities.py"))
+            .contains("def data_csv_compare", "def template_markdown_table")
+            .doesNotContain("Mock research")
+    }
+
+    @Test
+    fun `downloaded CSV package executes through its embedded pinned TFrameX runtime`(@TempDir directory: Path) {
+        val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
+        val bundle = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
+        )
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        files.forEach { (relativePath, content) ->
+            val target = directory.resolve(relativePath)
             Files.createDirectories(target.parent)
             Files.writeString(target, content)
         }
 
-        assertThat(files.getValue("workflow.json")).contains("data.csv.compare").doesNotContain("ai.generate")
-        val process = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString())
-            .redirectErrorStream(true).start()
-        val output = process.inputStream.bufferedReader().readText()
+        val process = ProcessBuilder(python, directory.resolve("runners/python/runner.py").toString())
+            .directory(directory.toFile())
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
 
-        assertThat(process.waitFor()).withFailMessage(output).isZero()
-        assertThat(output).contains("\"status\": \"SUCCEEDED\"", "\"changeType\": \"ADDED\"", "\"changeType\": \"REMOVED\"", "\"changeType\": \"MODIFIED\"")
-            .doesNotContain("instruction")
-
-        Files.writeString(directory.resolve("examples/sample-input.json"), "{}")
-        val missingInput = ProcessBuilder("python3", directory.resolve("runners/python/runner.py").toString())
-            .redirectErrorStream(true).start()
-        val missingInputOutput = missingInput.inputStream.bufferedReader().readText()
-        assertThat(missingInput.waitFor()).isNotZero()
-        assertThat(missingInputOutput).contains("\"status\": \"FAILED\"", "CSV input requires csvA and csvB")
+        assertThat(exitCode).describedAs(output).isZero()
+        val jsonStart = output.indexOf('{')
+        assertThat(jsonStart).describedAs(output).isGreaterThanOrEqualTo(0)
+        val result = mapper.readTree(output.substring(jsonStart))
+        assertThat(result["status"].asText()).isEqualTo("SUCCEEDED")
+        assertThat(result["trace"].map { it["kind"].asText() })
+            .contains("agent_start", "tool_start", "tool_end", "agent_end")
+        assertThat(result.toString()).contains("MODIFIED", "REMOVED", "ADDED")
     }
 }

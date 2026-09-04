@@ -196,6 +196,20 @@ class BuilderUsageRecord(
     @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
 )
 
+@Entity
+@Table(name = "builder_activity_events")
+class BuilderActivityEvent(
+    @Id val id: UUID = UUID.randomUUID(),
+    @Column(name = "workspace_id", nullable = false) val workspaceId: UUID,
+    @Column(name = "event_type", nullable = false, length = 80) val eventType: String,
+    @Column(name = "target_type", length = 40) val targetType: String? = null,
+    @Column(name = "target_id") val targetId: UUID? = null,
+    @Column(nullable = false, length = 20) val outcome: String,
+    @Column(name = "http_status", nullable = false) val httpStatus: Int,
+    @Column(name = "duration_ms", nullable = false) val durationMs: Long,
+    @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
+)
+
 @Entity @Table(name = "builder_automation_teams")
 class BuilderAutomationTeam(
     @Id val id: UUID = UUID.randomUUID(),

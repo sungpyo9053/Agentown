@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentown-tframex-adapter"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "tframex @ git+https://github.com/TesslateAI/TFrameX.git@23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603",
+  # TFrameX 1.1.0 imports the pre-2.0 MCP client symbol.
+  "mcp==1.9.4",
+  # Required by TFrameX's MCP content processor but omitted from its package metadata.
+  "jsonschema>=4.0.0,<5",
+  "fastapi==0.116.1",
+  "uvicorn==0.35.0",
+]
+
+[project.scripts]
+agentown-tframex-runtime = "agentown_tframex_adapter.server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentown_tframex_adapter*"]

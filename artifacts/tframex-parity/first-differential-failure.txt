@@ -1,0 +1,25 @@
+Pinned reference:
+  TesslateAI/TFrameX v1.1.0
+  commit 23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603
+
+Command:
+  /private/tmp/tframex-parity-venv/bin/python artifacts/tframex-parity/test_core_runtime_differential.py
+
+Reference execution:
+  completed in 0.059s
+  left and right TraceAgent calls executed through TFrameX ParallelPattern
+  reporter executed after the ParallelPattern through SequentialPattern
+  event order: start:left, start:right, end:left, end:right, start:reporter, end:reporter
+  parallel overlap: true
+  reporter input: TFrameX ParallelPattern aggregate message containing both child results
+
+Candidate execution:
+  NOT STARTED
+
+Failure:
+  AssertionError: ADAPTER_NOT_IMPLEMENTED: No module named 'agentown_tframex_adapter'
+
+Verdict:
+  RED as expected. Agentown currently has no thin adapter that can run the same
+  definition through the pinned TFrameX Core Runtime. No runtime parity claim is
+  permitted from this result.

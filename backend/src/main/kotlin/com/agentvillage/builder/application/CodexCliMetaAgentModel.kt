@@ -88,7 +88,9 @@ class CodexCliMetaAgentModel(
 
         graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, knowledge.search.mock, data.csv.compare, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
         condition.branch, ai.classify, ai.generate, human.approval, slack.new_message.mock, slack.reply.mock, slack.send.mock,
-        email.send.mock, notion.search.mock, notion.read_page.mock, notion.create_page, flight.search.mock, github.issue.mock, parallel.map.mock, tool.unresolved뿐이다.
+        email.send.mock, notion.search.mock, notion.read_page.mock, notion.create_page, flight.search.mock, github.issue.mock, tool.unresolved뿐이다.
+        서로 독립적인 여러 작업을 병렬로 수행한 뒤 합치는 요청은 parallel.map.mock 한 노드로 축약하지 않는다. 각 작업을 별도 ai.generate Agent 실행 노드로 만들고 시작 노드에서 fan-out한 뒤, 모든 작업 노드가 동일한 집계 Agent 노드로 fan-in하도록 edge를 구성한다.
+        병렬 작업 수가 사용자 입력으로 명시됐다면 그 수를 임의로 줄이거나 하드코딩 예시 이름으로 바꾸지 않는다. 각 작업 Agent의 출력 스키마와 집계 Agent의 입력 스키마가 동일한 결과 계약을 공유해야 한다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
         schedule.trigger에는 cron과 timezone, news.search.mock에는 source, query, lookbackHours, data.deduplicate에는 key,
         human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.

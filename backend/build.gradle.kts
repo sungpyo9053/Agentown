@@ -68,3 +68,11 @@ tasks.withType<Test> {
     System.getenv("TEST_DATABASE_USERNAME")?.let { systemProperty("test.database.username", it) }
     System.getenv("TEST_DATABASE_PASSWORD")?.let { systemProperty("test.database.password", it) }
 }
+
+tasks.processResources {
+    from("../core-runtime") {
+        include("pyproject.toml")
+        include("agentown_tframex_adapter/**")
+        into("tframex-runtime")
+    }
+}

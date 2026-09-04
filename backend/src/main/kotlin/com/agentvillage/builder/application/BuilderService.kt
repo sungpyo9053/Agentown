@@ -48,6 +48,13 @@ data class AgentDefinitionUpdate(
     val skillKeys: List<String>,
     val memoryScope: String,
 )
+data class TFrameXFlowImport(
+    val baseVersionId: UUID,
+    val expectedGraphHash: String,
+    val tframexCommit: String,
+    val designBundle: Map<String, Any?>,
+    val runtimeDefinition: Map<String, Any?>,
+)
 data class BuilderSnapshot(
     val workspaceId: UUID,
     val conversationId: UUID,
@@ -89,6 +96,8 @@ class BuilderService(
     private val catalog: WorkflowNodeCatalog,
     private val teamDeployments: AutomationTeamDeploymentService,
     private val packageRenderer: HarnessPackageRenderer,
+    private val tframexCompiler: TFrameXDefinitionCompiler,
+    private val tframexRuntime: TFrameXCoreRuntimeClient,
     private val templateCatalog: HarnessTemplateCatalogService,
     private val mapper: ObjectMapper,
 ) {
@@ -567,8 +576,73 @@ class BuilderService(
             templateVersionId = version.templateVersionId, inputJson = mask(input), idempotencyKey = idempotencyKey,
         ))
         pipeline.record(context.pipeline(), "simulate_workflow", input.size, graph.nodes.size)
-        executeFrom(context, run, graph, graph.entryNodeId, input)
+        if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) {
+            executeWithTFrameX(context, run, graph, design.agents, input)
+        } else {
+            executeFrom(context, run, graph, graph.entryNodeId, input)
+        }
         return runView(run)
+    }
+
+    private fun executeWithTFrameX(
+        context: OwnedContext,
+        run: BuilderRun,
+        graph: WorkflowGraph,
+        agents: List<AgentDefinition>,
+        input: Map<String, Any?>,
+    ) {
+        val result = try {
+            tframexRuntime.execute(context.workflow.name, graph, agents, input)
+        } catch (exception: com.agentvillage.common.exception.ApiException) {
+            run.status = if (exception.code == "EXECUTION_NOT_CONFIGURED") BuilderRunStatus.EXECUTION_NOT_CONFIGURED else BuilderRunStatus.FAILED
+            run.failureCode = exception.code
+            run.failureMessage = exception.message.take(500)
+            run.requirementMatched = false
+            context.workflow.status = WorkflowStatus.SIMULATION_FAILED
+            return
+        } catch (exception: Exception) {
+            run.status = BuilderRunStatus.FAILED
+            run.failureCode = "TFRAMEX_RUNTIME_UNAVAILABLE"
+            run.failureMessage = "TFrameX Core Runtime에 연결할 수 없습니다."
+            run.requirementMatched = false
+            context.workflow.status = WorkflowStatus.SIMULATION_FAILED
+            return
+        }
+        result.trace.filter { it["kind"] in setOf("agent_end", "agent_error", "tool_end", "tool_error") }.forEachIndexed { index, event ->
+            val kind = event["kind"]?.toString()
+            val agent = event["agent"]?.toString() ?: "tframex-agent-$index"
+            val tool = event["tool"]?.toString()
+            val step = stepRuns.save(BuilderStepRun(
+                runId = run.id,
+                nodeId = tool ?: agent,
+                nodeType = if (tool == null) "tframex.agent" else "tframex.tool",
+                sequenceNo = index + 1,
+                status = when (kind) {
+                    "agent_error", "tool_error" -> BuilderStepStatus.FAILED
+                    else -> BuilderStepStatus.SUCCEEDED
+                },
+                inputJson = mapOf("input" to event["input"]),
+            ))
+            if (kind in setOf("agent_end", "tool_end")) step.outputJson = mapOf("output" to event["output"])
+            if (kind in setOf("agent_error", "tool_error")) step.errorMessage = event["error"]?.toString()
+        }
+        if (result.status != "SUCCEEDED") {
+            run.status = if (result.status == "EXECUTION_NOT_CONFIGURED") BuilderRunStatus.EXECUTION_NOT_CONFIGURED else BuilderRunStatus.FAILED
+            run.failureCode = result.code ?: result.status
+            run.failureMessage = (result.message ?: "TFrameX 실행에 실패했습니다.").take(500)
+            run.requirementMatched = false
+            context.workflow.status = WorkflowStatus.SIMULATION_FAILED
+            return
+        }
+        val design = storedDesign(context.conversation.id)
+        val projected = projectOutput(result.output, design.proposal.outputSchema)
+        val issue = validateFields(design.proposal.outputSchema, projected, "최종 출력")
+        run.outputJson = if (issue == null) projected else projected + ("validationError" to issue)
+        run.requirementMatched = issue == null
+        run.status = if (issue == null) BuilderRunStatus.SUCCEEDED else BuilderRunStatus.FAILED
+        run.failureCode = if (issue == null) null else "FINAL_OUTPUT_SCHEMA_INVALID"
+        run.failureMessage = issue
+        context.workflow.status = if (issue == null) WorkflowStatus.READY_TO_ACTIVATE else WorkflowStatus.SIMULATION_FAILED
     }
 
     @Transactional(readOnly = true)
@@ -832,6 +906,84 @@ class BuilderService(
             "versionNo" to version.versionNo,
             "graphHash" to version.graphHash,
         )) + "\n")).also(::requireCompletePackage)
+    }
+
+    @Transactional(readOnly = true)
+    fun exportTFrameXFlow(ownerId: UUID, workflowId: UUID): Map<String, Any?> {
+        val context = workflowContext(ownerId, workflowId)
+        val design = storedDesign(context.conversation.id)
+        val version = currentVersion(context.workflow)
+        val definition = tframexCompiler.compilePlan(
+            context.workflow.name,
+            requireNotNull(design.proposal.graphPlan) { "Workflow graph plan is required" },
+            design.agents,
+            emptyMap(),
+        )
+        return linkedMapOf(
+            "format" to "agentown-tframex-flow/v1",
+            "tframexCommit" to TFRAMEX_COMMIT,
+            "workflowId" to workflowId,
+            "workflowVersionId" to version.id,
+            "graphHash" to version.graphHash,
+            "designBundle" to mapper.convertValue(
+                MetaAgentDesignBundle(design.requirement, emptyList(), design.proposal, design.agents, design.guides),
+                mapType(),
+            ),
+            "runtimeDefinition" to definition,
+        )
+    }
+
+    @Transactional
+    fun importTFrameXFlow(ownerId: UUID, workflowId: UUID, imported: TFrameXFlowImport, idempotencyKey: String): BuilderSnapshot {
+        requireIdempotency(idempotencyKey)
+        val context = workflowContext(ownerId, workflowId)
+        if (context.workflow.status == WorkflowStatus.STOPPED) throw ConflictException("WORKFLOW_STOPPED", "중지된 에이전트에는 Flow를 가져올 수 없습니다.")
+        messages.findByConversationIdAndIdempotencyKey(context.conversation.id, idempotencyKey)?.let {
+            return snapshot(ownerId, context.conversation.id)
+        }
+        val current = currentVersion(context.workflow)
+        if (current.id != imported.baseVersionId || current.graphHash != imported.expectedGraphHash) {
+            throw ConflictException("WORKFLOW_VERSION_CONFLICT", "캔버스가 최신 버전이 아닙니다. 새 버전을 불러와 다시 가져오세요.")
+        }
+        if (imported.tframexCommit != TFRAMEX_COMMIT) {
+            throw BadRequestException("TFRAMEX_PIN_MISMATCH", "고정된 TFrameX Runtime 버전과 일치하지 않습니다.")
+        }
+        val bundle = runCatching { mapper.convertValue(imported.designBundle, MetaAgentDesignBundle::class.java) }
+            .getOrElse { throw BadRequestException("INVALID_TFRAMEX_FLOW_IMPORT", "Agentown 설계 번들이 유효하지 않습니다.") }
+        if (bundle.clarificationQuestions.isNotEmpty()) {
+            throw BadRequestException("INVALID_TFRAMEX_FLOW_IMPORT", "미확정 질문이 남은 Flow는 가져올 수 없습니다.")
+        }
+        val graph = graphTranslator.translate(workflowId, bundle.proposal)
+        requireValidDesign(graph, bundle.requirement, bundle.proposal, bundle.agentDefinitions, bundle.requirement.objective)
+        val input = runCatching {
+            val encoded = imported.runtimeDefinition["input"]?.toString() ?: "{}"
+            mapper.readValue(encoded, mapType())
+        }.getOrElse { throw BadRequestException("INVALID_TFRAMEX_FLOW_IMPORT", "TFrameX 입력 정의가 JSON 객체가 아닙니다.") }
+        val expected = tframexCompiler.compilePlan(
+            bundle.proposal.name,
+            requireNotNull(bundle.proposal.graphPlan),
+            bundle.agentDefinitions,
+            input,
+        )
+        if (mapper.valueToTree<com.fasterxml.jackson.databind.JsonNode>(expected) != mapper.valueToTree<com.fasterxml.jackson.databind.JsonNode>(imported.runtimeDefinition)) {
+            throw BadRequestException("TFRAMEX_FLOW_DEFINITION_MISMATCH", "설계 번들과 TFrameX 실행 정의가 일치하지 않습니다.")
+        }
+        restoreDesignSnapshot(context.conversation.id, mapOf(
+            "requirement" to mapper.convertValue(bundle.requirement, mapType()),
+            "proposal" to mapper.convertValue(bundle.proposal, mapType()),
+            "agents" to mapper.convertValue(bundle.agentDefinitions, listMapType()),
+            "guides" to mapper.convertValue(bundle.guideDefinitions, listMapType()),
+        ))
+        val saved = saveVersion(context.workflow, graph, "TFrameX Flow Import", approved = false)
+        context.workflow.status = WorkflowStatus.READY_TO_SIMULATE
+        messages.save(BuilderMessage(
+            conversationId = context.conversation.id,
+            role = "ASSISTANT",
+            content = "검증된 TFrameX Flow를 새 버전 ${saved.versionNo}으로 가져왔습니다.",
+            workflowVersionId = saved.id,
+            idempotencyKey = idempotencyKey,
+        ))
+        return snapshot(ownerId, context.conversation.id)
     }
 
     @Transactional

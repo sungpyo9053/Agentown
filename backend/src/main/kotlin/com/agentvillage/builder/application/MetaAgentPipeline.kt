@@ -40,7 +40,7 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
     override val modelName = "mock"
 
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
-        val instruction = input["instruction"]?.toString().orEmpty()
+        val instruction = input["userInstruction"]?.toString() ?: input["instruction"]?.toString().orEmpty()
         val slack = instruction.contains("Slack", true) || instruction.contains("슬랙")
         val faq = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)
         val bundle = if (slack && faq) faqBundle(instruction) else genericBundle(instruction)
@@ -210,6 +210,7 @@ class StructuredMetaAgentPipeline(
         val input = buildMap<String, Any?> {
             put("instruction", instruction)
             put("designMode", mode.name)
+            userInstruction?.let { put("userInstruction", it) }
             if (validationFeedback.isNotEmpty()) {
                 put("generationAction", "REPAIR_INVALID_DESIGN")
                 put("validationFeedback", validationFeedback)
@@ -268,13 +269,10 @@ class StructuredMetaAgentPipeline(
         val instructionLower = instruction.lowercase()
         val deterministicCsv = instructionLower.contains("csv") &&
             listOf("비교", "diff", "달라진", "차이", "변경", "added", "removed", "modified").any(instructionLower::contains)
-        val competitorResearch = instructionLower.contains("경쟁사") &&
-            listOf("세 곳", "3곳", "각각", "합쳐", "병렬").any(instructionLower::contains) &&
-            listOf("조사", "제품 발표", "가격 변화").any(instructionLower::contains)
         val githubIssueClassification = (instructionLower.contains("github") || instructionLower.contains("깃허브")) && instructionLower.contains("이슈") && listOf("분류", "버그", "기능 요청").any(instructionLower::contains)
         val unresolvedPeopleMagic = instructionLower.contains("peoplemagic")
         val unsafeFlightPurchase = instructionLower.contains("항공권") && listOf("결제", "구매").any(instructionLower::contains)
-        val fullySpecifiedDesign = competitorResearch || githubIssueClassification || unresolvedPeopleMagic || unsafeFlightPurchase
+        val fullySpecifiedDesign = githubIssueClassification || unresolvedPeopleMagic || unsafeFlightPurchase
         val genericFaqDraft = listOf("faq", "도움말", "지원 문서").any(instructionLower::contains) &&
             listOf("답변", "응답", "초안", "상담원", "담당자", "답하고", "답해").any(instructionLower::contains) &&
             listOf("slack", "슬랙", "notion", "노션", "외부 전송").none(instructionLower::contains)
@@ -313,19 +311,19 @@ class StructuredMetaAgentPipeline(
         )
         if (questions.isNotEmpty()) return normalized
         val standardized = when {
+            mode == DesignMode.AGENT_DEVELOPMENT -> normalized
             deterministicCsv -> compileCsvComparison(normalized, instruction)
             genericFaqDraft -> compileFaqDraft(normalized, instruction)
-            competitorResearch -> compileCompetitorResearch(normalized, instruction)
             githubIssueClassification -> compileGithubIssueClassification(normalized, instruction)
             unresolvedPeopleMagic -> compileUnresolvedPeopleMagic(normalized, instruction)
             unsafeFlightPurchase -> compileSafeFlightPurchase(normalized, instruction)
             scheduled && genericNewsReference && (instruction.contains("Slack", true) || instruction.contains("슬랙")) -> standardizeDailyNewsReport(normalized, instruction)
             (instruction.contains("Slack", true) || instruction.contains("슬랙")) && (instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)) -> standardizeCustomerSupport(normalized)
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
-            mode == DesignMode.AGENT_DEVELOPMENT -> normalized
             else -> normalized
         }
-        val cumulative = preserveCumulativeClassificationRevision(standardized, instruction)
+        val cumulative = if (mode == DesignMode.AGENT_DEVELOPMENT) standardized
+        else preserveCumulativeClassificationRevision(standardized, instruction)
         val contractNormalized = cumulative.copy(proposal = cumulative.proposal.copy(graphPlan = cumulative.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
         return withExecutionMetadata(contractNormalized, instruction, mode)
     }
@@ -479,23 +477,6 @@ class StructuredMetaAgentPipeline(
             ),
             agentDefinitions = listOf(agent),
             guideDefinitions = listOf(GuideDefinition("faq-source", "FAQ 자료 연결", "실제 실행 전에 FAQ 검색 소스를 연결합니다.", listOf(GuideField("source", "FAQ 소스", "text", true, false, "검색할 FAQ 저장소")))),
-        )
-    }
-
-    private fun compileCompetitorResearch(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
-        val agent = writingAgent("comparison-reporter", "경쟁사 비교 보고서 작성자", "병렬 조사 결과에 있는 제품 발표와 가격 변화만 근거로 비교 보고서를 작성한다.", "report")
-        val nodes = listOf(
-            WorkflowNodePlan("manual", NodeType.MANUAL_TRIGGER.wireName, "조사 시작"),
-            WorkflowNodePlan("parallel-research", NodeType.PARALLEL_MAP_MOCK.wireName, "경쟁사 3곳 병렬 조사", mapOf("items" to listOf("경쟁사 A", "경쟁사 B", "경쟁사 C"), "operation" to "최근 제품 발표와 가격 변화 조사", "maxConcurrency" to 3)),
-            WorkflowNodePlan("merge-report", NodeType.AI_GENERATE.wireName, "비교 보고서 병합", mapOf("instruction" to "각 경쟁사 조사 결과를 근거로 하나의 비교 보고서 작성", "agentKey" to agent.key)),
-            WorkflowNodePlan("end", NodeType.WORKFLOW_END.wireName, "완료"),
-        )
-        return bundle.copy(
-            requirement = AutomationRequirement(instruction, "수동 조사 시작", listOf("경쟁사 3곳"), listOf("비교 보고서"), nodes.map { it.label }, listOf("조사 결과 비교"), listOf("외부 조사 소스 미연결"), false),
-            clarificationQuestions = emptyList(),
-            proposal = bundle.proposal.copy(name = "경쟁사 병렬 조사", summary = "세 경쟁사를 제한된 병렬 Mock 조사 후 하나의 비교 보고서로 합칩니다.", capabilities = nodes.map { it.label }, integrations = listOf("Web Research Mock · 연결 필요"), approvalPoints = emptyList(), failurePolicy = "개별 조사 실패를 표시하고 근거 없는 비교를 만들지 않음", graphPlan = linearPlan(nodes)),
-            agentDefinitions = listOf(agent),
-            guideDefinitions = listOf(GuideDefinition("competitors", "경쟁사 조사 설정", "조사할 경쟁사와 허용된 정보원을 설정합니다.", listOf(GuideField("competitors", "경쟁사 3곳", "list", true, false, "조사 대상 회사")))),
         )
     }
 

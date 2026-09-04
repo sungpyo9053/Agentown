@@ -57,7 +57,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
-                  "nodeType": { "type": "string", "enum": ["manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "flight.search.mock", "github.issue.mock", "parallel.map.mock", "tool.unresolved", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock", "notion.create_page"] },
+                  "nodeType": { "type": "string", "enum": ["manual.trigger", "schedule.trigger", "text.input", "news.search.mock", "knowledge.search.mock", "flight.search.mock", "github.issue.mock", "tool.unresolved", "data.csv.compare", "data.deduplicate", "data.normalize", "quality.check", "template.render", "workflow.end", "condition.branch", "ai.classify", "ai.generate", "human.approval", "slack.new_message.mock", "slack.reply.mock", "slack.send.mock", "email.send.mock", "notion.search.mock", "notion.read_page.mock", "notion.create_page"] },
                   "label": { "type": "string", "minLength": 1, "maxLength": 160 },
                   "config": {
                     "anyOf": [

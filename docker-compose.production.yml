@@ -48,6 +48,7 @@ services:
       BUILDER_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
       BUILDER_UNLIMITED_OWNER_IDS: ${BUILDER_UNLIMITED_OWNER_IDS:-}
       BUILDER_SHARED_CODEX_HOME: /home/app/.codex
+      BUILDER_TFRAMEX_RUNTIME_URL: http://core-runtime:8090
       CONTENT_OPERATIONS_PLATFORM_MODEL: ${CONTENT_OPERATIONS_PLATFORM_MODEL:-gpt-5.6-luna}
       CONTENT_OPERATIONS_MONTHLY_MANAGED_LIMIT: ${CONTENT_OPERATIONS_MONTHLY_MANAGED_LIMIT:-30}
       RELEASE_COMMIT_SHA: ${RELEASE_COMMIT_SHA:-unknown}
@@ -75,8 +76,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      core-runtime:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  core-runtime:
+    build:
+      context: .
+      dockerfile: core-runtime/Dockerfile
+    restart: unless-stopped
+    environment:
+      CODEX_HOME: /home/app/.codex
+      AGENTOWN_CODEX_COMMAND: /usr/local/bin/codex
+      AGENTOWN_CODEX_MODEL: ${BUILDER_CODEX_MODEL:-gpt-5.6-luna}
+      AGENTOWN_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./deploy/codex-auth:/home/app/.codex:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
       interval: 10s
       timeout: 3s
       retries: 20

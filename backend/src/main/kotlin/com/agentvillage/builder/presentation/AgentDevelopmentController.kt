@@ -3,6 +3,7 @@ package com.agentvillage.builder.presentation
 import com.agentvillage.builder.application.BuilderGenerationService
 import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.application.AgentDefinitionUpdate
+import com.agentvillage.builder.application.TFrameXFlowImport
 import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.validation.Valid
@@ -32,6 +33,13 @@ class AgentDevelopmentController(
         val toolKeys: List<String> = emptyList(),
         val skillKeys: List<String> = emptyList(),
         val memoryScope: String = "NONE",
+    )
+    data class TFrameXFlowImportRequest(
+        val baseVersionId: UUID,
+        val expectedGraphHash: String,
+        val tframexCommit: String,
+        val designBundle: Map<String, Any?>,
+        val runtimeDefinition: Map<String, Any?>,
     )
     @PostMapping("/sessions")
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) =
@@ -165,5 +173,30 @@ class AgentDevelopmentController(
             .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename("agentown-agent-${snapshot.workflowId}.zip").build().toString())
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
             .body(bytes)
+    }
+
+    @GetMapping("/sessions/{sessionId}/flow")
+    fun exportFlow(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable sessionId: UUID): Any {
+        service.requireConversationPurpose(user.userId, sessionId, BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        val snapshot = service.snapshot(user.userId, sessionId)
+        return service.exportTFrameXFlow(user.userId, snapshot.workflowId)
+    }
+
+    @PostMapping("/sessions/{sessionId}/flow/import")
+    fun importFlow(
+        @AuthenticationPrincipal user: AuthenticatedUser,
+        @PathVariable sessionId: UUID,
+        @RequestHeader("Idempotency-Key") key: String,
+        @RequestBody request: TFrameXFlowImportRequest,
+    ): Any {
+        service.requireConversationPurpose(user.userId, sessionId, BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        val snapshot = service.snapshot(user.userId, sessionId)
+        return service.importTFrameXFlow(user.userId, snapshot.workflowId, TFrameXFlowImport(
+            request.baseVersionId,
+            request.expectedGraphHash,
+            request.tframexCommit,
+            request.designBundle,
+            request.runtimeDefinition,
+        ), key)
     }
 }

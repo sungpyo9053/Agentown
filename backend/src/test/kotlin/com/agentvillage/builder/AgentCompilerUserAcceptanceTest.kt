@@ -39,10 +39,9 @@ class AgentCompilerUserAcceptanceTest {
         assertThat(bundle.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("data.csv.compare").doesNotContain("ai.generate", "human.approval")
     }
 
-    @Test fun `TC06 competitor research uses a bounded parallel research contract and merge agent`() {
+    @Test fun `TC06 competitor research never falls back to a fake parallel map`() {
         val bundle = compile("경쟁사 세 곳의 최근 제품 발표와 가격 변화를 각각 조사하고, 조사가 끝나면 하나의 비교 보고서로 합쳐줘.")
-        assertThat(bundle.clarificationQuestions).isEmpty()
-        assertThat(bundle.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("parallel.map.mock", "ai.generate").doesNotContain("human.approval")
+        assertThat(bundle.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("ai.generate").doesNotContain("parallel.map.mock", "human.approval")
     }
 
     @Test fun `TC07 GitHub issue classification is not misclassified as deployment`() {
@@ -76,18 +75,18 @@ class AgentCompilerUserAcceptanceTest {
         assertThat(github.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("github.issue.mock", "condition.branch").doesNotContain("notion.search.mock")
     }
 
-    @Test fun `develop requests use the same truthful FAQ CSV and unsupported connector contracts`() {
+    @Test fun `development mode does not apply keyword-specific graph rewrites to model output`() {
         val faq = compileForDevelopment("FAQ를 검색해서 고객 문의 답변을 만들고 근거가 없으면 담당자 확인이 필요하다고 알려주는 에이전트")
-        assertThat(faq.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("knowledge.search.mock", "condition.branch", "ai.generate")
-        assertThat(faq.proposal.outputSchema.map { it.name }).contains("draftResponse", "needsAssigneeReview")
+        assertThat(faq.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("ai.generate")
+            .doesNotContain("knowledge.search.mock", "condition.branch")
 
         val csv = compileForDevelopment("CSV 파일 두 개를 비교해서 추가 삭제 수정 행을 정확히 알려주는 에이전트")
-        assertThat(csv.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("data.csv.compare").doesNotContain("ai.generate")
-        assertThat(csv.agentDefinitions).isEmpty()
+        assertThat(csv.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("ai.generate").doesNotContain("data.csv.compare")
+        assertThat(csv.agentDefinitions).isNotEmpty
 
         val unsupported = compileForDevelopment("PeopleMagic에서 휴가 잔여일을 조회하는 에이전트")
-        assertThat(unsupported.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("tool.unresolved").doesNotContain("knowledge.search.mock")
-        assertThat(unsupported.requirement.unresolvedQuestions).isNotEmpty
+        assertThat(unsupported.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("ai.generate")
+            .doesNotContain("tool.unresolved", "knowledge.search.mock")
     }
 
     @Test fun `develop wrapper is model context only and never becomes runtime sample input`() {

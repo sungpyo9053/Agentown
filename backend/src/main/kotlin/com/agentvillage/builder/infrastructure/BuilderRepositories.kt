@@ -97,6 +97,9 @@ interface BuilderUsageRecordRepository : JpaRepository<BuilderUsageRecord, UUID>
     fun findByOwnerIdAndIdempotencyKey(ownerId: UUID, idempotencyKey: String): BuilderUsageRecord?
     fun countByOwnerIdAndConversationId(ownerId: UUID, conversationId: UUID): Long
 }
+interface BuilderActivityEventRepository : JpaRepository<BuilderActivityEvent, UUID> {
+    fun findTop200ByOrderByCreatedAtDesc(): List<BuilderActivityEvent>
+}
 interface BuilderAutomationTeamRepository : JpaRepository<BuilderAutomationTeam, UUID> {
     fun findByWorkflowVersionId(workflowVersionId: UUID): BuilderAutomationTeam?
     fun findAllByWorkspaceIdOrderByCreatedAtDesc(workspaceId: UUID): List<BuilderAutomationTeam>

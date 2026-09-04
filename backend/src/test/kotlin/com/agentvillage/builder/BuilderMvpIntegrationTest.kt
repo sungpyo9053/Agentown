@@ -258,7 +258,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             "agents/content-writer.md", "schemas/final-output.schema.json", "policies/permissions.json", "policies/ai-budget.json",
         )
         assertThat(agentPackage.getValue("manifest.json")).contains("agentown-agent-package/v1", "python-local", "generic-package")
-        assertThat(agentPackage.getValue("runners/python/runner.py")).contains("externalCallPerformed", "False")
+        assertThat(agentPackage.getValue("runners/python/runner.py")).contains("AgentownTFrameXAdapter").doesNotContain("Fixed Agentown mock runner")
         var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("text" to "검증용 주제와 참고 원문"), "writing-team-run-$suffix")
         assertThat(run.status).isEqualTo(BuilderRunStatus.WAITING_APPROVAL)
         run = service.decideExecution(owner.id, run.id, true, "writing-team-execution-$suffix")

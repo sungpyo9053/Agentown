@@ -35,6 +35,7 @@ services:
       EMAIL_PROVIDER: stub
       EMAIL_EXPOSE_DEVELOPMENT_VALUES: "false"
       BUILDER_META_AGENT_MODE: mock
+      BUILDER_TFRAMEX_RUNTIME_URL: http://core-runtime:8090
       RELEASE_COMMIT_SHA: ${RELEASE_COMMIT_SHA:?Set RELEASE_COMMIT_SHA}
       RELEASE_ARTIFACT: lightsail-git-archive
       SLACK_CONNECTOR_ENABLED: "false"
@@ -42,8 +43,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      core-runtime:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+
+  core-runtime:
+    build:
+      context: .
+      dockerfile: core-runtime/Dockerfile
+    restart: unless-stopped
+    environment:
+      CODEX_HOME: /home/app/.codex
+      AGENTOWN_CODEX_COMMAND: /usr/local/bin/codex
+      AGENTOWN_CODEX_MODEL: ${BUILDER_CODEX_MODEL:-gpt-5.6-luna}
+      AGENTOWN_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
+    volumes:
+      - ./deploy/codex-auth:/home/app/.codex:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
       interval: 10s
       timeout: 3s
       retries: 30
