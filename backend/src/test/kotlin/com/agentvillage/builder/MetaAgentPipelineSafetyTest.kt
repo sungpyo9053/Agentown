@@ -19,6 +19,44 @@ import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
     @Test
+    fun `zero AI graph explains deterministic execution without an AI call`() {
+        val mapper = jacksonObjectMapper()
+        val model = DeterministicMockMetaAgentModel(mapper)
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        val result = pipeline.generateDesign(context, "CSV 두 파일을 비교해서 변경된 행을 찾아줘")
+
+        assertThat(result.proposal.graphPlan!!.nodes).noneMatch { it.nodeType in setOf("ai.generate", "ai.classify") }
+        assertThat(result.proposal.economics?.estimatedAiCallsPerRun).isZero()
+        assertThat(result.proposal.economics!!.separationRationale.single())
+            .contains("AI를 호출하지 않습니다", "CSV 두 파일 입력", "CSV 행 결정적 비교", "일반 코드와 규칙")
+    }
+
+    @Test
+    fun `bounded AI graph names AI steps and distinguishes non AI work`() {
+        val mapper = jacksonObjectMapper()
+        val model = DeterministicMockMetaAgentModel(mapper)
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        val result = pipeline.generateDesign(
+            context,
+            "매일 오전 8시에 네이버 경제·주식 뉴스를 수집해 시장 영향 보고서를 만들고 담당자 승인 후 Slack #market-report 채널로 전송해줘.",
+        )
+
+        val aiNodes = result.proposal.graphPlan!!.nodes.filter { it.nodeType in setOf("ai.generate", "ai.classify") }
+        assertThat(aiNodes.map { it.label }).containsExactly("시장 영향 보고서 작성")
+        assertThat(result.proposal.economics?.estimatedAiCallsPerRun).isEqualTo(aiNodes.size)
+        assertThat(result.proposal.economics!!.separationRationale.single())
+            .contains("‘시장 영향 보고서 작성’", "단계에만", "실행당 1회", "일반 코드와 규칙", "사람이 확인하고 승인", "연결 도구")
+    }
+
+    @Test
     fun `clarification result does not require premature agent definitions`() {
         val mapper = jacksonObjectMapper()
         val deterministic = DeterministicMockMetaAgentModel(mapper)
