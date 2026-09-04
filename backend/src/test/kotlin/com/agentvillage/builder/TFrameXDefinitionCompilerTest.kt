@@ -7,10 +7,14 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.UUID
 
 class TFrameXDefinitionCompilerTest {
-    private val compiler = TFrameXDefinitionCompiler(jacksonObjectMapper())
+    private val mapper = jacksonObjectMapper()
+    private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
     fun `fan out and fan in graph becomes real structured TFrameX parallel pattern`() {
@@ -178,6 +182,110 @@ class TFrameXDefinitionCompilerTest {
             .containsExactly("changedRows")
         assertThat((toolQuality["outputSchema"] as List<FieldDefinition>).map { it.name })
             .containsExactly("changedRows", "qualityPassed")
+    }
+
+    @Test
+    fun `parallel scalar results fan in through quality and router using downstream agent array contract`(@TempDir directory: Path) {
+        val reviewer = AgentDefinition(
+            key = "reviewer", name = "Reviewer", role = "Review one independent proposal",
+            inputSchema = listOf(FieldDefinition("proposals", "array", true, "four proposals", minItems = 4, maxItems = 4)),
+            outputSchema = listOf(FieldDefinition("result", "object", true, "one structured review")),
+            behaviorRules = listOf("Review only the assigned item"), forbiddenRules = emptyList(), evidenceRequirements = emptyList(),
+        )
+        val aggregator = AgentDefinition(
+            key = "aggregator", name = "Aggregator", role = "Aggregate every verified review",
+            inputSchema = listOf(FieldDefinition(
+                "reviewResults", "array", true, "all reviews", minItems = 4, maxItems = 4,
+                itemType = "object",
+            )),
+            outputSchema = listOf(FieldDefinition("selectionTable", "array", true, "final table")),
+            behaviorRules = listOf("Wait for all reviews"), forbiddenRules = emptyList(), evidenceRequirements = emptyList(),
+        )
+        val nodes = buildList {
+            add(WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)))
+            repeat(4) { index -> add(WorkflowNode(
+                "review-${index + 1}", "ai.generate", "Review ${index + 1}", NodePosition(0.0, 0.0),
+                mapOf("agentKey" to "reviewer"),
+            )) }
+            add(WorkflowNode("quality", "quality.check", "Quality", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("route", "condition.branch", "Route", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("aggregate", "ai.generate", "Aggregate", NodePosition(0.0, 0.0), mapOf("agentKey" to "aggregator")))
+            add(WorkflowNode("failed", "workflow.end", "Failed", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("done", "workflow.end", "Done", NodePosition(0.0, 0.0)))
+        }
+        val edges = buildList {
+            repeat(4) { index ->
+                val ordinal = index + 1
+                add(WorkflowEdge("start-$ordinal", "start", "review-$ordinal"))
+                add(WorkflowEdge(
+                    "review-$ordinal-quality", "review-$ordinal", "quality",
+                    bindings = mapOf("review${ordinal}Result" to "result"),
+                ))
+            }
+            add(WorkflowEdge("quality-route", "quality", "route", bindings = mapOf("qualityPassed" to "qualityPassed")))
+            add(WorkflowEdge("route-success", "route", "aggregate", "qualityPassed=true", mapOf("reviewResults" to "reviewResults")))
+            add(WorkflowEdge("route-failed", "route", "failed", "qualityPassed=false"))
+            add(WorkflowEdge("aggregate-done", "aggregate", "done"))
+        }
+
+        val definition = compiler.compile(
+            "quality-router-fan-in",
+            WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "start", nodes = nodes, edges = edges),
+            listOf(reviewer, aggregator),
+            mapOf("proposals" to listOf("a", "b", "c", "d")),
+            finalOutputSchema = aggregator.outputSchema,
+            workflowInputSchema = reviewer.inputSchema,
+        )
+
+        val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+        val quality = runtimeAgents.single { it["toolName"] == "quality.check" }
+        assertThat((quality["inputSchema"] as List<FieldDefinition>).map { it.name }).contains("reviewResults", "failures")
+        assertThat((quality["inputDefaults"] as Map<String, Any?>)["agentownResultFields"])
+            .isEqualTo(listOf("reviewResults"))
+        val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        assertThat(parallel["resultField"]).isEqualTo("reviewResults")
+        assertThat((parallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> })
+            .allMatch { it["sourceField"] == "result" && it["targetField"] == "reviewResults" && it["aggregationMode"] == "APPEND_ITEM" }
+        assertThat(runtimeAgents.filter { it["name"].toString().startsWith("reviewer__review-") })
+            .allMatch { (it["systemPrompt"] as String).contains("병렬 작업 인덱스") }
+
+        val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
+        val definitionFile = directory.resolve("definition.json")
+        mapper.writeValue(definitionFile.toFile(), definition)
+        val script = directory.resolve("execute.py")
+        Files.writeString(script, """
+            import asyncio, json, sys
+            from tframex.models.primitives import Message
+            from tframex.util.llms import BaseLLMWrapper
+            from agentown_tframex_adapter import AgentownTFrameXAdapter
+            from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
+
+            class FixtureLLM(BaseLLMWrapper):
+                def __init__(self): super().__init__("fixture")
+                async def chat_completion(self, messages, stream=False, **kwargs):
+                    value = json.loads(messages[-1].content)
+                    if "reviewResults" in value:
+                        return Message(role="assistant", content=json.dumps({"selectionTable": value["reviewResults"]}))
+                    return Message(role="assistant", content=json.dumps({"result": {
+                        "supplier": value["_agentownAssignedInput"]["proposals"], "status": "READY"
+                    }}))
+
+            definition = json.load(open(sys.argv[1]))
+            result = asyncio.run(AgentownTFrameXAdapter(llm=FixtureLLM(), tools=BUILTIN_TOOLS).run(definition))
+            print(json.dumps(result, ensure_ascii=False))
+        """.trimIndent())
+        val process = ProcessBuilder(python, script.toString(), definitionFile.toString())
+            .directory(directory.toFile())
+            .redirectErrorStream(true)
+            .also { it.environment()["PYTHONPATH"] = Path.of("core-runtime").toAbsolutePath().normalize().toString() }
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertThat(process.waitFor()).describedAs(output).isZero()
+        val result = mapper.readTree(output.substring(output.indexOf('{')))
+        assertThat(mapper.readTree(result["final"].asText())["selectionTable"].map { it["supplier"].asText() })
+            .containsExactly("a", "b", "c", "d")
+        assertThat(result["trace"].filter { it["kind"].asText() == "router_select" }.map { it["route"].asText() })
+            .containsExactly("qualityPassed=true")
     }
 
     @Test

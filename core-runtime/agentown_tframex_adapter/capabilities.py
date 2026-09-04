@@ -51,11 +51,16 @@ def _contract_result(values: dict[str, Any], contract: list[dict[str, Any]] | No
     return {name: values[name] for name in declared if name in values}
 
 
-def quality_check(agentownOutputContract: list[dict[str, Any]] | None = None, **context: Any):
+def quality_check(
+    agentownOutputContract: list[dict[str, Any]] | None = None,
+    agentownResultFields: list[str] | None = None,
+    **context: Any,
+):
     missing = context.get("missingLocations") or context.get("missingFields") or []
     failures = context.get("failures") or context.get("errors") or []
     status = str(context.get("reportStatus") or context.get("status") or "").upper()
-    has_parallel_results = isinstance(context.get("results"), list) and bool(context["results"])
+    result_fields = agentownResultFields or ["results"]
+    has_parallel_results = any(isinstance(context.get(name), list) and bool(context[name]) for name in result_fields)
     has_tool_result = any(name in context for name in ("changedRows", "rendered", "renderedResponse"))
     passed = not missing and not failures and (
         status in {"READY", "SUCCEEDED", "COMPLETED"} or has_parallel_results or has_tool_result
@@ -92,9 +97,14 @@ def template_plain_text(
     return result
 
 
+def workflow_end(**context: Any):
+    return context
+
+
 BUILTIN_TOOLS = {
     "data.csv.compare": data_csv_compare,
     "template.markdown.table": template_markdown_table,
     "quality.check": quality_check,
     "template.plain-text": template_plain_text,
+    "workflow.end": workflow_end,
 }

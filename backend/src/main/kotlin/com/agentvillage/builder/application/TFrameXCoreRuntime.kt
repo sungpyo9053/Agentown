@@ -114,14 +114,39 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         }
         fun isTerminalExecutable(node: WorkflowNode): Boolean = descendants(node.id, outgoing)
             .none { descendant -> nodesById[descendant]?.nodeType in (aiTypes + toolTypes) }
+        fun nearestDownstreamAgentArrayField(nodeId: String): String? {
+            val pending = ArrayDeque<Pair<String, Int>>()
+            outgoing[nodeId].orEmpty().forEach { pending.add(it.target to 1) }
+            val visited = mutableSetOf<String>()
+            val fields = linkedSetOf<String>()
+            var foundDepth: Int? = null
+            while (pending.isNotEmpty()) {
+                val (currentId, currentDepth) = pending.removeFirst()
+                if (foundDepth != null && currentDepth > foundDepth) break
+                if (!visited.add(currentId)) continue
+                val current = nodesById[currentId] ?: continue
+                if (current.nodeType in aiTypes) {
+                    definitions[current.config["agentKey"]?.toString()]
+                        ?.inputSchema?.firstOrNull { it.type.equals("array", true) }
+                        ?.name?.let(fields::add)
+                    foundDepth = currentDepth
+                    continue
+                }
+                outgoing[currentId].orEmpty().forEach { pending.add(it.target to currentDepth + 1) }
+            }
+            return fields.singleOrNull()
+        }
+        fun parallelResultFieldFor(node: WorkflowNode): String = if (node.nodeType in aiTypes) {
+            definitions[node.config["agentKey"]?.toString()]?.inputSchema
+                ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
+        } else {
+            nearestDownstreamAgentArrayField(node.id) ?: "results"
+        }
         lateinit var outputSchemaFor: (WorkflowNode) -> List<FieldDefinition>
         fun upstreamMessageSchema(node: WorkflowNode): List<FieldDefinition> {
             val ancestors = nearestExecutableAncestors(node.id)
             if (ancestors.size > 1) {
-                val resultField = if (node.nodeType in aiTypes) {
-                    definitions[node.config["agentKey"]?.toString()]?.inputSchema
-                        ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
-                } else "results"
+                val resultField = parallelResultFieldFor(node)
                 return (workflowInputSchema + listOf(
                     FieldDefinition(resultField, "array", true, "parallel task results"),
                     FieldDefinition("failures", "array", true, "parallel task failures"),
@@ -149,6 +174,12 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     FieldDefinition("renderedResponse", "string", true, "rendered plain text")
             }.distinctBy { it.name }
         }
+        val executableLayers = executable.groupBy { depth[it.id] ?: 0 }.values
+        val parallelScopeByNode = executableLayers.flatMap { layer ->
+            if (layer.size < 2) emptyList() else layer.sortedBy { it.id }.mapIndexed { index, node ->
+                node.id to (index + 1 to layer.size)
+            }
+        }.toMap()
         val runtimeAgents = executable.map { node ->
             val inputBindings = incomingEdges[node.id].orEmpty().flatMap { edge ->
                 edge.bindings.map { (targetField, sourceField) ->
@@ -157,11 +188,19 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             }
             if (node.nodeType in aiTypes) {
                 val source = definitions.getValue(node.config.getValue("agentKey").toString())
+                val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
+                    ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
+                parallelScopeByNode[node.id]?.let { (index, size) ->
+                    inputDefaults["_agentownParallelIndex"] = index
+                    inputDefaults["_agentownParallelSize"] = size
+                }
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "description" to source.role,
-                    "systemPrompt" to systemPrompt(source, node.label, node.config["instruction"]?.toString()),
+                    "systemPrompt" to systemPrompt(
+                        source, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
+                    ),
                     "tools" to source.toolKeys, "inputSchema" to source.inputSchema, "outputSchema" to source.outputSchema,
-                    "inputBindings" to inputBindings, "inputDefaults" to (node.config["inputDefaults"] ?: emptyMap<String, Any?>()),
+                    "inputBindings" to inputBindings, "inputDefaults" to inputDefaults,
                 )
             } else {
                 val toolName = toolName(node)
@@ -192,6 +231,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName || toolName == "template.plain-text") {
                     inputDefaults["agentownOutputContract"] = outputSchema
                 }
+                if (node.nodeType == NodeType.QUALITY_CHECK.wireName && nearestExecutableAncestors(node.id).size > 1) {
+                    inputDefaults["agentownResultFields"] = listOf(parallelResultFieldFor(node))
+                }
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "kind" to "tool", "toolName" to toolName,
                     "tools" to listOf(toolName), "inputSchema" to inputSchema, "outputSchema" to outputSchema,
@@ -211,7 +253,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             val names = layer.sortedBy { it.id }.map { effectiveByNode.getValue(it.id) }
             val nextNode = layers.getOrNull(index + 1)?.singleOrNull()
             val nextAgent = nextNode?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
-            val resultField = nextAgent?.inputSchema?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
+            val resultField = nextNode?.let(::parallelResultFieldFor) ?: "results"
             if (names.size == 1) names.single() else {
                 val resultBindings = layer.associate { node ->
                     effectiveByNode.getValue(node.id) to outgoing[node.id].orEmpty()
@@ -219,9 +261,6 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                         .flatMap { edge -> edge.bindings
                             .filterNot { (targetField, sourceField) -> targetField == "context" && sourceField == "context" }
                             .map { (targetField, sourceField) ->
-                            if (nextAgent == null) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 결과의 명시적 binding 대상은 Agent Join이어야 합니다.")
-                            }
                             if (sourceField.contains('.') || sourceField.contains('[') || targetField.contains('.') || targetField.contains('[')) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
                             }
@@ -229,9 +268,14 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             if (sourceContract == null) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'이 Task 출력 계약에 없습니다.")
                             }
-                            val targetContract = nextAgent?.inputSchema?.firstOrNull { it.name == targetField }
+                            val effectiveTargetField = if (nextAgent == null) resultField else targetField
+                            val targetContract = if (nextAgent == null) {
+                                nextNode?.let(::upstreamMessageSchema)?.firstOrNull { it.name == effectiveTargetField }
+                            } else {
+                                nextAgent.inputSchema.firstOrNull { it.name == effectiveTargetField }
+                            }
                             if (targetContract == null || !targetContract.type.equals("array", true)) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$targetField'은 array 입력이어야 합니다.")
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$effectiveTargetField'은 array 입력이어야 합니다.")
                             }
                             val aggregationMode = if (sourceContract.type.equals("array", true)) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM"
                             val compatible = if (aggregationMode == "APPEND_ARRAY_ITEMS") {
@@ -243,7 +287,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             )
                             mapOf(
                                 "sourceField" to sourceField,
-                                "targetField" to targetField,
+                                "targetField" to effectiveTargetField,
                                 "aggregationMode" to aggregationMode,
                             )
                         } }
@@ -267,10 +311,25 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             )
             }
         }.toMutableList<Any>()
+        val terminalRouteAgents = linkedMapOf<String, Map<String, Any?>>()
         val routerAgents = branchNodes.map { branch ->
             val routes = outgoing[branch.id].orEmpty().associate { edge ->
                 val key = edge.condition
-                key to routeStep(edge.target, graph.nodes.associateBy { it.id }, outgoing, effectiveByNode)
+                val terminalName = "workflow-end__${edge.target}"
+                val step = routeStep(edge.target, graph.nodes.associateBy { it.id }, outgoing, effectiveByNode, terminalName)
+                if (step == terminalName) {
+                    terminalRouteAgents.putIfAbsent(terminalName, mapOf(
+                        "name" to terminalName,
+                        "kind" to "tool",
+                        "toolName" to "workflow.end",
+                        "tools" to listOf("workflow.end"),
+                        "inputSchema" to emptyList<FieldDefinition>(),
+                        "outputSchema" to emptyList<FieldDefinition>(),
+                        "inputBindings" to emptyList<Map<String, String>>(),
+                        "inputDefaults" to emptyMap<String, Any?>(),
+                    ))
+                }
+                key to step
             }
             if (routes.isEmpty() || routes.keys.any { it.isBlank() }) {
                 throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "${branch.id} RouterPattern 경로가 비어 있습니다.")
@@ -301,7 +360,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             ?.let(outputSchemaFor)
         return mapOf(
             "flowName" to flowName,
-            "agents" to runtimeAgents + routerAgents,
+            "agents" to runtimeAgents + routerAgents + terminalRouteAgents.values,
             "pattern" to mapOf("type" to "SequentialPattern", "name" to "agentown-flow", "steps" to steps),
             "input" to mapper.writeValueAsString(input),
             "workflowInputSchema" to workflowInputSchema,
@@ -355,10 +414,19 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         workflowInputSchema,
     )
 
-    private fun systemPrompt(agent: AgentDefinition, nodeLabel: String, nodeInstruction: String?): String = buildString {
+    private fun systemPrompt(
+        agent: AgentDefinition,
+        nodeLabel: String,
+        nodeInstruction: String?,
+        parallelScope: Pair<Int, Int>? = null,
+    ): String = buildString {
         appendLine("역할: ${agent.role}")
         appendLine("현재 실행 단계: $nodeLabel")
         nodeInstruction?.let { appendLine("현재 단계 지시: $it") }
+        parallelScope?.let { (index, size) ->
+            appendLine("병렬 작업 인덱스: $index / $size")
+            appendLine("런타임이 _agentownAssignedInput에 배정한 ${index}번째 항목만 처리하고 다른 배열 항목의 결과를 대신 만들지 않는다.")
+        }
         appendLine("행동 규칙:")
         agent.behaviorRules.forEach { appendLine("- $it") }
         appendLine("금지 규칙:")
@@ -387,6 +455,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         nodes: Map<String, WorkflowNode>,
         outgoing: Map<String, List<WorkflowEdge>>,
         effectiveByNode: Map<String, String>,
+        terminalFallback: String? = null,
     ): Any {
         val steps = mutableListOf<String>()
         var current: String? = start
@@ -399,7 +468,8 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             }
             current = next.singleOrNull()?.target
         }
-        if (steps.isEmpty()) throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "RouterPattern 경로에 실행 단계가 없습니다.")
+        if (steps.isEmpty()) return terminalFallback
+            ?: throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "RouterPattern 경로에 실행 단계가 없습니다.")
         return if (steps.size == 1) steps.single() else mapOf(
             "type" to "SequentialPattern",
             "name" to "route-${start}",

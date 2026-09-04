@@ -574,6 +574,78 @@ class DifferentialContractTest(unittest.TestCase):
         self.assertEqual(final["failures"], [])
         self.assertTrue(final["qualityPassed"])
 
+    def test_quality_router_accepts_compiler_selected_parallel_result_field(self):
+        async def reviewer(agent, _):
+            name = agent.agent_id.split("_ctx", 1)[0]
+            return json.dumps({"result": {"supplier": name, "status": "READY"}})
+
+        async def aggregator(_, content):
+            value = json.loads(content)
+            return json.dumps({"selectionTable": value["reviewResults"]})
+
+        workers = [f"review-{index}" for index in range(1, 5)]
+        quality_schema = [
+            {"name": "reviewResults", "type": "array", "itemType": "object", "required": True},
+            {"name": "failures", "type": "array", "required": True},
+            {"name": "qualityPassed", "type": "boolean", "required": True},
+        ]
+        definition = {
+            "flowName": "parallel-quality-router-alias",
+            "agents": [
+                *workers,
+                {
+                    "name": "quality", "kind": "tool", "toolName": "quality.check",
+                    "tools": ["quality.check"], "outputSchema": quality_schema,
+                    "inputDefaults": {
+                        "agentownOutputContract": quality_schema,
+                        "agentownResultFields": ["reviewResults"],
+                    },
+                },
+                {"name": "router", "kind": "router", "routeConditions": [
+                    {"key": "qualityPassed=true", "field": "qualityPassed", "operator": "EQUALS", "value": "true"},
+                    {"key": "qualityPassed=false", "field": "qualityPassed", "operator": "EQUALS", "value": "false"},
+                ]},
+                "aggregator",
+                {"name": "failed", "kind": "tool", "toolName": "workflow.end", "tools": ["workflow.end"]},
+            ],
+            "pattern": {"type": "SequentialPattern", "name": "all", "steps": [
+                {
+                    "type": "ParallelPattern", "name": "reviews", "tasks": workers,
+                    "structuredFanIn": True, "resultField": "reviewResults",
+                    "taskOutputSchemas": {
+                        name: [{"name": "result", "type": "object", "required": True}] for name in workers
+                    },
+                    "taskResultBindings": {
+                        name: [{"sourceField": "result", "targetField": "reviewResults", "aggregationMode": "APPEND_ITEM"}]
+                        for name in workers
+                    },
+                },
+                "quality",
+                {"type": "RouterPattern", "name": "route", "routerAgentName": "router", "routes": {
+                    "qualityPassed=true": "aggregator", "qualityPassed=false": "failed",
+                }},
+            ]},
+            "input": json.dumps({"proposals": ["a", "b", "c", "d"]}),
+            "finalOutputSchema": [{"name": "selectionTable", "type": "array", "required": True}],
+        }
+        ScriptAgent.trace = []
+        ScriptAgent.scripts = {**{name: reviewer for name in workers}, "aggregator": aggregator}
+        result = asyncio.run(AgentownTFrameXAdapter(
+            agent_classes={name: ScriptAgent for name in workers + ["aggregator"]},
+            tools=BUILTIN_TOOLS,
+        ).run(definition))
+
+        final = json.loads(result["final"])
+        self.assertEqual(len(final["selectionTable"]), 4)
+        self.assertEqual(
+            [item["route"] for item in result["trace"] if item["kind"] == "router_select"],
+            ["qualityPassed=true"],
+        )
+        self.assertEqual(
+            [item[1] for item in ScriptAgent.trace if item[0] == "agent"][-1],
+            "aggregator",
+        )
+
     def test_quality_contract_preserves_preceding_tool_output(self):
         quality_schema = [
             {"name": "changedRows", "type": "array", "required": True},

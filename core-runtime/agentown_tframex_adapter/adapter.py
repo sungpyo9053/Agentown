@@ -668,6 +668,17 @@ def _apply_input_bindings(
     source = dict(value)
     source.setdefault("request", dict(value))
     result = dict(source)
+    parallel_index = (defaults or {}).get("_agentownParallelIndex")
+    parallel_size = (defaults or {}).get("_agentownParallelSize")
+    if isinstance(parallel_index, int) and parallel_index > 0 and isinstance(parallel_size, int):
+        item_index = parallel_index - 1
+        assigned = {}
+        for key, item in value.items():
+            if isinstance(item, list) and len(item) == parallel_size:
+                assigned[key] = item[item_index]
+            elif not isinstance(item, list):
+                assigned[key] = item
+        result["_agentownAssignedInput"] = assigned
     for target_field, default_value in (defaults or {}).items():
         _set_path(result, str(target_field), default_value)
     for binding in bindings:

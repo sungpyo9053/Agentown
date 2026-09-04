@@ -4,7 +4,7 @@ Command:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core-runtime:/private/tmp/tframex-parity-venv/lib/python3.13/site-packages /private/tmp/tframex-parity-venv/bin/python -m unittest discover -s artifacts/tframex-parity -p 'test_*.py'
 
 Result:
-Ran 27 tests
+Ran 28 tests
 OK
 
 Covered contracts:
@@ -25,4 +25,5 @@ Covered contracts:
 - final output rejection without silent field projection
 - compiled built-in Tool schemas and context-leak prevention
 - quality Tool contract preservation after Parallel and deterministic Tool output
+- compiler-selected Parallel result field preservation through quality Tool and RouterPattern
 - plain-text content, report, and response contract projection
