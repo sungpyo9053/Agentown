@@ -140,6 +140,45 @@ class WorkflowGraphValidatorTest {
         assertThat(result.issues).noneMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
     }
 
+    @Test fun `independent Agent reviews followed by an aggregator are not a human approval gate`() {
+        val requirement = AutomationRequirement(
+            objective = "세 공연장 점검을 독립 검토한 뒤 통합 개장 판정을 만든다.",
+            trigger = "수동 실행",
+            inputs = listOf("공연장 이름", "점검 기준일", "점검 fixture"),
+            outputs = listOf("통합 개장 판정"),
+            steps = listOf("각 공연장 담당 에이전트가 검토하고 총괄 에이전트가 통합한다."),
+            decisions = listOf("누락 시 PARTIAL 또는 FAILED"),
+            exceptions = listOf("점검 결과 누락"),
+            humanApprovalRequired = false,
+        )
+        val proposal = AutomationProposal("공연장 점검", "독립 검토 결과를 통합한다.", listOf("점검"), emptyList(), emptyList(), "누락 시 실패")
+
+        val result = validator.validate(
+            graph(approval = false),
+            requirement,
+            proposal,
+            emptyList(),
+            "세 공연장의 기록을 각 공연장 담당 에이전트가 서로 독립적으로 검토하고, 세 검토가 모두 끝난 뒤 총괄 에이전트가 통합 개장 판정을 만든다.",
+        )
+
+        assertThat(result.issues).noneMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
+    }
+
+    @Test fun `explicit human review before continuation remains a human approval gate`() {
+        val requirement = AutomationRequirement(
+            objective = "보고서를 작성한다.", trigger = "수동 실행", inputs = listOf("자료"), outputs = listOf("보고서"),
+            steps = listOf("보고서 작성"), decisions = emptyList(), exceptions = emptyList(), humanApprovalRequired = false,
+        )
+        val proposal = AutomationProposal("보고서", "보고서를 작성한다.", listOf("작성"), emptyList(), emptyList(), "실패 시 중단")
+
+        val result = validator.validate(
+            graph(approval = false), requirement, proposal, emptyList(),
+            "보고서를 만든 뒤 담당자가 검토한 뒤 다음 단계로 진행해줘.",
+        )
+
+        assertThat(result.issues).anyMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
+    }
+
     @Test fun `internal agent fields cannot be invented as workflow inputs`() {
         val requirement = AutomationRequirement(
             objective = "사용자가 제공한 자료를 분석해 결과를 생성한다.", trigger = "수동 실행",

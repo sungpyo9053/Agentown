@@ -307,12 +307,22 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         )
         compareFacet("분류", containsAny(source, "분류", "카테고리", "classify", "classification"), containsAny(structured, "분류", "카테고리", "classify", "classification"))
         compareFacet("생성", requestsGeneration(source), requestsGeneration(structured))
-        val sourceApproval = !containsAny(source, "승인 없이", "검토 없이", "승인 불필요") && (
-            containsAny(source, "승인") ||
-                Regex("검토\\s*(후|하고|한 뒤|를 거쳐|가 끝나면)").containsMatchIn(source)
-            )
+        val sourceApproval = requestsHumanApproval(source)
         compareFacet("사람 승인", sourceApproval, requirement.humanApprovalRequired)
         return issues
+    }
+
+    private fun requestsHumanApproval(source: String): Boolean {
+        if (containsAny(source, "승인 없이", "검토 없이", "승인 불필요")) return false
+        if (containsAny(source, "승인", "approval")) return true
+
+        // An Agent reviewing data is ordinary workflow work, not a runtime human gate.
+        // Only treat review/confirmation wording as approval when the request names a
+        // human actor who performs that review before the workflow may continue.
+        return Regex(
+            "(사람|사용자|담당자|관리자|운영자|승인자|human|operator)" +
+                "(가|이|은|는|의|에게)?\\s*.{0,20}(검토|확인)\\s*(후|하고|한 뒤|를 거쳐|가 끝나면|완료 후)",
+        ).containsMatchIn(source)
     }
 
     private fun semanticIssues(
