@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { api } from "@/lib/api";
+import { internalPathOrFallback } from "@/lib/internalPath";
 
 const schema = z.object({
   email: z.string().email("올바른 이메일 주소를 입력하세요.").max(320),
@@ -18,8 +19,9 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 type CodeResponse = { verificationId: string; expiresInSeconds: number; developmentCode?: string };
 
-export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+export function AuthForm({ mode, nextPath = "" }: { mode: "login" | "signup"; nextPath?: string }) {
   const router = useRouter();
+  const next = internalPathOrFallback(nextPath, "");
   const [serverError, setServerError] = useState("");
   const [emailCheck, setEmailCheck] = useState<{ value: string; available: boolean } | null>(null);
   const [verificationId, setVerificationId] = useState("");
@@ -94,7 +96,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         await api("/auth/signup", { method: "POST", body: JSON.stringify({ email, password: values.password, displayName: values.displayName, emailVerificationId: verificationId }) });
       }
       await api("/auth/login", { method: "POST", body: JSON.stringify({ email, password: values.password }) });
-      router.push(mode === "signup" ? "/onboarding/company" : "/dashboard");
+      router.push(mode === "signup" ? `/onboarding/company${next ? `?next=${encodeURIComponent(next)}` : ""}` : next || "/dashboard");
       router.refresh();
     } catch (error) {
       setServerError(error instanceof Error ? error.message : "오류가 발생했습니다.");
@@ -115,6 +117,6 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     </div>
     {serverError && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{serverError}</p>}
     <button disabled={isSubmitting} className="mt-6 w-full rounded-lg bg-coral py-3 font-semibold text-white transition hover:bg-coral/90 disabled:opacity-50">{isSubmitting ? "잠시만요…" : mode === "login" ? "로그인" : "인증하고 가입하기"}</button>
-    <div className="mt-5 flex justify-center gap-4 text-sm font-medium text-zinc-500">{mode === "login" ? <><Link href="/forgot-password" className="hover:text-ink">비밀번호 찾기</Link><Link href="/signup" className="hover:text-ink">회원가입</Link></> : <Link href="/login" className="hover:text-ink">이미 계정이 있어요</Link>}</div>
+    <div className="mt-5 flex justify-center gap-4 text-sm font-medium text-zinc-500">{mode === "login" ? <><Link href="/forgot-password" className="hover:text-ink">비밀번호 찾기</Link><Link href={next ? `/signup?next=${encodeURIComponent(next)}` : "/signup"} className="hover:text-ink">회원가입</Link></> : <Link href={next ? `/login?next=${encodeURIComponent(next)}` : "/login"} className="hover:text-ink">이미 계정이 있어요</Link>}</div>
   </form>;
 }
