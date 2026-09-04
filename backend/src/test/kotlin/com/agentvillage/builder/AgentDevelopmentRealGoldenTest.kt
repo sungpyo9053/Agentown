@@ -49,15 +49,37 @@ class AgentDevelopmentRealGoldenTest {
         assertThat(design.simulationScenarios.single().input.values.joinToString(" ")).doesNotContain("다음 요청은 업무 자동화 배치가 아니라")
         assertThat(design.retryPolicy.retryableErrors).isEmpty()
         assertThat(bundle.proposal.integrations).allMatch { it.contains("없음") }
-        val completeOutput = mapper.writeValueAsString(mapOf(
-            "requirement" to bundle.requirement,
-            "proposal" to bundle.proposal,
-            "agents" to bundle.agentDefinitions,
+        assertThat(bundle.agentDefinitions).allMatch {
+            it.toolKeys.isEmpty() && it.connectorKeys.isEmpty() && !it.approvalPolicy.required
+        }
+        val executableSurface = mapper.writeValueAsString(mapOf(
+            "requirementObjective" to bundle.requirement.objective,
+            "requirementInputs" to bundle.requirement.inputs,
+            "requirementOutputs" to bundle.requirement.outputs,
+            "proposalName" to bundle.proposal.name,
+            "proposalSummary" to bundle.proposal.summary,
+            "capabilities" to bundle.proposal.capabilities,
+            "integrations" to bundle.proposal.integrations,
+            "approvalPoints" to bundle.proposal.approvalPoints,
+            "agents" to bundle.agentDefinitions.map {
+                mapOf(
+                    "key" to it.key,
+                    "name" to it.name,
+                    "role" to it.role,
+                    "behaviorRules" to it.behaviorRules,
+                    "toolKeys" to it.toolKeys,
+                    "connectorKeys" to it.connectorKeys,
+                    "approvalRequired" to it.approvalPolicy.required,
+                )
+            },
             "guides" to bundle.guideDefinitions,
             "graph" to plan,
-            "agentDesign" to design,
+            "workflow" to design.workflow,
+            "simulationScenarios" to design.simulationScenarios,
         )).lowercase()
-        assertThat(completeOutput).doesNotContain(
+        // Safety rules may name forbidden connectors while explicitly prohibiting them. Only the
+        // positive/executable surface is checked for unwanted capabilities and stale examples.
+        assertThat(executableSurface).doesNotContain(
             "환불", "faq", "slack", "notion", "schedule.trigger", "news.search", "email.send",
             "human.approval", "예약 실행", "mock_connector",
         )
