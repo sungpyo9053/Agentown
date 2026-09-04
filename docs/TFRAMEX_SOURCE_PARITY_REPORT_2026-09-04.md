@@ -77,8 +77,8 @@ Current expected failure:
 ADAPTER_NOT_IMPLEMENTED: agentown_tframex_adapter.AgentownTFrameXAdapter is absent
 ```
 
-This first RED is preserved in `artifacts/tframex-parity/first-differential-failure.txt`. The current suite has seven passing cases covering parallel overlap, sequential ordering, Router, Discussion, native Tool dispatch, edge input binding plus structured Join, and failure propagation. No business sentence or competitor-specific runtime branch is involved.
+This first RED is preserved in `artifacts/tframex-parity/first-differential-failure.txt`. The current suite has eight passing cases covering parallel overlap, sequential ordering, Router, Discussion, native Tool dispatch, edge input binding plus structured Join, deterministic quality routing, and failure propagation. No business sentence or competitor-specific runtime branch is involved.
 
 ## Release verdict
 
-**LOCAL VALIDATION PASSED / STAGING NEXT.** The previous `parallel.map.mock` and fixed-string package evidence remains invalid. The replacement Core Runtime passed seven differential cases, 201 backend tests, downloaded-package execution, a clean-container health/CSV smoke, the 39-route production frontend build, lint with zero errors, and three `/develop` browser cases. Production remains blocked until the committed exact SHA passes isolated staging and receives the administrator release-control decision for that same SHA and preflight hash.
+**LOCAL VALIDATION PASSED / STAGING NEXT.** The previous `parallel.map.mock` and fixed-string package evidence remains invalid. The replacement Core Runtime and current routing remediation passed eight differential cases, 205 backend tests, downloaded-package execution, backend image runtime-resource gates, and the 39-route production frontend build. Production remains blocked until the committed exact SHA passes isolated staging and the configured release-control path accepts that same SHA and preflight hash.

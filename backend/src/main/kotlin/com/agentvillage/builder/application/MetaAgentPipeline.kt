@@ -304,9 +304,20 @@ class StructuredMetaAgentPipeline(
             if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", if (writingAutomation) "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?" else "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
             if (!hasDestination) add(ClarificationQuestion("destination", "destination", if (writingAutomation && wordFormatOnly) "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?" else if (writingAutomation) "완성된 글은 어느 서비스의 어느 위치에 저장하거나 발행할까요?" else "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
         }
+        val runtimeApprovalExplicit = Regex("(승인|담당자.{0,12}(검토|확인)|관리자.{0,12}(검토|확인)|사람.{0,12}(검토|확인)|사용자.{0,12}(검토|확인))")
+            .containsMatchIn(instruction)
+        val graphWithoutInventedApproval = if (mode == DesignMode.AGENT_DEVELOPMENT && !runtimeApprovalExplicit) {
+            bundle.proposal.graphPlan?.let(::removeRuntimeApprovalNodes)
+        } else bundle.proposal.graphPlan
+        val removedInventedApproval = bundle.proposal.graphPlan?.nodes.orEmpty().any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName } &&
+            graphWithoutInventedApproval?.nodes.orEmpty().none { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }
         val normalized = bundle.copy(
+            requirement = if (removedInventedApproval) bundle.requirement.copy(humanApprovalRequired = false) else bundle.requirement,
             clarificationQuestions = questions,
-            proposal = bundle.proposal.copy(graphPlan = bundle.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)),
+            proposal = bundle.proposal.copy(
+                approvalPoints = if (removedInventedApproval) emptyList() else bundle.proposal.approvalPoints,
+                graphPlan = graphWithoutInventedApproval?.let(WorkflowGraphPlanNormalizer::normalize),
+            ),
             agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
@@ -326,6 +337,29 @@ class StructuredMetaAgentPipeline(
         else preserveCumulativeClassificationRevision(standardized, instruction)
         val contractNormalized = cumulative.copy(proposal = cumulative.proposal.copy(graphPlan = cumulative.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
         return withExecutionMetadata(contractNormalized, instruction, mode)
+    }
+
+    private fun removeRuntimeApprovalNodes(plan: WorkflowGraphPlan): WorkflowGraphPlan {
+        val approvalIds = plan.nodes.filter { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }.map { it.id }.toSet()
+        if (approvalIds.isEmpty()) return plan
+        var edges = plan.edges.toList()
+        var entry = plan.entryNodeId
+        approvalIds.forEach { approvalId ->
+            val incoming = edges.filter { it.target == approvalId }
+            val outgoing = edges.filter { it.source == approvalId }
+            val bridged = incoming.flatMap { before ->
+                outgoing.map { after ->
+                    WorkflowEdgePlan(
+                        id = "${before.id}--${after.id}", source = before.source, target = after.target,
+                        condition = after.condition, bindings = after.bindings, conditionSpec = after.conditionSpec,
+                    )
+                }
+            }
+            if (entry == approvalId) entry = outgoing.singleOrNull()?.target ?: entry
+            edges = (edges.filter { it.source != approvalId && it.target != approvalId } + bridged)
+                .distinctBy { Triple(it.source, it.target, it.condition) }
+        }
+        return plan.copy(entryNodeId = entry, nodes = plan.nodes.filterNot { it.id in approvalIds }, edges = edges)
     }
 
     private fun preserveCumulativeClassificationRevision(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {

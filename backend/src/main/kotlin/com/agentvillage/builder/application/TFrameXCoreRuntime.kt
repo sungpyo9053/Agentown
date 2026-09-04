@@ -4,6 +4,7 @@ import com.agentvillage.builder.domain.AgentDefinition
 import com.agentvillage.builder.domain.NodeType
 import com.agentvillage.builder.domain.WorkflowGraph
 import com.agentvillage.builder.domain.WorkflowGraphPlan
+import com.agentvillage.builder.domain.WorkflowCondition
 import com.agentvillage.builder.domain.WorkflowNode
 import com.agentvillage.builder.domain.WorkflowEdge
 import com.agentvillage.builder.domain.NodePosition
@@ -31,11 +32,11 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
     private val passThroughTypes = setOf(
         NodeType.MANUAL_TRIGGER.wireName,
         NodeType.TEXT_INPUT.wireName,
-        NodeType.QUALITY_CHECK.wireName,
         NodeType.WORKFLOW_END.wireName,
     )
     private val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
-    private val toolTypes = setOf(NodeType.DATA_CSV_COMPARE.wireName, NodeType.TEMPLATE_RENDER.wireName)
+    private val toolTypes = setOf(NodeType.DATA_CSV_COMPARE.wireName, NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName)
+    private val patternTypes = setOf(NodeType.CONDITION_BRANCH.wireName)
 
     fun compile(
         flowName: String,
@@ -43,7 +44,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         agents: List<AgentDefinition>,
         input: Map<String, Any?>,
     ): Map<String, Any?> {
-        val unsupported = graph.nodes.filter { it.nodeType !in passThroughTypes && it.nodeType !in aiTypes && it.nodeType !in toolTypes }
+        val unsupported = graph.nodes.filter { it.nodeType !in passThroughTypes && it.nodeType !in aiTypes && it.nodeType !in toolTypes && it.nodeType !in patternTypes }
         if (unsupported.isNotEmpty()) {
             throw BadRequestException(
                 "EXECUTION_NOT_CONFIGURED",
@@ -93,21 +94,33 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     "name" to effectiveByNode.getValue(node.id), "description" to source.role,
                     "systemPrompt" to systemPrompt(source, node.label, node.config["instruction"]?.toString()),
                     "tools" to source.toolKeys, "inputSchema" to source.inputSchema, "outputSchema" to source.outputSchema,
-                    "inputBindings" to inputBindings,
+                    "inputBindings" to inputBindings, "inputDefaults" to (node.config["inputDefaults"] ?: emptyMap<String, Any?>()),
                 )
             } else {
                 val toolName = when (node.nodeType) {
                     NodeType.DATA_CSV_COMPARE.wireName -> "data.csv.compare"
-                    NodeType.TEMPLATE_RENDER.wireName -> if (node.config["rendererKey"] == "table.markdown.v1") "template.markdown.table" else throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX 렌더러입니다.")
+                    NodeType.QUALITY_CHECK.wireName -> "quality.check"
+                    NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
+                        "table.markdown.v1" -> "template.markdown.table"
+                        "plain-text.v1", "plain-text" -> "template.plain-text"
+                        else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX 렌더러입니다.")
+                    }
                     else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX Tool입니다.")
                 }
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "kind" to "tool", "toolName" to toolName,
                     "tools" to listOf(toolName), "inputBindings" to inputBindings,
+                    "inputDefaults" to (node.config["inputDefaults"] ?: emptyMap<String, Any?>()),
                 )
             }
         }
-        val layers = executable.groupBy { depth[it.id] ?: 0 }.toSortedMap().values.toList()
+        val branchNodes = graph.nodes.filter { it.nodeType == NodeType.CONDITION_BRANCH.wireName }
+        if (branchNodes.size > 1) {
+            throw BadRequestException("EXECUTION_NOT_CONFIGURED", "중첩 또는 다중 RouterPattern 변환은 아직 구성되지 않았습니다.")
+        }
+        val branchDescendants = branchNodes.flatMap { branch -> descendants(branch.id, outgoing) }.toSet()
+        val prefixExecutable = executable.filter { it.id !in branchDescendants }
+        val layers = prefixExecutable.groupBy { depth[it.id] ?: 0 }.toSortedMap().values.toList()
         val steps = layers.mapIndexed { index, layer ->
             val names = layer.sortedBy { it.id }.map { effectiveByNode.getValue(it.id) }
             val nextAgent = layers.getOrNull(index + 1)?.singleOrNull()?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
@@ -119,12 +132,44 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 "structuredFanIn" to true,
                 "resultField" to resultField,
             )
+        }.toMutableList<Any>()
+        val routerAgents = branchNodes.map { branch ->
+            val routes = outgoing[branch.id].orEmpty().associate { edge ->
+                val key = edge.condition
+                key to routeStep(edge.target, graph.nodes.associateBy { it.id }, outgoing, effectiveByNode)
+            }
+            if (routes.isEmpty() || routes.keys.any { it.isBlank() }) {
+                throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "${branch.id} RouterPattern 경로가 비어 있습니다.")
+            }
+            val routerName = "condition-router__${branch.id}"
+            steps += mapOf(
+                "type" to "RouterPattern",
+                "name" to "router-${branch.id}",
+                "routerAgentName" to routerName,
+                "routes" to routes,
+            )
+            mapOf(
+                "name" to routerName,
+                "kind" to "router",
+                "routeConditions" to outgoing[branch.id].orEmpty().map { edge ->
+                    val condition = parseCondition(edge.condition)
+                    mapOf(
+                        "key" to edge.condition,
+                        "field" to condition.field,
+                        "operator" to condition.operator.name,
+                        "value" to condition.value,
+                    )
+                },
+            )
         }
+        val finalAgent = prefixExecutable.lastOrNull { it.nodeType in aiTypes }
+            ?.config?.get("agentKey")?.toString()?.let(definitions::get)
         return mapOf(
             "flowName" to flowName,
-            "agents" to runtimeAgents,
+            "agents" to runtimeAgents + routerAgents,
             "pattern" to mapOf("type" to "SequentialPattern", "name" to "agentown-flow", "steps" to steps),
             "input" to mapper.writeValueAsString(input),
+            "finalOutputSchema" to finalAgent?.outputSchema.orEmpty(),
         )
     }
 
@@ -160,6 +205,52 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         appendLine("반드시 JSON 객체만 반환하고 다음 출력 필드를 준수한다:")
         agent.outputSchema.forEach { appendLine("- ${it.name}: ${it.type}, required=${it.required}, ${it.description}") }
         appendLine("입력에 없는 사실이나 실행 결과를 만들지 않는다.")
+    }
+
+    private fun descendants(start: String, outgoing: Map<String, List<WorkflowEdge>>): Set<String> {
+        val found = linkedSetOf<String>()
+        val pending = ArrayDeque(outgoing[start].orEmpty().map { it.target })
+        while (pending.isNotEmpty()) {
+            val current = pending.removeFirst()
+            if (found.add(current)) outgoing[current].orEmpty().forEach { pending.add(it.target) }
+        }
+        return found
+    }
+
+    private fun routeStep(
+        start: String,
+        nodes: Map<String, WorkflowNode>,
+        outgoing: Map<String, List<WorkflowEdge>>,
+        effectiveByNode: Map<String, String>,
+    ): Any {
+        val steps = mutableListOf<String>()
+        var current: String? = start
+        val visited = mutableSetOf<String>()
+        while (current != null && visited.add(current)) {
+            effectiveByNode[current]?.let(steps::add)
+            val next = outgoing[current].orEmpty()
+            if (next.size > 1 || nodes[current]?.nodeType == NodeType.CONDITION_BRANCH.wireName) {
+                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "중첩 RouterPattern 경로는 아직 구성되지 않았습니다.")
+            }
+            current = next.singleOrNull()?.target
+        }
+        if (steps.isEmpty()) throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "RouterPattern 경로에 실행 단계가 없습니다.")
+        return if (steps.size == 1) steps.single() else mapOf(
+            "type" to "SequentialPattern",
+            "name" to "route-${start}",
+            "steps" to steps,
+        )
+    }
+
+    private fun parseCondition(raw: String): WorkflowCondition {
+        val match = Regex("^([A-Za-z][A-Za-z0-9]*)(=|<=|>=)([A-Za-z0-9_-]+)$").matchEntire(raw.trim())
+            ?: throw BadRequestException("INVALID_TFRAMEX_DEFINITION", "RouterPattern 조건이 field=value 형식이 아닙니다: $raw")
+        val operator = when (match.groupValues[2]) {
+            "=" -> com.agentvillage.builder.domain.ConditionOperator.EQUALS
+            "<=" -> com.agentvillage.builder.domain.ConditionOperator.LESS_THAN_OR_EQUALS
+            else -> com.agentvillage.builder.domain.ConditionOperator.GREATER_THAN_OR_EQUALS
+        }
+        return WorkflowCondition(match.groupValues[1], operator, match.groupValues[3])
     }
 }
 

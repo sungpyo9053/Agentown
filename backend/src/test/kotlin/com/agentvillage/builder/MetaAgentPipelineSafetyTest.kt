@@ -19,6 +19,24 @@ import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
     @Test
+    fun `agent review wording does not invent a runtime human approval`() {
+        val mapper = jacksonObjectMapper()
+        val model = DeterministicMockMetaAgentModel(mapper)
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+
+        val result = pipeline.generateDesign(
+            context, "세 입력을 각각 검토 후 통합해줘", StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+
+        assertThat(result.proposal.graphPlan!!.nodes).noneMatch { it.nodeType == "human.approval" }
+        assertThat(result.requirement.humanApprovalRequired).isFalse()
+        assertThat(result.proposal.approvalPoints).isEmpty()
+    }
+
+    @Test
     fun `zero AI graph explains deterministic execution without an AI call`() {
         val mapper = jacksonObjectMapper()
         val model = DeterministicMockMetaAgentModel(mapper)

@@ -21,13 +21,14 @@ class HarnessPackageRenderer(
         val plan = requireNotNull(normalized.proposal.graphPlan) { "proposal.graphPlan is required" }
         val agents = normalized.agentDefinitions
         val resources = requireNotNull(normalized.proposal.resourcePlan)
+        val externalInputs = externalInputFields(normalized)
         return linkedMapOf<String, String>().apply {
             put("agent.yaml", agentYaml(normalized))
             put("workflow.yaml", workflowYaml(normalized))
             put("prompts/system.md", agents.takeIf { it.isNotEmpty() }?.joinToString("\n\n---\n\n") { agentMarkdown(it) }
                 ?: "# Deterministic package\n\n이 패키지는 AI Agent 없이 검증된 Function만 실행합니다.\n")
             put("prompts/reviewer.md", reviewerPrompt(normalized))
-            put("schemas/input.schema.json", pretty(outputSchema(agents.flatMap { it.inputSchema }.distinctBy { it.name })))
+            put("schemas/input.schema.json", pretty(outputSchema(externalInputs)))
             put("schemas/output.schema.json", pretty(outputSchema(agents.lastOrNull()?.outputSchema ?: normalized.proposal.outputSchema)))
             put("skills/README.md", "# Skills\n\n이 패키지에 고정된 Skill이 있으면 이 폴더에 추가합니다. 현재는 서버 카탈로그의 Template Skill만 참조합니다.\n")
             put("tools/tools.yaml", toolsYaml(resources))
@@ -97,28 +98,57 @@ class HarnessPackageRenderer(
     }
 
     private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any?> {
-        val nodeTypes = bundle.proposal.graphPlan?.nodes.orEmpty().map { it.nodeType }.toSet()
-        val sample: LinkedHashMap<String, Any?> = when {
-            "data.csv.compare" in nodeTypes -> linkedMapOf<String, Any?>(
-                "csvA" to "id,name\n1,old\n2,remove\n",
-                "csvB" to "id,name\n1,new\n3,add\n",
-            )
-            "knowledge.search.mock" in nodeTypes -> linkedMapOf<String, Any?>(
-                "customerInquiry" to "사내 복지포인트는 언제 지급되나요?",
-                "mockSearchResults" to emptyList<Any>(),
-            )
-            else -> linkedMapOf<String, Any?>("text" to "검증할 샘플 입력", "message" to "검증할 샘플 입력")
-        }
-        bundle.agentDefinitions.flatMap { it.inputSchema }.filter { it.required }.forEach { field ->
-            sample.putIfAbsent(field.name, when (field.type.lowercase()) {
+        val sample = linkedMapOf<String, Any?>()
+        externalInputFields(bundle).forEach { field ->
+            sample[field.name] = when {
+                field.name == "csvA" -> "id,name\n1,old\n2,remove\n"
+                field.name == "csvB" -> "id,name\n1,new\n3,add\n"
+                field.name == "mockSearchResults" -> emptyList<Any>()
+                field.name.contains("memo", true) -> "재고 확인이 필요하며 담당 매니저에게 인계합니다."
+                else -> when (field.type.lowercase()) {
                 "array" -> emptyList<Any>()
                 "object" -> emptyMap<String, Any>()
                 "boolean" -> false
                 "number", "integer" -> 1
                 else -> "검증할 샘플 입력"
-            })
+                }
+            }
         }
         return sample
+    }
+
+    private fun externalInputFields(bundle: MetaAgentDesignBundle): List<com.agentvillage.builder.domain.FieldDefinition> {
+        val plan = requireNotNull(bundle.proposal.graphPlan)
+        if (plan.nodes.any { it.nodeType == "data.csv.compare" }) return listOf(
+            com.agentvillage.builder.domain.FieldDefinition("csvA", "string", true, "비교 기준 CSV"),
+            com.agentvillage.builder.domain.FieldDefinition("csvB", "string", true, "비교 대상 CSV"),
+        )
+        val agents = bundle.agentDefinitions.associateBy { it.key }
+        val nodes = plan.nodes.associateBy { it.id }
+        val result = linkedMapOf<String, com.agentvillage.builder.domain.FieldDefinition>()
+        fun add(sourceField: String, targetNodeId: String, targetField: String) {
+            val tokens = sourceField.split('.', '[', limit = 3).filter { it.isNotBlank() }
+            val name = if (tokens.firstOrNull() == "request") tokens.getOrNull(1) else tokens.firstOrNull()
+            if (name.isNullOrBlank() || name in setOf("context", "result", "results", "output", "success")) return
+            val targetAgent = nodes[targetNodeId]?.config?.get("agentKey")?.toString()?.let(agents::get)
+            val contract = targetAgent?.inputSchema?.firstOrNull { it.name == targetField }
+            result.putIfAbsent(name, com.agentvillage.builder.domain.FieldDefinition(
+                name, contract?.type ?: "string", true, contract?.description ?: "사용자 실행 입력 $name",
+            ))
+        }
+        val sourceIds = plan.nodes.filter { it.nodeType.endsWith("trigger") || it.nodeType == "text.input" }.map { it.id }.toSet()
+        plan.edges.filter { it.source in sourceIds }.forEach { edge ->
+            edge.bindings.forEach { add(it.sourceField, edge.target, it.targetField) }
+        }
+        plan.nodes.filter { it.nodeType.startsWith("ai.") }.forEach { node ->
+            val agent = node.config["agentKey"]?.toString()?.let(agents::get) ?: return@forEach
+            val boundTargets = plan.edges.filter { it.target == node.id }.flatMap { edge -> edge.bindings.map { it.targetField } }.toSet()
+            val defaults = (node.config["inputDefaults"] as? Map<*, *>)?.keys?.map { it.toString() }.orEmpty().toSet()
+            agent.inputSchema.filter { it.required && it.name !in boundTargets && it.name !in defaults }
+                .forEach { result.putIfAbsent(it.name, it) }
+        }
+        if (result.isEmpty()) result["text"] = com.agentvillage.builder.domain.FieldDefinition("text", "string", true, "사용자 실행 입력")
+        return result.values.toList()
     }
 
     private fun agentYaml(bundle: MetaAgentDesignBundle) = buildString {

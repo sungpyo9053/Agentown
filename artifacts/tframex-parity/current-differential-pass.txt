@@ -1,10 +1,10 @@
-2026-09-04 Asia/Tokyo
+2026-09-05 Asia/Tokyo
 
 Command:
 PYTHONPATH=core-runtime /private/tmp/tframex-parity-venv/bin/python -m unittest discover -s artifacts/tframex-parity -p 'test_*differential.py' -q
 
 Result:
-Ran 7 tests
+Ran 8 tests
 OK
 
 Covered contracts:
@@ -15,3 +15,4 @@ Covered contracts:
 - upstream Parallel failure artifacts
 - Agentown edge input bindings and structured Join context preservation
 - Reporter suppression after structured parallel child failure
+- deterministic quality Tool and real RouterPattern route selection

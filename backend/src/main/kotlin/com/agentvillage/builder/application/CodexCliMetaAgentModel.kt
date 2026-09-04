@@ -91,6 +91,7 @@ class CodexCliMetaAgentModel(
         email.send.mock, notion.search.mock, notion.read_page.mock, notion.create_page, flight.search.mock, github.issue.mock, tool.unresolved뿐이다.
         서로 독립적인 여러 작업을 병렬로 수행한 뒤 합치는 요청은 parallel.map.mock 한 노드로 축약하지 않는다. 각 작업을 별도 ai.generate Agent 실행 노드로 만들고 시작 노드에서 fan-out한 뒤, 모든 작업 노드가 동일한 집계 Agent 노드로 fan-in하도록 edge를 구성한다.
         병렬 작업 수가 사용자 입력으로 명시됐다면 그 수를 임의로 줄이거나 하드코딩 예시 이름으로 바꾸지 않는다. 각 작업 Agent의 출력 스키마와 집계 Agent의 입력 스키마가 동일한 결과 계약을 공유해야 한다.
+        반복 작업의 지점명, 역할명 같은 고정값은 존재하지 않는 sourceField로 가장하지 말고 해당 ai.generate 노드 config.inputDefaults에 {"필드명":"고정값"}으로 선언한다. edge sourceField는 상류 출력 또는 사용자 입력 스키마에 실제로 존재하는 필드만 참조한다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
         schedule.trigger에는 cron과 timezone, news.search.mock에는 source, query, lookbackHours, data.deduplicate에는 key,
         human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.
@@ -103,6 +104,7 @@ class CodexCliMetaAgentModel(
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
+        화면에서 설계를 승인하는 절차는 런타임 Workflow 밖의 Version 절차다. 사용자 업무가 사람이나 담당자의 실행 중 승인을 명시적으로 요구하지 않았다면 human.approval을 만들지 않으며, Agent가 데이터를 검토한다는 표현을 사람 승인으로 해석하지 않는다.
         사용자 요구사항을 지원되는 다른 시나리오로 바꾸거나 누락하지 않는다.
         Python, JavaScript, Shell, 임의 코드, 패키지 설치, 실제 외부 전송을 제안하지 않는다.
         이미 제공된 정보를 다시 질문하지 않는다. 정보가 부족하면 최소 질문만 clarificationQuestions에 넣는다.

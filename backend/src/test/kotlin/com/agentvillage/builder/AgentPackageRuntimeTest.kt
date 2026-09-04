@@ -75,6 +75,22 @@ class AgentPackageRuntimeTest {
     }
 
     @Test
+    fun `package input schema exposes user fields and not internal agent fields`() {
+        val bundle = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "분석 담당과 작성 담당이 제공된 기록을 순서대로 처리해 결과를 반환한다",
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        val schema = mapper.readTree(files.getValue("schemas/input.schema.json"))
+        val sample = mapper.readTree(files.getValue("examples/sample-input.json"))
+
+        assertThat(schema["required"].map { it.asText() }).containsExactly("text")
+        assertThat(sample.fieldNames().asSequence().toList()).containsExactly("text")
+        assertThat(schema.toString()).doesNotContain("analysis", "result")
+    }
+
+    @Test
     fun `downloaded CSV package executes through its embedded pinned TFrameX runtime`(@TempDir directory: Path) {
         val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
         val bundle = pipeline.generateDesign(

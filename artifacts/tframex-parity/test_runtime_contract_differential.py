@@ -11,6 +11,7 @@ from tframex.patterns import DiscussionPattern, ParallelPattern, RouterPattern, 
 from tframex.util.llms import BaseLLMWrapper
 
 from agentown_tframex_adapter import AgentownTFrameXAdapter
+from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
 
 
 class JsonFixtureLLM(BaseLLMWrapper):
@@ -217,9 +218,43 @@ class DifferentialContractTest(unittest.TestCase):
             ]},
             "input": json.dumps({"competitors": ["Alpha"]}),
         }
-        result = asyncio.run(AgentownTFrameXAdapter(llm=JsonFixtureLLM()).run(definition))
-        self.assertIn("failed", result["final"].lower())
-        self.assertNotIn("reporter", [item["agent"] for item in result["trace"] if item["kind"] == "agent_start"])
+        adapter = AgentownTFrameXAdapter(llm=JsonFixtureLLM())
+        with self.assertRaisesRegex(RuntimeError, "missing required field 'competitor'"):
+            asyncio.run(adapter.run(definition))
+        self.assertNotIn("reporter", [item["agent"] for item in adapter.trace if item["kind"] == "agent_start"])
+
+    def test_deterministic_quality_gate_uses_real_router_pattern(self):
+        definition = {
+            "flowName": "quality-route",
+            "agents": [
+                {"name": "quality", "kind": "tool", "toolName": "quality.check", "tools": ["quality.check"]},
+                {"name": "router", "kind": "router", "routeConditions": [
+                    {"key": "qualityPassed=true", "field": "qualityPassed", "operator": "EQUALS", "value": "true"},
+                    {"key": "qualityPassed=false", "field": "qualityPassed", "operator": "EQUALS", "value": "false"},
+                ]},
+                {"name": "complete", "kind": "tool", "toolName": "template.plain-text", "tools": ["template.plain-text"]},
+                {"name": "partial", "kind": "tool", "toolName": "template.plain-text", "tools": ["template.plain-text"]},
+            ],
+            "pattern": {"type": "SequentialPattern", "name": "all", "steps": [
+                "quality",
+                {"type": "RouterPattern", "name": "route", "routerAgentName": "router", "routes": {
+                    "qualityPassed=true": "complete", "qualityPassed=false": "partial",
+                }},
+            ]},
+            "input": json.dumps({"reportStatus": "READY", "report": "all records joined", "missingLocations": []}),
+            "finalOutputSchema": [
+                {"name": "report", "type": "string", "required": True},
+                {"name": "renderedResponse", "type": "string", "required": True},
+            ],
+        }
+        result = asyncio.run(AgentownTFrameXAdapter(tools=BUILTIN_TOOLS).run(definition))
+        self.assertEqual(json.loads(result["final"]), {
+            "report": "all records joined", "renderedResponse": "all records joined",
+        })
+        self.assertEqual(
+            [item["route"] for item in result["trace"] if item["kind"] == "router_select"],
+            ["qualityPassed=true"],
+        )
 
 
 if __name__ == "__main__":

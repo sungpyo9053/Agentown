@@ -64,4 +64,64 @@ class TFrameXDefinitionCompilerTest {
             .isInstanceOf(BadRequestException::class.java)
             .extracting("code").isEqualTo("EXECUTION_NOT_CONFIGURED")
     }
+
+    @Test
+    fun `parallel join quality gate and conditional routes compile to TFrameX patterns`() {
+        val worker = AgentDefinition(
+            key = "reviewer", name = "Reviewer", role = "Review one supplied record",
+            inputSchema = listOf(FieldDefinition("memo", "string", true, "record"), FieldDefinition("location", "string", true, "scope")),
+            outputSchema = listOf(FieldDefinition("location", "string", true, "scope"), FieldDefinition("finding", "string", true, "finding")),
+            behaviorRules = listOf("Use supplied record"), forbiddenRules = listOf("Do not invent records"), evidenceRequirements = listOf("Original record"),
+        )
+        val collector = AgentDefinition(
+            key = "collector", name = "Collector", role = "Join every review",
+            inputSchema = listOf(FieldDefinition("reviewResults", "array", true, "all reviews")),
+            outputSchema = listOf(
+                FieldDefinition("reportStatus", "string", true, "READY or PARTIAL"),
+                FieldDefinition("report", "string", true, "joined report"),
+                FieldDefinition("missingLocations", "array", true, "missing scopes"),
+            ),
+            behaviorRules = listOf("Wait for every review"), forbiddenRules = listOf("Do not hide missing reviews"), evidenceRequirements = listOf("Every review"),
+        )
+        val nodes = buildList {
+            add(WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)))
+            repeat(3) { index -> add(WorkflowNode(
+                "review-$index", "ai.generate", "Review $index", NodePosition(0.0, 0.0),
+                mapOf("agentKey" to "reviewer", "inputDefaults" to mapOf("location" to "branch-$index")),
+            )) }
+            add(WorkflowNode("join", "ai.generate", "Join", NodePosition(0.0, 0.0), mapOf("agentKey" to "collector")))
+            add(WorkflowNode("quality", "quality.check", "Quality", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("route", "condition.branch", "Route", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("complete", "template.render", "Complete", NodePosition(0.0, 0.0), mapOf("rendererKey" to "plain-text.v1")))
+            add(WorkflowNode("partial", "template.render", "Partial", NodePosition(0.0, 0.0), mapOf("rendererKey" to "plain-text.v1")))
+            add(WorkflowNode("done", "workflow.end", "Done", NodePosition(0.0, 0.0)))
+        }
+        val edges = buildList {
+            repeat(3) { index ->
+                add(WorkflowEdge("start-$index", "start", "review-$index", bindings = mapOf("memo" to "memo$index")))
+                add(WorkflowEdge("review-$index-join", "review-$index", "join", bindings = mapOf("reviewResults" to "results")))
+            }
+            add(WorkflowEdge("join-quality", "join", "quality", bindings = mapOf("context" to "context")))
+            add(WorkflowEdge("quality-route", "quality", "route", bindings = mapOf("context" to "context")))
+            add(WorkflowEdge("route-complete", "route", "complete", "qualityPassed=true", mapOf("report" to "report")))
+            add(WorkflowEdge("route-partial", "route", "partial", "qualityPassed=false", mapOf("report" to "report")))
+            add(WorkflowEdge("complete-done", "complete", "done"))
+            add(WorkflowEdge("partial-done", "partial", "done"))
+        }
+
+        val definition = compiler.compile(
+            "branch-review", WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "start", nodes = nodes, edges = edges),
+            listOf(worker, collector), mapOf("memo0" to "a", "memo1" to "b", "memo2" to "c"),
+        )
+        val steps = (definition["pattern"] as Map<*, *>)["steps"] as List<*>
+        assertThat((steps.first() as Map<*, *>)["type"]).isEqualTo("ParallelPattern")
+        val router = steps.last() as Map<*, *>
+        assertThat(router["type"]).isEqualTo("RouterPattern")
+        assertThat((router["routes"] as Map<*, *>).keys).containsExactlyInAnyOrder("qualityPassed=true", "qualityPassed=false")
+        val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+        assertThat(runtimeAgents).anyMatch { it["kind"] == "router" }
+        assertThat(runtimeAgents).anyMatch { it["toolName"] == "quality.check" }
+        assertThat(runtimeAgents).filteredOn { it["name"] == "reviewer__review-0" }
+            .allMatch { (it["inputDefaults"] as Map<*, *>)["location"] == "branch-0" }
+    }
 }

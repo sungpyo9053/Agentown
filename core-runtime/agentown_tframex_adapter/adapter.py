@@ -76,7 +76,11 @@ class StructuredParallelPattern(BasePattern):
 class TracingLLMAgent(LLMAgent):
     async def run(self, input_message: Any, **kwargs: Any):
         content = input_message.content if isinstance(input_message, Message) else str(input_message)
-        content = _apply_input_bindings(content, self.config.get("input_bindings") or [])
+        content = _apply_input_bindings(
+            content,
+            self.config.get("input_bindings") or [],
+            self.config.get("input_defaults") or {},
+        )
         name = self.agent_id.split("_ctx", 1)[0]
         trace = self.config.get("trace_sink")
         if trace is not None:
@@ -91,7 +95,10 @@ class TracingLLMAgent(LLMAgent):
             self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
         except Exception as exc:
             if trace is not None:
-                trace.append({"kind": "agent_error", "agent": name, "error": str(exc)})
+                trace.append({
+                    "kind": "agent_error", "agent": name, "error": str(exc),
+                    "code": getattr(exc, "code", None),
+                })
             raise
         if trace is not None:
             trace.append({"kind": "agent_end", "agent": name, "output": result.content})
@@ -119,7 +126,11 @@ class TracingLLMAgent(LLMAgent):
 class ToolExecutorAgent(BaseAgent):
     async def run(self, input_message: Any, **kwargs: Any):
         content = input_message.content if isinstance(input_message, Message) else str(input_message)
-        content = _apply_input_bindings(content, self.config.get("input_bindings") or [])
+        content = _apply_input_bindings(
+            content,
+            self.config.get("input_bindings") or [],
+            self.config.get("input_defaults") or {},
+        )
         name = self.agent_id.split("_ctx", 1)[0]
         trace = self.config.get("trace_sink")
         tool_name = self.config["tool_name"]
@@ -136,6 +147,35 @@ class ToolExecutorAgent(BaseAgent):
             trace.append({"kind": "tool_end", "agent": name, "tool": tool_name, "output": output})
             trace.append({"kind": "agent_end", "agent": name, "output": output})
         return Message(role="assistant", content=output)
+
+
+class ConditionRouterAgent(BaseAgent):
+    """Deterministic route selector invoked by TFrameX RouterPattern."""
+
+    async def run(self, input_message: Any, **kwargs: Any):
+        content = input_message.content if isinstance(input_message, Message) else str(input_message)
+        value = _json_object(content)
+        if value is None:
+            raise ValueError("Router input is not a JSON object")
+        name = self.agent_id.split("_ctx", 1)[0]
+        trace = self.config.get("trace_sink")
+        if trace is not None:
+            trace.append({"kind": "agent_start", "agent": name, "input": content})
+        for condition in self.config.get("route_conditions") or []:
+            actual = _resolve_path(value, str(condition.get("field") or ""))
+            if actual is not _MISSING and _condition_matches(
+                actual,
+                str(condition.get("operator") or "EQUALS"),
+                condition.get("value"),
+            ):
+                selected = str(condition["key"])
+                if trace is not None:
+                    trace.append({"kind": "router_select", "agent": name, "route": selected})
+                    trace.append({"kind": "agent_end", "agent": name, "output": selected})
+                return Message(role="assistant", content=selected)
+        if trace is not None:
+            trace.append({"kind": "agent_error", "agent": name, "error": "No route condition matched"})
+        raise ValueError("No route condition matched")
 
 
 class AgentownTFrameXAdapter:
@@ -171,8 +211,24 @@ class AgentownTFrameXAdapter:
                 message,
                 initial_shared_data=shared_data,
             )
+        failures = [item for item in self.trace if item.get("kind") in {"agent_error", "tool_error"}]
+        if failures:
+            message = "; ".join(str(item.get("error")) for item in failures)
+            if any(item.get("code") == ExecutionNotConfigured.code for item in failures):
+                raise ExecutionNotConfigured(message)
+            raise RuntimeError(message)
+        final = context.current_message.content
+        final_schema = list(definition.get("finalOutputSchema") or [])
+        if final_schema:
+            final_value = _json_object(final)
+            if final_value is None:
+                raise ValueError("Final output is not a JSON object")
+            allowed = {str(field["name"]) for field in final_schema}
+            final_value = {key: value for key, value in final_value.items() if key in allowed}
+            final = json.dumps(final_value, ensure_ascii=False)
+            TracingLLMAgent._validate_json_contract(final, final_schema, "final output")
         return {
-            "final": context.current_message.content,
+            "final": final,
             "history": [item.model_dump(exclude_none=True) for item in context.history],
             "sharedData": context.shared_data,
             "trace": self.trace,
@@ -208,6 +264,8 @@ class AgentownTFrameXAdapter:
             if agent_class is None:
                 if config.get("kind") == "tool":
                     agent_class = ToolExecutorAgent
+                elif config.get("kind") == "router":
+                    agent_class = ConditionRouterAgent
                 elif self.llm is None:
                     raise ExecutionNotConfigured(f"Agent '{name}' has no executable implementation")
                 else:
@@ -228,6 +286,8 @@ class AgentownTFrameXAdapter:
                 output_schema=list(config.get("outputSchema") or []),
                 tool_name=config.get("toolName"),
                 input_bindings=list(config.get("inputBindings") or []),
+                input_defaults=dict(config.get("inputDefaults") or {}),
+                route_conditions=list(config.get("routeConditions") or []),
             )(agent_class)
 
     def _step(self, value: Any) -> str | BasePattern:
@@ -338,13 +398,19 @@ def _set_path(target: dict[str, Any], path: str, value: Any) -> None:
             current = current[token]
 
 
-def _apply_input_bindings(content: str, bindings: list[dict[str, Any]]) -> str:
+def _apply_input_bindings(
+    content: str,
+    bindings: list[dict[str, Any]],
+    defaults: Mapping[str, Any] | None = None,
+) -> str:
     value = _json_object(content)
     if value is None:
         return content
     source = dict(value)
     source.setdefault("request", dict(value))
     result = dict(source)
+    for target_field, default_value in (defaults or {}).items():
+        _set_path(result, str(target_field), default_value)
     for binding in bindings:
         source_field = str(binding.get("sourceField") or "")
         target_field = str(binding.get("targetField") or "")
@@ -354,3 +420,23 @@ def _apply_input_bindings(content: str, bindings: list[dict[str, Any]]) -> str:
         if resolved is not _MISSING:
             _set_path(result, target_field, resolved)
     return json.dumps(result, ensure_ascii=False)
+
+
+def _condition_matches(actual: Any, operator: str, expected: Any) -> bool:
+    if isinstance(actual, bool):
+        expected_value: Any = str(expected).lower() == "true"
+    elif isinstance(actual, (int, float)):
+        try:
+            expected_value = float(expected)
+        except (TypeError, ValueError):
+            return False
+    else:
+        expected_value = str(expected)
+        actual = str(actual)
+    if operator == "EQUALS":
+        return actual == expected_value
+    if operator == "LESS_THAN_OR_EQUALS":
+        return actual <= expected_value
+    if operator == "GREATER_THAN_OR_EQUALS":
+        return actual >= expected_value
+    raise ValueError(f"Unsupported route operator: {operator}")
