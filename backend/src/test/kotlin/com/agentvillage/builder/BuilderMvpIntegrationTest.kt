@@ -2,11 +2,18 @@ package com.agentvillage.builder
 
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.builder.application.BuilderGenerationService
 import com.agentvillage.agent.application.AgentService
+import com.agentvillage.builder.domain.BuilderGenerationJob
+import com.agentvillage.builder.domain.BuilderGenerationStage
+import com.agentvillage.builder.domain.BuilderGenerationStatus
 import com.agentvillage.builder.domain.BuilderRunStatus
 import com.agentvillage.builder.domain.WorkflowStatus
+import com.agentvillage.builder.infrastructure.BuilderGenerationJobRepository
+import com.agentvillage.builder.infrastructure.BuilderApprovalRepository
 import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
 import com.agentvillage.builder.infrastructure.BuilderRunRepository
+import com.agentvillage.builder.infrastructure.BuilderUsageRecordRepository
 import com.agentvillage.builder.infrastructure.BuilderWorkflowVersionRepository
 import com.agentvillage.builder.infrastructure.HarnessTemplateRepository
 import com.agentvillage.builder.infrastructure.HarnessTemplateVersionRepository
@@ -16,23 +23,103 @@ import com.agentvillage.common.exception.NotFoundException
 import com.agentvillage.common.exception.ConflictException
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
+import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
+import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
+import org.springframework.http.MediaType
+import org.springframework.test.web.servlet.MockMvc
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import java.sql.Timestamp
+import java.time.Instant
 import java.util.UUID
 
+@AutoConfigureMockMvc
 class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var service: BuilderService
+    @Autowired lateinit var generation: BuilderGenerationService
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var requirements: BuilderRequirementRepository
     @Autowired lateinit var agents: AgentService
     @Autowired lateinit var workflowVersions: BuilderWorkflowVersionRepository
     @Autowired lateinit var builderRuns: BuilderRunRepository
+    @Autowired lateinit var usageRecords: BuilderUsageRecordRepository
+    @Autowired lateinit var generationJobs: BuilderGenerationJobRepository
+    @Autowired lateinit var builderApprovals: BuilderApprovalRepository
     @Autowired lateinit var outputTemplates: HarnessTemplateRepository
     @Autowired lateinit var outputTemplateVersions: HarnessTemplateVersionRepository
+    @Autowired lateinit var jdbc: JdbcTemplate
+    @Autowired lateinit var mvc: MockMvc
+
+    @Test
+    fun `latest recoverable generation job is newest conversation scoped owner safe view`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("generation-owner-$suffix@example.com", "password123", "generation_owner_$suffix", "생성 복구 소유자"))
+        val stranger = identities.register(RegisterUserCommand("generation-stranger-$suffix@example.com", "password123", "generation_stranger_$suffix", "생성 복구 타인"))
+        val first = service.createConversation(owner.id, "generation-first-$suffix")
+        val second = service.createConversation(owner.id, "generation-second-$suffix")
+        val empty = service.createConversation(owner.id, "generation-empty-$suffix")
+        val strangerConversation = service.createConversation(stranger.id, "generation-stranger-conversation-$suffix")
+
+        fun persist(snapshot: com.agentvillage.builder.application.BuilderSnapshot, status: BuilderGenerationStatus, key: String, instruction: String, createdAt: Instant): BuilderGenerationJob {
+            val job = generationJobs.saveAndFlush(BuilderGenerationJob(
+                workspaceId = snapshot.workspaceId,
+                conversationId = snapshot.conversationId,
+                workflowId = snapshot.workflowId,
+                instruction = instruction,
+                status = status,
+                stage = when (status) {
+                    BuilderGenerationStatus.RUNNING -> BuilderGenerationStage.CODEX_ANALYZING
+                    BuilderGenerationStatus.FAILED -> BuilderGenerationStage.FAILED
+                    BuilderGenerationStatus.SUCCEEDED -> BuilderGenerationStage.COMPLETED
+                    BuilderGenerationStatus.CANCELLED -> BuilderGenerationStage.CANCELLED
+                    BuilderGenerationStatus.QUEUED -> BuilderGenerationStage.REQUEST_ACCEPTED
+                },
+                idempotencyKey = key,
+                errorCode = if (status == BuilderGenerationStatus.FAILED) "SAFE_GENERATION_FAILURE" else null,
+                errorMessage = if (status == BuilderGenerationStatus.FAILED) "안전한 실패 안내" else null,
+            ))
+            jdbc.update("update builder_generation_jobs set created_at = ? where id = ?", Timestamp.from(createdAt), job.id)
+            return job
+        }
+
+        val base = Instant.parse("2026-08-30T05:00:00Z")
+        persist(first, BuilderGenerationStatus.QUEUED, "old-queued-$suffix", "old owner instruction", base)
+        val newest = persist(first, BuilderGenerationStatus.FAILED, "new-failed-$suffix", "private persisted instruction", base.plusSeconds(10))
+        persist(first, BuilderGenerationStatus.SUCCEEDED, "newer-succeeded-$suffix", "ignored completed instruction", base.plusSeconds(20))
+        persist(first, BuilderGenerationStatus.CANCELLED, "newest-cancelled-$suffix", "ignored cancelled instruction", base.plusSeconds(30))
+        persist(second, BuilderGenerationStatus.RUNNING, "other-conversation-$suffix", "other conversation secret", base.plusSeconds(40))
+        persist(strangerConversation, BuilderGenerationStatus.RUNNING, "stranger-job-$suffix", "stranger workspace secret", base.plusSeconds(50))
+
+        assertThat(generation.latestRecoverable(owner.id, first.conversationId)?.id).isEqualTo(newest.id)
+        assertThat(generation.latestRecoverable(owner.id, empty.conversationId)).isNull()
+
+        mvc.perform(get("/api/builder/conversations/${first.conversationId}/generation-jobs/latest-recoverable").with(user(principal(owner.id, owner.email))))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.id").value(newest.id.toString()))
+            .andExpect(jsonPath("$.conversationId").value(first.conversationId.toString()))
+            .andExpect(jsonPath("$.workflowId").value(first.workflowId.toString()))
+            .andExpect(jsonPath("$.status").value("FAILED"))
+            .andExpect(jsonPath("$.errorCode").value("SAFE_GENERATION_FAILURE"))
+            .andExpect(jsonPath("$.errorMessage").value("안전한 실패 안내"))
+            .andExpect(jsonPath("$.instruction").doesNotExist())
+            .andExpect(jsonPath("$.idempotencyKey").doesNotExist())
+
+        mvc.perform(get("/api/builder/conversations/${empty.conversationId}/generation-jobs/latest-recoverable").with(user(principal(owner.id, owner.email))))
+            .andExpect(status().isNoContent)
+        mvc.perform(get("/api/builder/conversations/${strangerConversation.conversationId}/generation-jobs/latest-recoverable").with(user(principal(owner.id, owner.email))))
+            .andExpect(status().isNotFound)
+    }
 
     @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
@@ -154,6 +241,84 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `unsupported Slack deletion returns guidance and preserves approved workflow on idempotent retry`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("unsupported-patch-$suffix@example.com", "password123", "unsupported_patch_$suffix", "지원하지 않는 수정 검증"))
+        var snapshot = service.createConversation(owner.id, "unsupported-patch-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다.",
+            "unsupported-patch-message-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "unsupported-patch-approve-$suffix")
+        assertThat(snapshot.graph!!.nodes.map { it.nodeType }).contains("human.approval", "slack.reply.mock")
+        val before = snapshot
+        val idempotencyKey = "unsupported-patch-delete-$suffix"
+        val body = """{"instruction":"Slack 노드를 삭제해줘.","baseVersionId":"${before.currentVersionId}","expectedGraphHash":"${before.validation!!.graphHash}"}"""
+
+        repeat(2) {
+            mvc.perform(
+                post("/api/builder/workflows/${before.workflowId}/patches")
+                    .with(user(principal(owner.id, owner.email)))
+                    .with(csrf())
+                    .header("Idempotency-Key", idempotencyKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body),
+            )
+                .andExpect(status().isBadRequest)
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_GRAPH_PATCH"))
+                .andExpect(jsonPath("$.message").value("요청한 변경은 아직 지원하지 않습니다. 현재 가능한 수정은 출력 템플릿 조정, Slack 전송을 이메일로 변경, Slack 답변 전 담당자 승인 추가입니다. 기존 자동화는 변경되지 않았습니다."))
+        }
+
+        val after = service.snapshot(owner.id, before.conversationId)
+        assertThat(after.status).isEqualTo(before.status)
+        assertThat(after.currentVersionId).isEqualTo(before.currentVersionId)
+        assertThat(after.approvedVersionId).isEqualTo(before.approvedVersionId)
+        assertThat(after.versions).isEqualTo(before.versions)
+        assertThat(after.validation!!.graphHash).isEqualTo(before.validation!!.graphHash)
+        assertThat(after.graph).isEqualTo(before.graph)
+        assertThat(after.proposal).isEqualTo(before.proposal)
+        assertThat(after.requirement).isEqualTo(before.requirement)
+        assertThat(after.messages).isEqualTo(before.messages)
+        assertThat(after.messages.map { it.content }).noneMatch { it.contains("Graph Patch를 검증해 새 버전") }
+    }
+
+    @Test
+    fun `supported Slack to email replacement still creates a changed workflow version`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("email-patch-$suffix@example.com", "password123", "email_patch_$suffix", "이메일 수정 검증"))
+        var snapshot = service.createConversation(owner.id, "email-patch-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다.",
+            "email-patch-message-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "email-patch-approve-$suffix")
+        val approvedVersionId = snapshot.approvedVersionId
+        val approvedGraphHash = snapshot.validation!!.graphHash
+
+        snapshot = service.applyPatch(
+            owner.id,
+            snapshot.workflowId,
+            "Slack 전송을 이메일로 변경해줘.",
+            snapshot.currentVersionId!!,
+            approvedGraphHash,
+            "email-patch-replace-$suffix",
+        )
+
+        assertThat(snapshot.versions).hasSize(2)
+        assertThat(snapshot.currentVersionId).isNotEqualTo(approvedVersionId)
+        assertThat(snapshot.approvedVersionId).isEqualTo(approvedVersionId)
+        assertThat(snapshot.validation!!.graphHash).isNotEqualTo(approvedGraphHash)
+        assertThat(snapshot.graph!!.nodes.map { it.nodeType }).contains("email.send.mock")
+        assertThat(snapshot.graph!!.nodes.map { it.nodeType }).doesNotContain("slack.reply.mock", "slack.send.mock")
+        assertThat(snapshot.requirement!!.outputs.joinToString(" ")).contains("이메일").doesNotContain("Slack")
+        assertThat(snapshot.messages.last().content).contains("Graph Patch를 검증해 새 버전 2", "Slack 전송을 이메일 Mock 전송으로 변경")
+    }
+
+    @Test
     fun `missing approver asks only clarification then produces proposal after answer`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("clarify-$suffix@example.com", "password123", "clarify_$suffix", "질문 검증"))
@@ -163,6 +328,59 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.clarificationQuestions.single().field).isEqualTo("approvalPolicy")
         snapshot = service.sendMessage(owner.id, snapshot.conversationId, "고객지원 팀장이 승인한다.", "clarify-answer-$suffix")
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+    }
+
+    @Test
+    fun `rejected automation design accepts cumulative natural language revision for re-review without a version`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("revision-$suffix@example.com", "password123", "revision_$suffix", "설계 수정 검증"))
+        var snapshot = service.createConversation(owner.id, "revision-conversation-$suffix")
+        val originalInstruction = "사용자가 수동 입력한 텍스트를 카테고리로 분류하고 담당자 승인 후 결과를 화면에 표시합니다."
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, originalInstruction, "revision-initial-$suffix")
+        val rejectedProposal = snapshot.proposal
+        val rejectedClassification = requireNotNull(rejectedProposal?.graphPlan).nodes.single { it.nodeType == "ai.classify" }
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.currentVersionId).isNull()
+        assertThat(snapshot.approvedVersionId).isNull()
+        assertThat(snapshot.versions).isEmpty()
+        assertThat(usageRecords.findAll().count { it.ownerId == owner.id }).isEqualTo(1)
+
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, false, "revision-reject-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.DRAFT)
+        assertThat(snapshot.proposal).isEqualTo(rejectedProposal)
+        assertThat(snapshot.currentVersionId).isNull()
+        assertThat(snapshot.approvedVersionId).isNull()
+        assertThat(snapshot.versions).isEmpty()
+        assertThat(snapshot.messages.last().content).isEqualTo("설계가 반려되었습니다. 수정할 내용을 자연어로 알려 주세요.")
+        assertThat(builderApprovals.findAll().filter { it.workflowId == snapshot.workflowId }.single().status)
+            .isEqualTo(com.agentvillage.builder.domain.ApprovalStatus.REJECTED)
+
+        val revision = "분석 담당과 작성 담당이 함께 처리하도록 바꿔 주세요."
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, revision, "revision-follow-up-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.requirement?.objective).contains(originalInstruction, revision)
+        assertThat(snapshot.requirement?.decisions).contains("입력 유형 선택")
+        assertThat(snapshot.requirement?.humanApprovalRequired).isTrue()
+        assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("analyst", "writer")
+        val revisedPlan = requireNotNull(snapshot.proposal?.graphPlan)
+        assertThat(revisedPlan.nodes.map { it.nodeType }).contains("ai.classify", "human.approval")
+        val revisedClassification = revisedPlan.nodes.single { it.nodeType == "ai.classify" }
+        assertThat(revisedClassification.config)
+            .containsEntry("agentKey", "analyst")
+            .containsEntry("categories", rejectedClassification.config["categories"])
+        assertThat(revisedPlan.nodes.single { it.config["agentKey"] == "writer" }.nodeType)
+            .isEqualTo("ai.generate")
+        assertThat(snapshot.proposal!!.capabilities).contains("입력 분류", "담당자 승인")
+        assertThat(snapshot.proposal).isNotEqualTo(rejectedProposal)
+        assertThat(snapshot.currentVersionId).isNull()
+        assertThat(snapshot.approvedVersionId).isNull()
+        assertThat(snapshot.versions).isEmpty()
+        assertThat(usageRecords.findAll().count { it.ownerId == owner.id }).isEqualTo(1)
+        assertThat(snapshot.messages.filter { it.role == "USER" }.map { it.content }).containsExactly(originalInstruction, revision)
+        assertThat(snapshot.messages.last().content).isEqualTo("자동화 설계안이 준비되었습니다. 기능·에이전트·가이드를 확인하고 설계를 승인해 주세요.")
     }
 
     @Test
@@ -357,4 +575,6 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThatThrownBy { service.decideExecution(owner.id, run.id, true, "stop-approval-$suffix") }
             .isInstanceOf(ConflictException::class.java)
     }
+
+    private fun principal(ownerId: UUID, email: String) = AuthenticatedUser(ownerId, email, "unused", true)
 }

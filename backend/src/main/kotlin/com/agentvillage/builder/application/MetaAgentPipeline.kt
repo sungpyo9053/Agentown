@@ -219,7 +219,7 @@ class StructuredMetaAgentPipeline(
         if (bundle.clarificationQuestions.map { it.field }.distinct().size != bundle.clarificationQuestions.size) invalid()
         if (bundle.clarificationQuestions.isNotEmpty()) return
         if (bundle.proposal.name.isBlank() || bundle.proposal.capabilities.isEmpty()) invalid()
-        if (bundle.agentDefinitions.size !in 1..5 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
+        if (bundle.agentDefinitions.size !in 0..5 || bundle.agentDefinitions.map { it.key }.distinct().size != bundle.agentDefinitions.size) invalid()
         if (bundle.guideDefinitions.isEmpty() || bundle.guideDefinitions.size > 5 || bundle.guideDefinitions.map { it.key }.distinct().size != bundle.guideDefinitions.size) invalid()
         if (bundle.agentDefinitions.any { it.behaviorRules.isEmpty() || it.forbiddenRules.isEmpty() || it.evidenceRequirements.isEmpty() }) invalid()
         val plan = bundle.proposal.graphPlan ?: invalid()
@@ -227,6 +227,8 @@ class StructuredMetaAgentPipeline(
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        compileDeterministicFunction(bundle, instruction)?.let { return withExecutionMetadata(it, instruction) }
+        compileKnowledgeDraft(bundle, instruction)?.let { return withExecutionMetadata(it, instruction) }
         val writingAutomation = listOf("글쓰기", "글을", "원고", "콘텐츠", "보고서", "article", "content", "writing", "report")
             .any(instruction.lowercase()::contains)
         val scheduled = Regex("\\d{1,2}시").containsMatchIn(instruction) ||
@@ -244,10 +246,12 @@ class StructuredMetaAgentPipeline(
                 .any(instruction.lowercase()::contains)
             val hasInbound = scheduled || hasDirectInput || instruction.contains("Slack", true) || instruction.contains("슬랙") || instruction.contains("이메일") || instruction.contains("채팅")
             val hasKnowledge = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true) || instruction.contains("데이터베이스") ||
-                (genericNewsReference && specificNewsSource) || hasDirectInput
+                genericNewsReference || hasDirectInput
             val hasApproval = instruction.contains("승인") || instruction.contains("검토") || instruction.contains("확인 후") || instruction.contains("바로 보내") ||
                 listOf("승인 없이", "검토 없이", "승인 불필요", "실제 게시하지", "보내지 마").any(instruction::contains)
-            val hasDestination = instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") ||
+            val notionWriteDestination = (instruction.contains("Notion", true) || instruction.contains("노션")) &&
+                listOf("저장", "발행", "페이지", "기록", "올려").any(instruction::contains)
+            val hasDestination = instruction.contains("스레드") || instruction.contains("thread", true) || instruction.contains("전송") || instruction.contains("회신") || instruction.contains("답변을 보내") || notionWriteDestination ||
                 Regex("(Slack|슬랙)[^\\n]{0,30}(답변|회신)", RegexOption.IGNORE_CASE).containsMatchIn(instruction) || specificFileDestination ||
                 listOf("화면", "미리보기", "결과로 표시", "채팅에 표시").any(instruction::contains)
             if (!hasInbound) add(ClarificationQuestion("inbound", "inbound", if (writingAutomation) "글쓰기는 수동으로 시작할까요, 정해진 시간이나 이벤트에 실행할까요?" else "자동화할 업무는 어떤 입력이나 이벤트로 시작되며, 어느 서비스에서 들어오나요?"))
@@ -266,21 +270,84 @@ class StructuredMetaAgentPipeline(
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
             else -> normalized
         }
-        val aiCalls = standardized.proposal.graphPlan?.nodes.orEmpty().count { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
-        return standardized.copy(proposal = standardized.proposal.copy(
-            templateSelection = standardized.proposal.templateSelection ?: HarnessTemplateSelection(
+        return withExecutionMetadata(preserveCumulativeClassificationRevision(standardized, instruction), instruction)
+    }
+
+    private fun preserveCumulativeClassificationRevision(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val plan = bundle.proposal.graphPlan ?: return bundle
+        val classificationRequested = listOf("분류", "카테고리", "classify", "classification", "category")
+            .any(instruction.lowercase()::contains)
+        val agentKeys = bundle.agentDefinitions.map { it.key }.toSet()
+        if (!classificationRequested || !agentKeys.containsAll(setOf("analyst", "writer")) ||
+            plan.nodes.any { it.nodeType == NodeType.AI_CLASSIFY.wireName }
+        ) return bundle
+
+        val writerIndex = plan.nodes.indexOfFirst { it.config["agentKey"] == "writer" }
+        if (writerIndex < 0) return bundle
+        val classificationNode = WorkflowNodePlan(
+            id = if (plan.nodes.none { it.id == "classify" }) "classify" else "classification-decision",
+            nodeType = NodeType.AI_CLASSIFY.wireName,
+            label = "입력 분류",
+            config = mapOf("categories" to listOf("유형 A", "유형 B", "기타"), "agentKey" to "analyst"),
+        )
+        val nodes = plan.nodes.toMutableList().apply { add(writerIndex, classificationNode) }
+        val incomingWriterEdges = plan.edges.filter { it.target == plan.nodes[writerIndex].id }
+        if (incomingWriterEdges.isEmpty()) return bundle
+        val classificationEdgeId = generateSequence("classification-to-writer") { "$it-next" }
+            .first { candidate -> plan.edges.none { it.id == candidate } }
+        val normalizedPlan = plan.copy(
+            nodes = nodes,
+            edges = plan.edges.map { edge ->
+                if (edge.target == plan.nodes[writerIndex].id) edge.copy(target = classificationNode.id) else edge
+            } + WorkflowEdgePlan(classificationEdgeId, classificationNode.id, plan.nodes[writerIndex].id),
+        )
+        return bundle.copy(
+            requirement = bundle.requirement.copy(steps = nodes.map { it.label }),
+            proposal = bundle.proposal.copy(capabilities = nodes.map { it.label }, graphPlan = normalizedPlan),
+        )
+    }
+
+    private fun withExecutionMetadata(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
+        val nodes = bundle.proposal.graphPlan?.nodes.orEmpty()
+        val aiNodes = nodes.filter { it.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) }
+        val aiCalls = aiNodes.size
+        val approvalNodes = nodes.filter { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }
+        val deterministicTypes = setOf(
+            NodeType.MANUAL_TRIGGER.wireName,
+            NodeType.SCHEDULE_TRIGGER.wireName,
+            NodeType.TEXT_INPUT.wireName,
+            NodeType.DATA_CSV_COMPARE.wireName,
+            NodeType.DATA_DEDUPLICATE.wireName,
+            NodeType.CONDITION_BRANCH.wireName,
+        )
+        val deterministicNodes = nodes.filter { it.nodeType in deterministicTypes }
+        val toolNodes = nodes.filter { it !in aiNodes && it !in approvalNodes && it !in deterministicNodes }
+        fun labels(selected: List<WorkflowNodePlan>) = selected.joinToString(", ") { "‘${it.label}’" }
+        val nonAiRationale = buildList {
+            if (deterministicNodes.isNotEmpty()) add("${labels(deterministicNodes)} 단계는 일반 코드와 규칙으로 처리합니다.")
+            if (approvalNodes.isNotEmpty()) add("${labels(approvalNodes)} 단계는 사람이 확인하고 승인합니다.")
+            if (toolNodes.isNotEmpty()) add("${labels(toolNodes)} 단계는 연결 도구로 처리합니다.")
+        }.joinToString(" ")
+        val executionRationale = if (aiNodes.isEmpty()) {
+            listOf("AI를 호출하지 않습니다. $nonAiRationale".trim())
+        } else {
+            val boundedSteps = aiNodes.joinToString(", ") { "‘${it.label}’" }
+            listOf("AI는 $boundedSteps 단계에만 사용하며 실행당 ${aiCalls}회 호출합니다. $nonAiRationale".trim())
+        }
+        return bundle.copy(proposal = bundle.proposal.copy(
+            templateSelection = bundle.proposal.templateSelection ?: HarnessTemplateSelection(
                 templateKey = "generated-${instruction.hashCode().toUInt().toString(16)}",
                 version = 1,
                 source = "GENERATED",
                 matchReason = "승인된 기본 템플릿과 정확히 일치하지 않아 구조화 계약 안에서 초안을 생성",
             ),
             economics = HarnessDesignEconomics(
-                agentCount = standardized.agentDefinitions.size,
+                agentCount = bundle.agentDefinitions.size,
                 estimatedAiCallsPerRun = aiCalls,
-                separationRationale = if (standardized.agentDefinitions.size <= 1) listOf("판단 작업을 한 번의 구조화 AI 호출로 통합") else listOf("서로 독립적인 판단 계약이 필요함"),
+                separationRationale = executionRationale,
             ),
-            outputSchema = standardized.agentDefinitions.lastOrNull()?.outputSchema.orEmpty(),
-            executionContract = standardized.proposal.executionContract ?: TemplateExecutionContract(
+            outputSchema = bundle.agentDefinitions.lastOrNull()?.outputSchema ?: bundle.proposal.outputSchema,
+            executionContract = bundle.proposal.executionContract ?: TemplateExecutionContract(
                 contentSchemaVersion = "1.0",
                 rendererKey = "plain-text",
                 rendererVersion = "1",
@@ -293,8 +360,62 @@ class StructuredMetaAgentPipeline(
         ))
     }
 
+    private fun compileDeterministicFunction(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle? {
+        val normalized = instruction.lowercase()
+        val csvComparison = containsAll(normalized, listOf("csv", "비교")) && listOf("변경", "차이", "행").any(normalized::contains)
+        if (!csvComparison) return null
+        val nodes = listOf(
+            WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "CSV 두 파일 입력"),
+            WorkflowNodePlan("csv-compare", NodeType.DATA_CSV_COMPARE.wireName, "CSV 행 결정적 비교", mapOf("keyColumns" to listOf("사용자 지정 키"), "comparisonMode" to "EXACT")),
+        )
+        val plan = WorkflowGraphPlan(nodes.first().id, nodes, listOf(WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("files", "files")))))
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 파일 입력", listOf("기준 CSV", "비교 CSV"), listOf("추가·수정·삭제된 행"), nodes.map { it.label }, emptyList(), listOf("키 열 누락", "CSV 파싱 실패"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(
+                name = "CSV 변경 행 비교", summary = "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.", capabilities = nodes.map { it.label },
+                integrations = emptyList(), approvalPoints = emptyList(), failurePolicy = "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
+                graphPlan = plan, outputSchema = listOf(FieldDefinition("changedRows", "array", true, "추가·수정·삭제된 행 목록")),
+            ),
+            agentDefinitions = emptyList(),
+            guideDefinitions = listOf(GuideDefinition("csv-input", "CSV 비교 설정", "두 파일의 키 열과 인코딩을 설정합니다.", listOf(GuideField("keyColumns", "키 열", "text", true, false, "행을 식별할 하나 이상의 열")))),
+        )
+    }
+
+    private fun compileKnowledgeDraft(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle? {
+        val normalized = instruction.lowercase()
+        if (!(normalized.contains("faq") && listOf("답변", "초안").any(normalized::contains))) return null
+        if (listOf("slack", "슬랙", "notion", "노션", "전송", "보내").any(normalized::contains)) return null
+        val agent = AgentDefinition(
+            "answer-writer", "근거 기반 답변 작성자", "검색된 FAQ 근거만 사용해 고객 답변 초안을 작성한다.",
+            listOf(FieldDefinition("question", "string", true, "고객 문의"), FieldDefinition("searchResults", "array", true, "FAQ 검색 결과")),
+            listOf(FieldDefinition("draft", "string", true, "근거 기반 답변 초안")),
+            listOf("질문 의도를 보존한다", "검색 결과를 근거로 답한다"), listOf("근거가 없으면 내용을 만들지 않는다", "외부로 전송하지 않는다"), listOf("사용한 FAQ 항목"),
+        )
+        val nodes = listOf(
+            WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "고객 문의 입력"),
+            WorkflowNodePlan("faq-search", NodeType.KNOWLEDGE_SEARCH_MOCK.wireName, "FAQ 검색 (Mock · 연결 필요)", mapOf("source" to "사용자 지정 FAQ", "queryField" to "question", "connectionStatus" to "UNRESOLVED")),
+            WorkflowNodePlan("answer-draft", NodeType.AI_GENERATE.wireName, "답변 초안 작성", mapOf("instruction" to "FAQ 검색 근거로 답변 초안 작성", "agentKey" to agent.key)),
+        )
+        val edges = listOf(
+            WorkflowEdgePlan("edge-1", nodes[0].id, nodes[1].id, bindings = listOf(WorkflowFieldBinding("question", "question"))),
+            WorkflowEdgePlan("edge-2", nodes[1].id, nodes[2].id, bindings = listOf(WorkflowFieldBinding("question", "question"), WorkflowFieldBinding("searchResults", "searchResults"))),
+        )
+        return bundle.copy(
+            requirement = AutomationRequirement(instruction, "수동 문의 입력", listOf("고객 문의", "FAQ 자료"), listOf("답변 초안"), nodes.map { it.label }, listOf("관련 FAQ 선택"), listOf("근거 검색 결과 없음"), false),
+            clarificationQuestions = emptyList(),
+            proposal = bundle.proposal.copy(name = "FAQ 기반 고객 답변 초안", summary = "FAQ를 검색하고 근거가 있는 답변 초안만 만듭니다.", capabilities = nodes.map { it.label }, integrations = listOf("FAQ Mock · 연결 필요"), approvalPoints = emptyList(), failurePolicy = "근거가 없으면 답변을 만들지 않고 담당자 확인 필요 상태를 반환", graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, edges)),
+            agentDefinitions = listOf(agent),
+            guideDefinitions = listOf(GuideDefinition("faq-source", "FAQ 자료 연결", "실제 실행 전에 FAQ 검색 소스를 연결합니다.", listOf(GuideField("source", "FAQ 소스", "text", true, false, "검색할 FAQ 저장소")))),
+        )
+    }
+
+    private fun containsAll(value: String, terms: List<String>) = terms.all(value::contains)
+
     private fun standardizeWritingTeam(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
         val explicitSeparation = listOf("분석 담당과", "분석 담당이", "작성 담당과", "작성 담당이").count(instruction::contains) >= 2
+        val notionWriteDestination = (instruction.contains("Notion", true) || instruction.contains("노션")) &&
+            listOf("저장", "발행", "페이지", "기록", "올려").any(instruction::contains)
         val agents = if (explicitSeparation) listOf(
             writingAgent("content-analyst", "콘텐츠 분석자", "입력 자료에서 사실, 수치, 쟁점과 누락 정보를 구조화한다.", "analysis"),
             writingAgent("content-writer", "콘텐츠 작성자", "분석 결과만 근거로 목적과 독자에 맞는 초안을 작성하고 자체 점검한다.", "result"),
@@ -306,7 +427,9 @@ class StructuredMetaAgentPipeline(
         val plan = bundle.proposal.graphPlan ?: return bundle.copy(agentDefinitions = agents)
         val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
         val firstAi = plan.nodes.indexOfFirst { it.nodeType in aiTypes }.let { if (it < 0) plan.nodes.indexOfFirst { node -> node.nodeType == NodeType.HUMAN_APPROVAL.wireName }.let { approval -> if (approval < 0) plan.nodes.size else approval } else it }
-        val retained = plan.nodes.filterNot { it.nodeType in aiTypes }.toMutableList()
+        val retained = plan.nodes.filterNot {
+            it.nodeType in aiTypes || (notionWriteDestination && it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.NOTION_CREATE_PAGE.wireName))
+        }.toMutableList()
         val insertionIndex = plan.nodes.take(firstAi).count { it.nodeType !in aiTypes }
         val writingNodes = if (explicitSeparation) listOf(
             WorkflowNodePlan("content-analyze", NodeType.AI_GENERATE.wireName, "입력 자료 분석", mapOf("instruction" to "입력 자료의 사실과 쟁점을 구조화", "agentKey" to "content-analyst")),
@@ -315,6 +438,15 @@ class StructuredMetaAgentPipeline(
             "content-write", NodeType.AI_GENERATE.wireName, "분석·구성·작성·자체 점검", mapOf("instruction" to instruction, "agentKey" to "content-writer"),
         ))
         retained.addAll(insertionIndex.coerceIn(0, retained.size), writingNodes)
+        if (notionWriteDestination) {
+            if (retained.none { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }) {
+                retained += WorkflowNodePlan("content-approval", NodeType.HUMAN_APPROVAL.wireName, "담당자 결과 승인", mapOf("approver" to "사용자 지정 승인자"))
+            }
+            retained += WorkflowNodePlan(
+                "notion-create-page", NodeType.NOTION_CREATE_PAGE.wireName, "승인된 결과를 Notion 페이지로 저장",
+                mapOf("targetMode" to "runtime", "rendererKey" to "article.plain-text.v1"),
+            )
+        }
         val normalizedPlan = WorkflowGraphPlan(
             entryNodeId = retained.firstOrNull()?.id ?: plan.entryNodeId,
             nodes = retained,
@@ -330,6 +462,7 @@ class StructuredMetaAgentPipeline(
             requirement = bundle.requirement.copy(steps = retained.map { it.label }),
             proposal = bundle.proposal.copy(
                 capabilities = retained.map { it.label }, graphPlan = normalizedPlan,
+                integrations = if (notionWriteDestination) (bundle.proposal.integrations + "Notion").distinct() else bundle.proposal.integrations,
                 templateSelection = HarnessTemplateSelection("structured-writing", 1, "BUILT_IN", "구조화 글쓰기 요청과 일치"),
                 executionContract = TemplateExecutionContract(
                     contentSchemaVersion = "1.0", rendererKey = "article.plain-text", rendererVersion = "1",
@@ -429,7 +562,7 @@ class StructuredMetaAgentPipeline(
             val field = Regex("[A-Za-z][A-Za-z0-9]*").find(expression)?.value ?: return@map edge
             edge.copy(condition = "$field=true")
         }
-        return plan.copy(edges = edges)
+        return plan.copy(edges = edges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge })
     }
 
     private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
