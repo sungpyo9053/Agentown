@@ -433,6 +433,11 @@ def terminal_task_status(verdict: str) -> str:
     return "BLOCKED"
 
 
+def terminal_review_allows_next_task(verdict: str) -> bool:
+    """A terminal task outcome must not stop unrelated safe local development."""
+    return verdict in {"BLOCKED", "HUMAN_DECISION_REQUIRED", "CHANGES_REQUESTED"}
+
+
 def validate_task_contract(task: dict[str, Any]) -> None:
     commit_scope = task.get("commit_scope")
     if not isinstance(commit_scope, list) or not commit_scope:
@@ -866,6 +871,7 @@ class Supervisor:
                 supervisor_exited_at=None,
                 failure_type=None,
                 infra_failure_reason=None,
+                planner_failure_reason=None,
                 checkpoint_status=None,
                 checkpoint_run_id=None,
             )
@@ -987,7 +993,7 @@ class Supervisor:
                             blocked_tasks.append(task["task_id"])
                         state = set_state(
                             supervisor_status=status,
-                            next_run_allowed=False,
+                            next_run_allowed=True,
                             blocked_tasks=blocked_tasks,
                             human_decisions_required=latest.get("human_decisions_required", []) + ([review.get("human_decision")] if review.get("human_decision") else []),
                         )
@@ -1004,9 +1010,12 @@ class Supervisor:
                             continue
                         set_state(supervisor_status="READY_FOR_NEXT_CYCLE", retry_backoff_seconds=None, retry_resume_at=None)
                         continue
-                    if review["verdict"] != "APPROVED":
-                        exit_reason = post_report_status
-                        break
+                    if terminal_review_allows_next_task(review["verdict"]):
+                        log(f"terminal task recorded; continuing with fresh planning task={task['task_id']} verdict={review['verdict']}", self.cfg)
+                        set_state(supervisor_status="READY_FOR_NEXT_CYCLE", current_active_task=None, next_run_allowed=True)
+                        if completed < self.max_cycles and time.monotonic() - started < self.max_runtime:
+                            self.wait(self.cfg["cycle_wait_seconds"])
+                        continue
                     set_state(supervisor_status="READY_FOR_NEXT_CYCLE")
                     if completed < self.max_cycles and time.monotonic() - started < self.max_runtime:
                         self.wait(self.cfg["cycle_wait_seconds"])

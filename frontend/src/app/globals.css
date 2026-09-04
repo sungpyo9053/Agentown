@@ -101,9 +101,12 @@ button, input, textarea, select { font: inherit; }
 @media (prefers-reduced-motion: reduce){.landing-track{scroll-behavior:auto}.landing-progress{animation:none;width:100%}}
 
 /* 픽셀 오피스 (top-down RPG 뷰) */
+.pixel-office-shell{position:relative;width:100%;overflow:hidden;line-height:normal}
 .pixel-office{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;cursor:pointer}
 .pixel-office--editable{cursor:grab}
 .pixel-office--editable:active{cursor:grabbing}
+.pixel-office__labels{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.pixel-office__label{position:absolute;z-index:20;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transform:translateX(-50%);padding:3px 6px;border:1px solid rgba(30,30,30,.16);background:rgba(255,255,255,.96);box-shadow:0 2px 5px rgba(0,0,0,.16);color:#181817;font-family:Inter,"Noto Sans KR",-apple-system,BlinkMacSystemFont,sans-serif;font-size:13px;font-weight:700;line-height:1.25;letter-spacing:0;opacity:0}
 
 /* 배치된 소품 */
 .office-item{position:absolute;padding:0;border:0;background:transparent;transform-origin:bottom center;filter:drop-shadow(0 6px 4px #46331f1f);}

@@ -76,6 +76,7 @@ export function LandingCarousel() {
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
             <div className="flex flex-wrap items-center gap-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">시작하기</Link>
+              <Link href="/login?next=%2Fassemble%2Fautomation" className="rounded-pill border border-ink bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">에이전트 만들어보기</Link>
               <Link href="/pricing" className="rounded-pill bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">요금 보기</Link>
             </div>
           </div>
@@ -122,6 +123,7 @@ export function LandingCarousel() {
           <div className="lg:flex lg:flex-col lg:items-end lg:pt-1">
             <div className="flex flex-wrap items-center gap-3 lg:justify-end">
               <Link href="/signup" className="rounded-pill bg-ink px-7 py-3 text-sm font-medium text-white transition active:scale-95 active:opacity-50">무료로 시작하기</Link>
+              <Link href="/login?next=%2Fassemble%2Fautomation" className="rounded-pill border border-ink bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">에이전트 만들어보기</Link>
               <Link href="/features" className="rounded-pill bg-white px-7 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">기능 보기</Link>
             </div>
           </div>

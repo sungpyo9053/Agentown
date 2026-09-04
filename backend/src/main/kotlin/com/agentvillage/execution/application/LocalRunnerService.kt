@@ -86,8 +86,7 @@ class LocalRunnerService(
     @Transactional
     fun complete(token: String, executionId: UUID, output: Map<String, Any>) {
         val connection = authenticate(token)
-        val execution = executions.findByIdAndOwnerId(executionId, connection.ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
-        if (execution.runnerConnectionId != connection.id || execution.status != ExecutionStatus.RUNNING) throw BadRequestException("RUNNER_JOB_NOT_OWNED", "이 Runner가 처리 중인 실행이 아닙니다.")
+        val execution = requireRunningJobForUpdate(executionId, connection)
         val plan = snapshots.read(execution.executionSnapshotJson)
         execution.outputJson = output
         execution.heartbeatAt = Instant.now()
@@ -105,8 +104,7 @@ class LocalRunnerService(
     @Transactional
     fun progress(token: String, executionId: UUID, eventType: String, agentId: UUID?, stepKey: String, output: Map<String, Any>?) {
         val connection = authenticate(token)
-        val execution = executions.findByIdAndOwnerId(executionId, connection.ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
-        if (execution.runnerConnectionId != connection.id || execution.status != ExecutionStatus.RUNNING) throw BadRequestException("RUNNER_JOB_NOT_OWNED", "이 Runner가 처리 중인 실행이 아닙니다.")
+        val execution = requireRunningJobForUpdate(executionId, connection)
         val allowed = setOf("STEP_STARTED", "MODEL_REQUEST_SENT", "STEP_OUTPUT_CREATED", "STEP_COMPLETED")
         if (eventType !in allowed) throw BadRequestException("RUNNER_EVENT_INVALID", "허용되지 않은 Runner 이벤트입니다.")
         execution.currentStepKey = stepKey; execution.heartbeatAt = Instant.now()
@@ -145,10 +143,19 @@ class LocalRunnerService(
     @Transactional
     fun fail(token: String, executionId: UUID, code: String, message: String) {
         val connection = authenticate(token)
-        val execution = executions.findByIdAndOwnerId(executionId, connection.ownerId) ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
-        if (execution.runnerConnectionId != connection.id) throw BadRequestException("RUNNER_JOB_NOT_OWNED", "이 Runner가 처리 중인 실행이 아닙니다.")
+        val execution = requireRunningJobForUpdate(executionId, connection)
         execution.status = ExecutionStatus.FAILED; execution.errorCode = code.take(80); execution.errorMessage = message.take(1000); execution.finishedAt = Instant.now()
         executionService.record(execution.id, "EXECUTION_FAILED", null, mapOf("errorCode" to execution.errorCode!!, "mode" to "LOCAL_CLI"))
+    }
+
+    private fun requireRunningJobForUpdate(executionId: UUID, connection: LocalRunnerConnection): Execution {
+        val execution = executions.findByIdForUpdate(executionId)
+            ?.takeIf { it.ownerId == connection.ownerId }
+            ?: throw NotFoundException("EXECUTION_NOT_FOUND", "실행을 찾을 수 없습니다.")
+        if (execution.runnerConnectionId != connection.id || execution.status != ExecutionStatus.RUNNING) {
+            throw BadRequestException("RUNNER_JOB_NOT_OWNED", "이 Runner가 처리 중인 실행이 아닙니다.")
+        }
+        return execution
     }
 
     private fun authenticate(token: String): LocalRunnerConnection {

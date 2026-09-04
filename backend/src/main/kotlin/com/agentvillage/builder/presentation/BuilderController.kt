@@ -1,6 +1,8 @@
 package com.agentvillage.builder.presentation
 
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.builder.application.BuilderProductionExecutionService
+import com.agentvillage.builder.application.ProductionRunRequest
 import com.agentvillage.builder.application.WorkflowNodeCatalog
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.validation.Valid
@@ -25,7 +27,12 @@ data class ExecutionDecisionRequest(val approve: Boolean)
 
 @RestController
 @RequestMapping("/api/builder")
-class BuilderController(private val service: BuilderService, private val generation: com.agentvillage.builder.application.BuilderGenerationService, private val catalog: WorkflowNodeCatalog) {
+class BuilderController(
+    private val service: BuilderService,
+    private val generation: com.agentvillage.builder.application.BuilderGenerationService,
+    private val production: BuilderProductionExecutionService,
+    private val catalog: WorkflowNodeCatalog,
+) {
     @PostMapping("/conversations")
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) = service.createConversation(user.userId, key)
 
@@ -41,6 +48,10 @@ class BuilderController(private val service: BuilderService, private val generat
 
     @GetMapping("/generation-jobs/{jobId}")
     fun generationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID) = generation.get(user.userId, jobId)
+
+    @GetMapping("/conversations/{conversationId}/generation-jobs/latest-recoverable")
+    fun latestRecoverableGenerationJob(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID): ResponseEntity<com.agentvillage.builder.application.BuilderGenerationJobView> =
+        generation.latestRecoverable(user.userId, conversationId)?.let { ResponseEntity.ok(it) } ?: ResponseEntity.noContent().build()
 
     @PostMapping("/generation-jobs/{jobId}/cancel")
     fun cancelGeneration(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable jobId: UUID, @RequestHeader("Idempotency-Key") key: String) = generation.cancel(user.userId, jobId, key)
@@ -98,6 +109,25 @@ class BuilderController(private val service: BuilderService, private val generat
     @PostMapping("/simulations/{runId}/approval")
     fun executionApproval(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ExecutionDecisionRequest) =
         service.decideExecution(user.userId, runId, request.approve, key)
+
+    @PostMapping("/workflows/{workflowId}/production-runs")
+    fun productionRun(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ProductionRunRequest) =
+        production.start(user.userId, workflowId, request, key)
+
+    @GetMapping("/workflows/{workflowId}/production-runs")
+    fun productionRuns(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID) =
+        production.history(user.userId, workflowId)
+
+    @GetMapping("/production-runs/{runId}")
+    fun productionRun(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID) = production.get(user.userId, runId)
+
+    @PostMapping("/production-runs/{runId}/approval")
+    fun productionApproval(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID, @RequestHeader("Idempotency-Key") key: String, @RequestBody request: ExecutionDecisionRequest) =
+        production.decide(user.userId, runId, request.approve, key)
+
+    @PostMapping("/production-runs/{runId}/retry")
+    fun retryProduction(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable runId: UUID, @RequestHeader("Idempotency-Key") key: String) =
+        production.retry(user.userId, runId, key)
 
     @GetMapping("/conversations/{conversationId}/activation-readiness")
     fun readiness(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable conversationId: UUID) = service.snapshot(user.userId, conversationId).let {

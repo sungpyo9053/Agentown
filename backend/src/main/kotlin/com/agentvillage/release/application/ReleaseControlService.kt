@@ -20,19 +20,29 @@ data class ReleaseCandidateCommand(val releaseKey: String, val purpose: String, 
 class ReleaseControlService(private val releases: ReleaseRepository, private val events: ReleaseEventRepository, private val workspaces: BuilderWorkspaceAccess) {
     @Transactional
     fun publishCandidate(ownerId: UUID, command: ReleaseCandidateCommand): ReleaseRecord {
+        requireKoreanUserText(command.purpose, "변경 목적", 5, 300)
+        requireKoreanUserText(command.userSummary, "사용자 변화", 10, 500)
         val workspaceId = workspaces.requireWorkspaceId(ownerId)
         val existing = releases.findByWorkspaceIdAndReleaseKey(workspaceId, command.releaseKey)
+        val ready = command.stagingStatus == "PASSED" && (command.detail["environmentContract"] as? Map<*, *>)?.get("configured") == true
         if (existing == null) {
-            val ready = command.stagingStatus == "PASSED" && (command.detail["environmentContract"] as? Map<*, *>)?.get("configured") == true
             val created = releases.save(ReleaseRecord(workspaceId = workspaceId, releaseKey = command.releaseKey, purpose = command.purpose, userSummary = command.userSummary, status = if (ready) ReleaseStatus.APPROVAL_REQUIRED else ReleaseStatus.CANDIDATE, riskLevel = command.riskLevel, currentSha = command.currentSha, candidateSha = command.candidateSha, includedTaskCount = command.includedTaskCount, hasMigration = command.hasMigration, stagingStatus = command.stagingStatus, preflightHash = command.preflightHash, detail = command.detail))
             event(created, null, null, created.status, "CREATED", "Release Agent 후보 생성")
             return created
         }
+        existing.purpose = command.purpose
+        existing.userSummary = command.userSummary
+        existing.stagingStatus = command.stagingStatus
+        existing.detail = command.detail
         if (existing.candidateSha != command.candidateSha || existing.preflightHash != command.preflightHash) {
             val previous = existing.status
-            existing.candidateSha = command.candidateSha; existing.preflightHash = command.preflightHash; existing.stagingStatus = command.stagingStatus; existing.detail = command.detail
+            existing.candidateSha = command.candidateSha; existing.preflightHash = command.preflightHash
             existing.approvalIdempotencyKey = null; existing.approvalEnvironment = null; existing.approvedBy = null; existing.approvedAt = null; existing.approvalPreflightHash = null; existing.scheduledAt = null; existing.status = ReleaseStatus.CANDIDATE
             event(existing, null, previous, existing.status, "APPROVAL_INVALIDATED", "후보 SHA 또는 사전검증 결과 변경")
+        } else if (existing.status == ReleaseStatus.CANDIDATE && ready) {
+            val previous = existing.status
+            existing.status = ReleaseStatus.APPROVAL_REQUIRED
+            event(existing, null, previous, existing.status, "READY", "실제 환경 계약과 스테이징 검증 확인")
         }
         return existing
     }
@@ -81,6 +91,11 @@ class ReleaseControlService(private val releases: ReleaseRepository, private val
         r.approvalIdempotencyKey = null; r.approvalEnvironment = null; r.approvedBy = null; r.approvedAt = null; r.approvalPreflightHash = null; r.scheduledAt = null; r.status = next
         event(r, adminId, previous, next, result, reason)
         return r
+    }
+    private fun requireKoreanUserText(value: String, label: String, minimum: Int, maximum: Int) {
+        if (value.length !in minimum..maximum || value.count { it in '가'..'힣' } < 3) {
+            throw BadRequestException("RELEASE_KOREAN_TEXT_REQUIRED", "$label 문구는 완결된 한국어로 작성해야 합니다.")
+        }
     }
     private fun owned(adminId: UUID, id: UUID): ReleaseRecord = releases.findByIdAndWorkspaceId(id, workspaces.requireWorkspaceId(adminId)) ?: notFound()
     private fun notFound(): Nothing = throw NotFoundException("RELEASE_NOT_FOUND", "배포 정보를 찾을 수 없습니다.")

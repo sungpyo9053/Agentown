@@ -62,12 +62,16 @@ class CodexCliMetaAgentModel(
         4. Agent Designer: 템플릿과 안전한 노드를 먼저 사용하고, 자연어 판단 단계에 필요한 최소 Agent Definition만 만든다. 기본은 한 명이며 독립 검증이나 분리된 전문성이 반드시 필요할 때만 추가한다. 트리거, 수집, 중복 제거, 승인, 외부 전송 자체를 AI Agent로 만들지 않는다.
         5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
-        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, data.deduplicate,
+        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, knowledge.search.mock, data.csv.compare, data.deduplicate,
         condition.branch, ai.classify, ai.generate, human.approval, slack.new_message.mock, slack.reply.mock, slack.send.mock,
-        notion.search.mock, notion.read_page.mock뿐이다.
+        email.send.mock, notion.search.mock, notion.read_page.mock, notion.create_page뿐이다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
         schedule.trigger에는 cron과 timezone, news.search.mock에는 source와 query, data.deduplicate에는 key,
-        human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId 설정을 넣는다.
+        human.approval에는 approver, slack.send.mock에는 channel과 서버 등록 rendererKey, notion.search.mock에는 database, notion.read_page.mock에는 pageId,
+        notion.create_page에는 targetMode=runtime, rendererKey=article.plain-text.v1 설정을 넣고 반드시 앞 경로에 human.approval을 둔다.
+        knowledge.search.mock에는 source, queryField, connectionStatus=UNRESOLVED를 넣는다. data.csv.compare에는 keyColumns와 comparisonMode=EXACT를 넣고 AI Agent를 만들지 않는다.
+        email.send.mock에는 recipient, rendererKey=plain-text.v1, connectionStatus=UNRESOLVED를 넣고 반드시 앞 경로에 human.approval을 둔다.
+        모든 edge에는 앞 단계 출력 필드에서 다음 단계 입력 필드로의 bindings를 [{"sourceField":"...","targetField":"..."}] 배열로 하나 이상 명시한다.
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
@@ -98,7 +102,7 @@ class CodexCliRunner(
     fun execute(apiKey: CharArray, model: String, prompt: String, jobId: UUID? = null): String {
         val isolatedHome = Files.createTempDirectory("agentown-codex-home-")
         return try {
-            execute(apiKey, isolatedHome, model, prompt, jobId)
+            execute(apiKey, isolatedHome, model, prompt, jobId, "/builder/meta-agent-design-bundle.schema.json")
         } finally {
             deleteTemporary(isolatedHome)
         }
@@ -109,7 +113,19 @@ class CodexCliRunner(
         if (!hasSharedAuth()) {
             throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
         }
-        return execute(null, home, model, prompt, jobId)
+        return execute(null, home, model, prompt, jobId, "/builder/meta-agent-design-bundle.schema.json")
+    }
+
+    fun executeContent(apiKey: CharArray, model: String, prompt: String): String {
+        val isolatedHome = Files.createTempDirectory("agentown-codex-content-home-")
+        return try { execute(apiKey, isolatedHome, model, prompt, null, "/builder/production-content.schema.json") }
+        finally { deleteTemporary(isolatedHome) }
+    }
+
+    fun executeContentWithSharedAuth(model: String, prompt: String): String {
+        val home = Path.of(sharedCodexHome)
+        if (!hasSharedAuth()) throw MetaAgentExecutionException("BUILDER_SHARED_CODEX_AUTH_REQUIRED", "Authentication", false, safeMessage = "운영 테스트용 서버 Codex 로그인이 필요합니다.")
+        return execute(null, home, model, prompt, null, "/builder/production-content.schema.json")
     }
 
     fun cancel(jobId: UUID) {
@@ -117,12 +133,12 @@ class CodexCliRunner(
         processes[jobId]?.destroyForcibly()
     }
 
-    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String, jobId: UUID?) : String {
+    private fun execute(apiKey: CharArray?, codexHome: Path, model: String, prompt: String, jobId: UUID?, schemaResource: String) : String {
         val root = Files.createTempDirectory("agentown-codex-meta-")
         return try {
             if (jobId != null && jobId in cancelled) cancelled()
             val schema = root.resolve("schema.json")
-            javaClass.getResourceAsStream("/builder/meta-agent-design-bundle.schema.json")?.use { input -> Files.copy(input, schema) }
+            javaClass.getResourceAsStream(schemaResource)?.use { input -> Files.copy(input, schema) }
                 ?: throw MetaAgentExecutionException("BUILDER_SCHEMA_MISSING", "Configuration", false, safeMessage = "메타 에이전트 출력 스키마를 찾을 수 없습니다.")
             Files.createDirectories(codexHome)
             val processBuilder = ProcessBuilder(

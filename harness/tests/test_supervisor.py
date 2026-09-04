@@ -606,6 +606,11 @@ class SupervisorTest(unittest.TestCase):
         source = Path(supervisor.__file__).read_text()
         self.assertIn('{"APPROVED", "BLOCKED", "DEFERRED", "HUMAN_DECISION_REQUIRED"}', source)
 
+    def test_terminal_task_outcome_allows_fresh_local_planning(self):
+        for verdict in ("BLOCKED", "HUMAN_DECISION_REQUIRED", "CHANGES_REQUESTED"):
+            self.assertTrue(supervisor.terminal_review_allows_next_task(verdict))
+        self.assertFalse(supervisor.terminal_review_allows_next_task("APPROVED"))
+
     def test_deferred_dry_run_reports_planner_first(self):
         cfg = {"development_branch_prefix": "codex/test", "codex_command": "codex", "max_cycles": 30, "max_runtime_seconds": 86400}
         with patch.object(supervisor, "ensure_branch", return_value="codex/test-branch"), patch.object(supervisor, "auth_status", return_value="logged in"), patch.object(supervisor, "read_json", return_value={"task_id": "task-1", "status": "DEFERRED"}):

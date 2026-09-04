@@ -11,26 +11,30 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.security.MessageDigest
 import java.time.Instant
-import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-private class ExecutionExpiredException(message: String) : RuntimeException(message)
+private class ExecutionNoLongerRunningException : RuntimeException()
+private data class StepExecutionResult(
+    val output: Map<String, Any>,
+    val metadata: StepCompletionMetadata = StepCompletionMetadata(),
+)
 
 @Service
 class ExecutionProcessor(
     private val executions: ExecutionRepository, private val executionSteps: ExecutionStepRepository,
     private val snapshots: ExecutionSnapshotReader,
     private val credentials: CredentialDirectory, private val gateways: AiModelGatewayRegistry,
-    private val service: ExecutionService,
+    private val coordinator: ExecutionStateCoordinator,
     private val metrics: ExecutionMetrics,
+    @Value("\${execution.heartbeat-interval-ms:30000}") private val heartbeatIntervalMs: Long,
 ) {
     private val llmSemaphore = Semaphore(50)
     private val externalSemaphore = Semaphore(100)
@@ -43,7 +47,7 @@ class ExecutionProcessor(
         if (executions.claimQueued(id, Instant.now()) != 1) return
         val execution = executions.findById(id).orElse(null) ?: return
         metrics.started()
-        service.record(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))
+        if (!coordinator.recordWhileRunning(id, "EXECUTION_STARTED", null, mapOf("status" to "RUNNING"))) return
         val plan = snapshots.read(execution.executionSnapshotJson)
         val priorSteps = executionSteps.findAllByExecutionIdOrderByStartedAtAsc(id)
         val completedKeys = priorSteps.filter { it.status == StepStatus.SUCCEEDED }.map { it.stepKey }.toSet()
@@ -53,68 +57,82 @@ class ExecutionProcessor(
         try {
             for (step in plan.steps) {
                 if (step.key in completedKeys) continue
-                if (execution.status == ExecutionStatus.CANCELLED) return
-                if (execution.timeoutAt?.isBefore(Instant.now()) == true) throw ExecutionExpiredException("전체 실행 시간이 초과되었습니다.")
-                execution.currentStepKey = step.key; execution.heartbeatAt = Instant.now(); executions.save(execution)
                 val agent = step.agentKey?.let(plan.agents::get)
-                val executionStep = executionSteps.save(ExecutionStep(executionId = id, harnessStepId = null,
-                    stepKey = step.key, stepType = step.type.name, inputJson = current, startedAt = Instant.now(), status = StepStatus.RUNNING,
-                    provider = agent?.provider?.name, model = agent?.model))
-                service.record(id, "STEP_STARTED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "type" to step.type.name))
+                val executionStep = coordinator.beginStep(
+                    id, step.key, step.type.name, current, agent?.provider?.name, agent?.model, agent?.sourceAgentId,
+                ) ?: return
                 if (step.type == HarnessStepType.APPROVAL) {
-                    execution.status = ExecutionStatus.WAITING_APPROVAL
-                    executionStep.status = StepStatus.WAITING_APPROVAL
-                    executionStep.outputJson = current
-                    executions.save(execution); executionSteps.save(executionStep)
-                    service.record(id, "WAITING_APPROVAL", agent?.sourceAgentId, mapOf("stepKey" to step.key)); return
+                    coordinator.waitForApproval(id, executionStep.id, current, agent?.sourceAgentId)
+                    return
                 }
-                val output = executeWithRetry(step.maxRetries, executionStep, agent?.sourceAgentId) {
+                val result = withHeartbeat(id) { executeWithRetry(step.maxRetries, executionStep, agent?.sourceAgentId) {
                     withTimeout(step.timeoutSeconds * 1000L) { when (step.type) {
-                        HarnessStepType.LLM -> llmSemaphore.withPermit { executeLlm(execution, agent!!, current, stubMode, executionStep) }
-                        HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "EXTERNAL_API")); mapOf("result" to "external-api-stub", "input" to current) }
-                        HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit { service.record(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "DOWNLOAD")); mapOf("result" to current) }
+                        HarnessStepType.LLM -> llmSemaphore.withPermit { executeLlm(execution, agent!!, current, stubMode) }
+                        HarnessStepType.EXTERNAL_API -> externalSemaphore.withPermit {
+                            if (!coordinator.recordWhileRunning(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "EXTERNAL_API"))) throw ExecutionNoLongerRunningException()
+                            StepExecutionResult(mapOf("result" to "external-api-stub", "input" to current))
+                        }
+                        HarnessStepType.DOWNLOAD -> downloadSemaphore.withPermit {
+                            if (!coordinator.recordWhileRunning(id, "TOOL_CALLED", agent?.sourceAgentId, mapOf("stepKey" to step.key, "tool" to "DOWNLOAD"))) throw ExecutionNoLongerRunningException()
+                            StepExecutionResult(mapOf("result" to current))
+                        }
                         HarnessStepType.APPROVAL -> error("Approval step must be handled before execution")
                     }}
-                }
-                current = current + mapOf(step.key to output) + output
-                executionStep.outputJson = current; executionStep.status = StepStatus.SUCCEEDED; executionStep.finishedAt = Instant.now()
-                executionSteps.save(executionStep)
-                service.record(id, "STEP_OUTPUT_CREATED", agent?.sourceAgentId, mapOf("stepKey" to step.key))
-                service.record(id, "STEP_COMPLETED", agent?.sourceAgentId, mapOf("stepKey" to step.key))
-                if (step.requiresApproval) { execution.status = ExecutionStatus.WAITING_APPROVAL; executions.save(execution); service.record(id, "WAITING_APPROVAL", agent?.sourceAgentId, mapOf("stepKey" to step.key)); return }
+                } }
+                current = current + mapOf(step.key to result.output) + result.output
+                if (!coordinator.completeStep(id, executionStep.id, current, result.metadata, agent?.sourceAgentId, step.requiresApproval)) return
+                if (step.requiresApproval) return
             }
-            execution.outputJson = current; execution.status = ExecutionStatus.SUCCEEDED; execution.finishedAt = Instant.now()
-            executions.save(execution)
-            service.record(id, "EXECUTION_COMPLETED", null, mapOf("status" to "SUCCEEDED"))
-            metrics.completed(execution.startedAt, "SUCCEEDED")
+            coordinator.completeExecution(id, current)
         } catch (e: Exception) {
-            execution.status = if (e is TimeoutCancellationException || e is ExecutionExpiredException) ExecutionStatus.TIMEOUT else ExecutionStatus.FAILED
-            execution.errorCode = if (execution.status == ExecutionStatus.TIMEOUT) "EXECUTION_TIMEOUT" else "STEP_EXECUTION_FAILED"
-            execution.errorMessage = e.message?.take(1000); execution.finishedAt = Instant.now()
-            executions.save(execution)
-            service.record(id, "EXECUTION_FAILED", null, mapOf("errorCode" to execution.errorCode!!))
-            metrics.completed(execution.startedAt, execution.status.name)
+            if (e !is ExecutionNoLongerRunningException) {
+                coordinator.failExecution(id, e is TimeoutCancellationException, e.message)
+            }
         }
     }
 
-    private suspend fun executeWithRetry(maxRetries: Int, step: ExecutionStep, agentId: UUID?, block: suspend () -> Map<String, Any>): Map<String, Any> {
+    private suspend fun executeWithRetry(maxRetries: Int, step: ExecutionStep, agentId: UUID?, block: suspend () -> StepExecutionResult): StepExecutionResult {
         var last: Throwable? = null
         repeat(maxRetries + 1) { index ->
-            step.attempt = index + 1
             try { return block() } catch (error: Throwable) {
                 last = error
-                step.errorCode = if (error is TimeoutCancellationException) "STEP_TIMEOUT" else "STEP_EXECUTION_FAILED"
-                step.errorMessage = error.message?.take(1000)
-                executionSteps.save(step)
-                service.record(step.executionId, "STEP_FAILED", agentId, mapOf("stepKey" to step.stepKey, "attempt" to step.attempt, "willRetry" to (index < maxRetries)))
+                if (error is ExecutionNoLongerRunningException) throw error
+                val active = coordinator.recordAttemptFailure(
+                    step.executionId,
+                    step.id,
+                    agentId,
+                    index + 1,
+                    if (error is TimeoutCancellationException) "STEP_TIMEOUT" else "STEP_EXECUTION_FAILED",
+                    error.message,
+                    index < maxRetries,
+                )
+                if (!active) throw ExecutionNoLongerRunningException()
             }
         }
         throw requireNotNull(last)
     }
 
+    internal suspend fun <T> withHeartbeat(
+        executionId: UUID,
+        intervalMs: Long = heartbeatIntervalMs,
+        block: suspend () -> T,
+    ): T = coroutineScope {
+        val heartbeat = launch {
+            while (isActive) {
+                delay(intervalMs.coerceAtLeast(100))
+                if (!coordinator.refreshHeartbeat(executionId)) return@launch
+            }
+        }
+        try {
+            block()
+        } finally {
+            heartbeat.cancelAndJoin()
+        }
+    }
+
     private fun executeLlm(execution: Execution, agent: SnapshotAgentConfig,
-                           input: Map<String, Any>, stubMode: Boolean, step: ExecutionStep): Map<String, Any> {
-        service.record(execution.id, "MODEL_REQUEST_SENT", agent.sourceAgentId, mapOf("provider" to agent.provider.name, "model" to agent.model))
+                           input: Map<String, Any>, stubMode: Boolean): StepExecutionResult {
+        if (!coordinator.recordWhileRunning(execution.id, "MODEL_REQUEST_SENT", agent.sourceAgentId, mapOf("provider" to agent.provider.name, "model" to agent.model))) throw ExecutionNoLongerRunningException()
         val response = if (stubMode) AiModelResponse(stubContent(agent, input), TokenUsage(1, 1), "stub-request") else {
             val credentialId = execution.credentialBindingsJson[agent.key]?.let(UUID::fromString)
                 ?: throw IllegalStateException("${agent.name} 구성원의 실행 자격증명 연결이 없습니다.")
@@ -123,10 +141,15 @@ class ExecutionProcessor(
                     AiModelRequest(agent.model, agent.systemPrompt, input.toString(), agent.temperature, agent.maxOutputTokens, agent.timeoutSeconds, agent.providerOptions)) }
             }
         }
-        step.inputTokens = response.tokenUsage.inputTokens; step.outputTokens = response.tokenUsage.outputTokens
-        step.estimatedCost = BigDecimal.ZERO; step.providerRequestId = response.providerRequestId
-        executionSteps.save(step)
-        return mapOf("result" to response.content, "stub" to stubMode, "agent" to agent.name)
+        return StepExecutionResult(
+            mapOf("result" to response.content, "stub" to stubMode, "agent" to agent.name),
+            StepCompletionMetadata(
+                inputTokens = response.tokenUsage.inputTokens,
+                outputTokens = response.tokenUsage.outputTokens,
+                estimatedCost = BigDecimal.ZERO,
+                providerRequestId = response.providerRequestId,
+            ),
+        )
     }
 
     private fun stubContent(agent: SnapshotAgentConfig, input: Map<String, Any>): String {
@@ -197,7 +220,12 @@ class ExecutionProcessor(
 }
 
 @Component
-class ExecutionQueueWorker(private val executions: ExecutionRepository, private val processor: ExecutionProcessor) {
+class ExecutionQueueWorker(
+    private val executions: ExecutionRepository,
+    private val processor: ExecutionProcessor,
+    private val reconciler: ExecutionRecoveryReconciler,
+    @Value("\${execution.lease-seconds:120}") private val leaseSeconds: Long,
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val errors = CoroutineExceptionHandler { _, error -> logger.error("Execution queue worker failed", error) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
@@ -208,10 +236,10 @@ class ExecutionQueueWorker(private val executions: ExecutionRepository, private 
     fun shutdown() { scope.cancel() }
 
     @PostConstruct
-    @Transactional
-    fun recover() {
-        executions.findAllByStatusAndHeartbeatAtBefore(ExecutionStatus.RUNNING, Instant.now().minus(2, ChronoUnit.MINUTES)).forEach { it.status = ExecutionStatus.QUEUED }
-    }
+    fun recover() { reconcile() }
+
+    @Scheduled(fixedDelayString = "\${execution.recovery-interval-ms:30000}")
+    fun reconcile(): Int = reconciler.reconcile(leaseSeconds = leaseSeconds)
 
     @Scheduled(fixedDelayString = "\${execution.poll-interval-ms:500}")
     fun poll() {

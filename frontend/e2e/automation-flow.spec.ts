@@ -87,6 +87,35 @@ test("정보가 부족한 문의 자동화는 네 가지 필수 질문 후 설�
   await expect(page.getByText("발행 하네스 선택 필요")).toHaveCount(0);
 });
 
+test("반려한 설계를 자연어로 수정하고 같은 자동화에서 다시 검토한다", async ({ page }) => {
+  test.setTimeout(120_000);
+  await signup(page, "builder_revision");
+  await page.goto("/assemble/automation");
+
+  const originalInstruction = "사용자가 수동 입력한 텍스트를 카테고리로 분류하고 담당자 승인 후 결과를 화면에 표시합니다.";
+  await page.getByLabel("업무 설명 또는 수정 요청").fill(originalInstruction);
+  await page.getByRole("button", { name: "분석 시작" }).click();
+  await expect(page.getByRole("heading", { name: "자동화 설계안" })).toBeVisible();
+  await expect(page.getByText("분류 담당", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "수정 요청" }).click();
+  await expect(page.getByText("설계가 반려되었습니다. 수정할 내용을 자연어로 알려 주세요.")).toBeVisible();
+  await expect(page.getByText("DRAFT", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "자동화 설계안" })).toBeVisible();
+
+  const revision = "분석 담당과 작성 담당이 함께 처리하도록 바꿔 주세요.";
+  await page.getByLabel("업무 설명 또는 수정 요청").fill(revision);
+  await page.getByRole("button", { name: "분석 시작" }).click();
+
+  await expect(page.getByText("WAITING_DESIGN_APPROVAL", { exact: true })).toBeVisible();
+  await expect(page.getByText("분석 담당", { exact: true })).toBeVisible();
+  await expect(page.getByText("결과 작성 담당", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("builder-conversation")).toContainText(originalInstruction);
+  await expect(page.getByTestId("builder-conversation")).toContainText(revision);
+  await expect(page.getByText(/Workflow Version/)).toHaveCount(0);
+  await expect(page.getByTestId("approve-design")).toBeVisible();
+});
+
 test("글쓰기 표준 하네스는 네 명의 실제 직원을 글쓰기 자동화 팀에 배치한다", async ({ page }) => {
   test.setTimeout(120_000);
   await signup(page, "writing_team");

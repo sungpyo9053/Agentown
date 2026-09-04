@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { AgentVisualStatus } from "@/components/AgentCharacter";
-import { spriteRects, PALETTE } from "@/components/pixel/sprites";
+import { spriteRects } from "@/components/pixel/sprites";
 
 export type PixelAgent = { id: string; name: string; role: string; characterKey: string };
 export type PixelItem = { id: string; assetKey: string; x: number; y: number; width: number; height: number; zIndex: number; rotation: number };
@@ -49,6 +49,7 @@ export function PixelOffice({
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const labelRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
   const runtime = useRef<Map<string, Runtime>>(new Map());
   const dragging = useRef<string | null>(null);
   // 렌더 루프가 항상 최신 props를 보도록 ref에 동기화합니다.
@@ -103,6 +104,13 @@ export function PixelOffice({
         } else {
           unit.sitting = busy;
           unit.phase += dt * (busy ? 6 : 2);
+        }
+
+        const label = labelRefs.current.get(agent.id);
+        if (label) {
+          label.style.left = `${unit.x * 100}%`;
+          label.style.top = `${(unit.y + 3 / VIEW.h) * 100}%`;
+          label.style.opacity = "1";
         }
       });
 
@@ -185,12 +193,25 @@ export function PixelOffice({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  return <canvas
-    ref={canvasRef} width={VIEW.w} height={VIEW.h}
-    className={`pixel-office ${editable ? "pixel-office--editable" : ""} ${className}`}
-    onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-    role="img" aria-label="회사 오피스"
-  />;
+  return <div className={`pixel-office-shell ${className}`}>
+    <canvas
+      ref={canvasRef} width={VIEW.w} height={VIEW.h}
+      className={`pixel-office ${editable ? "pixel-office--editable" : ""}`}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+      role="img" aria-label="회사 오피스"
+    />
+    <div className="pixel-office__labels" aria-hidden="true">
+      {agents.map((agent) => <span
+        key={agent.id}
+        ref={(element) => {
+          if (element) labelRefs.current.set(agent.id, element);
+          else labelRefs.current.delete(agent.id);
+        }}
+        className="pixel-office__label"
+        title={agent.name}
+      >{agent.name}</span>)}
+    </div>
+  </div>;
 }
 
 function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)); }
@@ -293,15 +314,6 @@ function drawAgent(ctx: CanvasRenderingContext2D, agent: PixelAgent, unit: Runti
 
   drawBubble(ctx, px, top, status);
 
-  // 이름표
-  ctx.font = "6px monospace";
-  ctx.textAlign = "center";
-  const label = agent.name.slice(0, 8);
-  const w = ctx.measureText(label).width + 6;
-  ctx.fillStyle = "rgba(255,255,255,.92)";
-  ctx.fillRect(px - w / 2, py + 3, w, 9);
-  ctx.fillStyle = PALETTE.black;
-  ctx.fillText(label, px, py + 10);
 }
 
 function drawBubble(ctx: CanvasRenderingContext2D, px: number, top: number, status: AgentVisualStatus) {

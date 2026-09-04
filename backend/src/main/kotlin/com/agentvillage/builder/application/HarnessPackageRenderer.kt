@@ -12,11 +12,20 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
         val plan = requireNotNull(bundle.proposal.graphPlan) { "proposal.graphPlan is required" }
         return linkedMapOf<String, String>().apply {
             put("design-bundle.json", pretty(bundle))
+            put("agent.yaml", pretty(linkedMapOf(
+                "name" to bundle.proposal.name,
+                "goal" to bundle.requirement.objective,
+                "agents" to bundle.agentDefinitions.map { mapOf("id" to it.key, "role" to it.role) },
+                "required_environment" to requiredEnvironment(bundle),
+            )))
             put("workflow.json", pretty(linkedMapOf(
                 "schemaVersion" to "1.0", "name" to bundle.proposal.name,
                 "entryNodeId" to plan.entryNodeId, "nodes" to plan.nodes, "edges" to plan.edges,
                 "agentKeys" to bundle.agentDefinitions.map { it.key },
                 "guideKeys" to bundle.guideDefinitions.map { it.key },
+            )))
+            put("workflow.yaml", pretty(linkedMapOf(
+                "entryNodeId" to plan.entryNodeId, "nodes" to plan.nodes, "edges" to plan.edges,
             )))
             put("CODEX.md", orchestration(bundle))
             put("AGENTS.md", entrypoint())
@@ -28,6 +37,13 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
                 "validationRequiredBeforeImport" to true,
             )))
             put("schemas/final-output.schema.json", pretty(outputSchema(bundle.proposal.outputSchema)))
+            put("schemas/input.schema.json", pretty(inputSchema(bundle)))
+            put("schemas/output.schema.json", pretty(outputSchema(bundle.proposal.outputSchema)))
+            put("tools/tools.yaml", pretty(toolManifest(bundle)))
+            put("mcp.json", pretty(mapOf("servers" to emptyMap<String, Any>(), "status" to "NOT_CONFIGURED")))
+            put("examples/sample-input.json", pretty(sampleInput(bundle)))
+            put(".env.example", requiredEnvironment(bundle).joinToString("\n", postfix = if (requiredEnvironment(bundle).isEmpty()) "" else "\n") { "$it=" })
+            put("README.md", packageReadme(bundle))
             put("templates/output-template.json", pretty(linkedMapOf(
                 "templateSelection" to bundle.proposal.templateSelection,
                 "executionContract" to bundle.proposal.executionContract,
@@ -45,6 +61,7 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             )))
             put("policies/quality-rules.json", pretty(bundle.proposal.executionContract?.qualityRules ?: emptyMap<String, Any>()))
             bundle.agentDefinitions.forEach { put("agents/${it.key}.md", agentMarkdown(it)) }
+            if (bundle.agentDefinitions.isEmpty()) put("agents/README.md", "# No AI agent required\n\nThis package uses deterministic functions only.\n")
             bundle.guideDefinitions.forEach { put("guides/${it.key}.md", guideMarkdown(it)) }
         }
     }
@@ -130,4 +147,39 @@ class HarnessPackageRenderer(private val mapper: ObjectMapper) {
             "required" to fields.filter { it.required }.map { it.name },
         )
     }
+
+    private fun inputSchema(bundle: MetaAgentDesignBundle): Map<String, Any> = linkedMapOf(
+        "\$schema" to "https://json-schema.org/draft/2020-12/schema",
+        "type" to "object",
+        "additionalProperties" to true,
+        "description" to bundle.requirement.inputs.joinToString(", "),
+    )
+
+    private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any> = bundle.requirement.inputs
+        .associate { input -> input.replace(Regex("[^A-Za-z0-9가-힣]"), "_").trim('_').ifBlank { "input" } to "샘플 $input" }
+
+    private fun toolManifest(bundle: MetaAgentDesignBundle): Map<String, Any> = mapOf(
+        "tools" to bundle.proposal.graphPlan.orEmptyNodes().filterNot { it.nodeType.startsWith("ai.") || it.nodeType.endsWith("trigger") || it.nodeType == "human.approval" }.map { node ->
+            mapOf("id" to node.nodeType, "config" to node.config, "mock" to node.nodeType.endsWith(".mock"), "connection_status" to (node.config["connectionStatus"] ?: if (node.nodeType.endsWith(".mock")) "MOCK_ONLY" else "BUILT_IN"))
+        },
+    )
+
+    private fun requiredEnvironment(bundle: MetaAgentDesignBundle): List<String> = buildList {
+        val types = bundle.proposal.graphPlan.orEmptyNodes().map { it.nodeType }
+        if (types.any { it.startsWith("slack.") }) add("SLACK_BOT_TOKEN")
+        if (types.any { it.startsWith("notion.") }) add("NOTION_TOKEN")
+        if (types.any { it.startsWith("email.") }) add("EMAIL_CONNECTION")
+    }
+
+    private fun packageReadme(bundle: MetaAgentDesignBundle) = """
+        # ${bundle.proposal.name}
+
+        ${bundle.proposal.summary}
+
+        This is an Agentown intermediary package. Run the included sample with Mock tools first.
+        External services are not connected by this package; configure the variables in `.env.example` in your chosen runtime.
+        `workflow.json` is the source of truth and every edge includes explicit input/output bindings.
+    """.trimIndent() + "\n"
+
+    private fun com.agentvillage.builder.domain.WorkflowGraphPlan?.orEmptyNodes() = this?.nodes.orEmpty()
 }

@@ -7,7 +7,7 @@ import org.hibernate.type.SqlTypes
 import java.time.Instant
 import java.util.UUID
 
-enum class NotionPageWriteStatus { PREVIEWED, APPROVED, PUBLISHING, SUCCEEDED, FAILED }
+enum class NotionPageWriteStatus { PREVIEWED, APPROVED, PUBLISHING, SUCCEEDED, FAILED, AMBIGUOUS }
 
 @Entity
 @Table(name = "notion_page_write_requests")

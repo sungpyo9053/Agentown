@@ -2,6 +2,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useMutation, useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { AgentVisualStatus } from "@/components/AgentCharacter";
@@ -34,7 +35,7 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
   useEffect(()=>{
     if(!id)return;
     const source=new EventSource(`/api/executions/${id}/events`);
-    const names=["EXECUTION_QUEUED","EXECUTION_STARTED","STEP_STARTED","MODEL_REQUEST_SENT","TOOL_CALLED","STEP_OUTPUT_CREATED","STEP_COMPLETED","STEP_FAILED","WAITING_APPROVAL","EXECUTION_COMPLETED","EXECUTION_FAILED"];
+    const names=["EXECUTION_QUEUED","EXECUTION_STARTED","STEP_STARTED","MODEL_REQUEST_SENT","TOOL_CALLED","STEP_OUTPUT_CREATED","STEP_COMPLETED","STEP_FAILED","WAITING_APPROVAL","EXECUTION_COMPLETED","EXECUTION_FAILED","EXECUTION_TIMEOUT_RECOVERED"];
     const listen=(event:MessageEvent)=>{const item=JSON.parse(event.data) as EventItem;setEvents(current=>current.some(old=>old.id===item.id)?current:[...current,item].sort((a,b)=>a.sequenceNo-b.sequenceNo));execution.refetch()};
     names.forEach(name=>source.addEventListener(name,listen as EventListener));
     return()=>source.close();
@@ -59,11 +60,12 @@ export default function Page({params}:{params:Promise<{id:string}>}) {
       </section>
       <aside className="space-y-4"><div className="rounded-3xl bg-ink p-6 text-white"><p className="text-xs text-stone-300">CURRENT STEP</p><p className="mt-2 text-2xl font-black">{execution.data?.execution.currentStepKey??"대기"}</p></div>
         {status==="WAITING_APPROVAL"&&<div className="rounded-3xl bg-amber-50 p-5"><b>사용자 승인이 필요합니다</b><div className="mt-4 flex gap-2"><button onClick={()=>action.mutate("approve")} className="rounded-full bg-leaf px-4 py-2 font-bold text-white">승인</button><button onClick={()=>action.mutate("reject")} className="rounded-full border px-4 py-2 font-bold">반려</button></div></div>}
+        {status==="TIMEOUT"&&<div className="rounded-3xl bg-amber-50 p-5 text-amber-950"><b>실행이 안전하게 종료되었습니다</b><p className="mt-2 text-sm leading-6">{timeoutExplanation(execution.data?.execution.errorCode)}</p><p className="mt-2 text-sm leading-6">완료된 단계의 결과는 아래에 그대로 남아 있습니다. 중단된 단계는 결과를 확신할 수 없어 자동으로 다시 실행하지 않았습니다.</p>{harnessId&&<Link href={`/harnesses/${harnessId}/edit`} className="mt-4 block rounded-full bg-ink px-4 py-3 text-center text-sm font-bold text-white">하네스를 확인하고 새 실행 만들기</Link>}</div>}
         {["QUEUED","RUNNING","WAITING_APPROVAL"].includes(status)&&<button onClick={()=>action.mutate("cancel")} className="w-full rounded-full border border-red-200 p-3 font-bold text-red-600">실행 취소</button>}
         {execution.data?.execution.errorCode&&<div className="rounded-3xl bg-red-50 p-5 text-red-700"><b>{execution.data.execution.errorCode}</b><p className="mt-2 text-sm">{execution.data.execution.errorMessage}</p></div>}
       </aside>
     </div>
-    {(execution.data?.steps.length??0)>0&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black text-coral">EMPLOYEE OUTPUTS</p><h2 className="text-xl font-black">직원별 실제 작업 결과</h2></div><p className="text-xs text-stone-500">각 결과는 다음 직원의 입력으로 전달됩니다.</p></div><div className="mt-5 grid gap-4">{execution.data?.steps.map(step=>{const harnessStep=harness.data?.steps.find(item=>item.stepKey===step.stepKey);const agent=harnessStep?.agentId?agentMap[harnessStep.agentId]:undefined;const output=stepResult(step.outputJson);return <article key={step.id} className="rounded-2xl border p-5"><div className="flex flex-wrap items-center gap-3"><b>{agent?.name??step.stepKey}</b><span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black">{step.status}</span>{step.provider&&<small className="text-stone-500">{step.provider} · {step.model}</small>}</div>{output?<div className="mt-4 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-stone-50 p-4 text-sm leading-6">{output}</div>:<p className="mt-3 text-sm text-stone-400">결과를 만드는 중입니다…</p>}</article>})}</div></section>}
+    {(execution.data?.steps.length??0)>0&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-black text-coral">EMPLOYEE OUTPUTS</p><h2 className="text-xl font-black">직원별 실제 작업 결과</h2></div><p className="text-xs text-stone-500">완료된 결과는 시간 초과 뒤에도 보존됩니다.</p></div><div className="mt-5 grid gap-4">{execution.data?.steps.map(step=>{const harnessStep=harness.data?.steps.find(item=>item.stepKey===step.stepKey);const agent=harnessStep?.agentId?agentMap[harnessStep.agentId]:undefined;const output=stepResult(step.outputJson);return <article key={step.id} className="rounded-2xl border p-5"><div className="flex flex-wrap items-center gap-3"><b>{agent?.name??step.stepKey}</b><span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black">{step.status}</span>{step.provider&&<small className="text-stone-500">{step.provider} · {step.model}</small>}</div>{output?<div className="mt-4 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-stone-50 p-4 text-sm leading-6">{output}</div>:<p className="mt-3 text-sm text-stone-400">{step.status==="TIMEOUT"?"완료 여부를 확인할 수 없어 자동 재실행하지 않았습니다.":"결과를 만드는 중입니다…"}</p>}</article>})}</div></section>}
     {result&&<section className="mt-6 rounded-3xl bg-white p-7 shadow-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black text-coral">PRIVATE RESULT · {resultFormat}</p><h2 className="text-xl font-black">내 실행 결과물</h2></div><div className="flex flex-wrap gap-2">{resultFormat!=="EXTERNAL"&&<a href={`/api/executions/${id}/download?format=${resultFormat.toLowerCase()}`} className="rounded-full bg-ink px-4 py-2 text-sm font-bold text-white">최종 {resultFormatLabel(resultFormat)} 다운로드</a>}<a href={`/api/executions/${id}/download?format=debug-json`} className="rounded-full border px-4 py-2 text-sm font-bold">실행 기록 .json</a></div></div><p className="mt-2 text-xs text-stone-500">결과 형식과 담당 단계는 하네스가 결정합니다. 실행 결과는 실행한 계정만 접근할 수 있습니다.</p><div className="mt-5">{resultFormat==="JSON"?<pre className="max-h-[34rem] overflow-auto whitespace-pre-wrap rounded-2xl bg-stone-950 p-5 text-xs text-stone-100">{typeof result==="string"?result:JSON.stringify(result,null,2)}</pre>:resultFormat==="EXTERNAL"?<p className="rounded-2xl bg-amber-50 p-5 text-sm">외부 서비스가 만든 파일은 아래 결과물 목록에서 MIME 형식 그대로 내려받습니다.</p>:<MarkdownResult content={typeof result==="string"?result:JSON.stringify(result,null,2)}/>}</div>{(artifacts.data?.length??0)>0&&<div className="mt-6 border-t pt-5"><h3 className="font-black">외부 생성 파일</h3><div className="mt-3 grid gap-3 sm:grid-cols-2">{artifacts.data?.map(item=><a key={item.id} href={`/api/artifacts/${item.id}/download`} className="rounded-2xl border p-4 hover:border-coral"><b className="block">{item.fileName}</b><small className="text-stone-500">{item.mimeType} · {item.status}</small></a>)}</div></div>}<details className="mt-5 text-xs text-stone-500"><summary className="cursor-pointer font-bold">기술 상세 JSON</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap">{JSON.stringify(execution.data?.execution.outputJson,null,2)}</pre></details></section>}
   </AppShell>;
 }
@@ -87,7 +89,13 @@ function buildScene(events:EventItem[],agents:OfficeAgent[],items:OfficeRoomItem
   }
   return {statuses,positions};
 }
-function eventLabel(type:string){return ({EXECUTION_QUEUED:"대기열 등록",EXECUTION_STARTED:"업무 시작",STEP_STARTED:"담당자가 작업 구역으로 이동",MODEL_REQUEST_SENT:"모델에 요청",TOOL_CALLED:"외부 도구 사용",STEP_OUTPUT_CREATED:"결과물 생성",STEP_COMPLETED:"다음 담당자에게 전달",STEP_FAILED:"단계 실패",WAITING_APPROVAL:"승인 요청",EXECUTION_COMPLETED:"전체 업무 완료",EXECUTION_FAILED:"실행 실패"} as Record<string,string>)[type]??type}
+function eventLabel(type:string){return ({EXECUTION_QUEUED:"대기열 등록",EXECUTION_STARTED:"업무 시작",STEP_STARTED:"담당자가 작업 구역으로 이동",MODEL_REQUEST_SENT:"모델에 요청",TOOL_CALLED:"외부 도구 사용",STEP_OUTPUT_CREATED:"결과물 생성",STEP_COMPLETED:"다음 담당자에게 전달",STEP_FAILED:"단계 실패",WAITING_APPROVAL:"승인 요청",EXECUTION_COMPLETED:"전체 업무 완료",EXECUTION_FAILED:"실행 실패",EXECUTION_TIMEOUT_RECOVERED:"시간 초과 복구 · 안전 종료"} as Record<string,string>)[type]??type}
+
+function timeoutExplanation(errorCode?:string){
+ if(errorCode==="WORKER_LEASE_EXPIRED")return "작업자의 응답이 일정 시간 동안 없어 실행이 멈춘 것으로 판단했습니다.";
+ if(errorCode==="EXECUTION_DEADLINE_EXCEEDED")return "전체 실행 제한 시간이 지나 더 이상의 모델·도구 호출을 시작하지 않았습니다.";
+ return "허용된 실행 시간을 초과해 더 이상의 작업을 시작하지 않았습니다.";
+}
 
 function extractExecutionResult(output?:Record<string,unknown>,resultStepKey?:string):string|null{
  if(!output)return null;

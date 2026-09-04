@@ -63,6 +63,17 @@ class ReleaseControlIntegrationTest : IntegrationTestSupport() {
             .andExpect(status().isOk).andExpect(jsonPath("$.releaseKey").value("release-agent-sync")).andExpect(jsonPath("$.status").value("APPROVAL_REQUIRED"))
         mvc.perform(get("/api/internal/releases/release-agent-sync").header("X-Release-Agent-Token", "integration-release-token"))
             .andExpect(status().isOk).andExpect(jsonPath("$.candidateSha").value(SHA)).andExpect(jsonPath("$.preflightHash").value(PREFLIGHT))
+
+        val corrected = payload.replace("Release 동기화", "운영 배포 동기화").replace("승인 후보를 같은 저장소에서 확인합니다.", "운영자가 검증된 변경 내용을 한국어로 확인합니다.")
+        mvc.perform(post("/api/internal/releases/candidates").header("X-Release-Agent-Token", "integration-release-token").contentType(MediaType.APPLICATION_JSON).content(corrected))
+            .andExpect(status().isOk).andExpect(jsonPath("$.purpose").value("운영 배포 동기화")).andExpect(jsonPath("$.userSummary").value("운영자가 검증된 변경 내용을 한국어로 확인합니다."))
+    }
+
+    @Test fun `release agent rejects English only user facing metadata`() {
+        seedReleaseOwner()
+        val payload = """{"releaseKey":"release-english","purpose":"Release control","userSummary":"All verification checks passed.","candidateSha":"$SHA","includedTaskCount":1,"riskLevel":"MEDIUM","hasMigration":false,"stagingStatus":"PASSED","preflightHash":"$PREFLIGHT","detail":{"environmentContract":{"configured":true}}}"""
+        mvc.perform(post("/api/internal/releases/candidates").header("X-Release-Agent-Token", "integration-release-token").contentType(MediaType.APPLICATION_JSON).content(payload))
+            .andExpect(status().isBadRequest).andExpect(jsonPath("$.code").value("RELEASE_KOREAN_TEXT_REQUIRED"))
     }
 
     private fun principal(email: String) = AuthenticatedUser(UUID.randomUUID(), email, "", true, UserRole.ADMIN)
@@ -74,6 +85,7 @@ class ReleaseControlIntegrationTest : IntegrationTestSupport() {
         return release
     }
     private fun seedReleaseOwner() {
+        if (jdbc.queryForObject("select count(*) from users where email='admin@reviewdr.kr'", Long::class.java)!! > 0) return
         val ownerId = UUID.randomUUID(); val workspace = UUID.randomUUID()
         jdbc.update("insert into users(id,email,password_hash,handle,status,role,created_at,updated_at) values (?,'admin@reviewdr.kr',?,?,'ACTIVE','ADMIN',now(),now())", ownerId, "hash", "release_owner")
         jdbc.update("insert into profiles(user_id,display_name,visibility,created_at,updated_at) values (?,?,'PRIVATE',now(),now())", ownerId, "운영자")

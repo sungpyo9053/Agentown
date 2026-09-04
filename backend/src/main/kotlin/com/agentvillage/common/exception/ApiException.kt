@@ -14,3 +14,4 @@ class ConflictException(code: String, message: String) : ApiException(HttpStatus
 class ForbiddenException(code: String, message: String) : ApiException(HttpStatus.FORBIDDEN, code, message)
 class UnauthorizedException(code: String, message: String) : ApiException(HttpStatus.UNAUTHORIZED, code, message)
 class BadRequestException(code: String, message: String) : ApiException(HttpStatus.BAD_REQUEST, code, message)
+class ServiceUnavailableException(code: String, message: String) : ApiException(HttpStatus.SERVICE_UNAVAILABLE, code, message)

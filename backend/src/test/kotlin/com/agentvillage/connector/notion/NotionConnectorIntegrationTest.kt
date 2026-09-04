@@ -2,12 +2,15 @@ package com.agentvillage.connector.notion
 
 import com.agentvillage.IntegrationTestSupport
 import com.agentvillage.connector.notion.infrastructure.*
+import com.agentvillage.connector.notion.application.NotionConnectorService
 import com.agentvillage.identity.application.IdentityService
 import com.agentvillage.identity.application.RegisterUserCommand
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.whenever
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
@@ -15,6 +18,8 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.mock.mockito.MockBean
 import org.springframework.http.MediaType
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user
@@ -22,7 +27,12 @@ import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
+import org.springframework.web.client.HttpClientErrorException
+import org.springframework.web.client.HttpServerErrorException
+import org.springframework.web.client.ResourceAccessException
+import java.net.SocketTimeoutException
 import java.net.URI
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 @AutoConfigureMockMvc
@@ -35,6 +45,7 @@ class NotionConnectorIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var mvc: MockMvc
     @Autowired lateinit var identities: IdentityService
     @Autowired lateinit var jdbc: JdbcTemplate
+    @Autowired lateinit var notion: NotionConnectorService
     @MockBean lateinit var gateway: NotionOauthGateway
 
     @Test fun `oauth tokens are encrypted state is single use and connections are workspace isolated`() {
@@ -79,6 +90,88 @@ class NotionConnectorIntegrationTest : IntegrationTestSupport() {
         assertThat(stored["encrypted_access_token"].toString()).doesNotContain("fresh-access")
         assertThat(stored["encrypted_refresh_token"].toString()).doesNotContain("refresh-2")
         assertThat(stored["last_verified_at"]).isNotNull
+    }
+
+    @Test fun `terminal credential failures durably invalidate the connection and reconnect reuses it`() {
+        val owner = identity("notion-expired")
+
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("no-refresh-access", null, "bot-expired", "notion-workspace-expired", "만료 검증 공간"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-expired'", UUID::class.java)!!
+        whenever(gateway.self("no-refresh-access")).thenThrow(NotionTokenInvalidException())
+
+        assertExpired(owner, connectionId)
+        assertThat(connectionStatus(connectionId)).isEqualTo("INVALID")
+        mvc.perform(get("/api/connectors/notion").with(user(owner)))
+            .andExpect(status().isOk).andExpect(jsonPath("$.connected").value(false))
+            .andExpect(jsonPath("$.connections[0].status").value("INVALID"))
+
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("reconnected-access", "reconnected-refresh", "bot-expired", "notion-workspace-expired", "만료 검증 공간"))
+        connect(owner)
+        val reconnectedId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-expired'", UUID::class.java)!!
+        assertThat(reconnectedId).isEqualTo(connectionId)
+        assertThat(jdbc.queryForObject("select count(*) from connector_connections where external_account_id='notion-workspace-expired'", Long::class.java)).isEqualTo(1L)
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
+    }
+
+    @Test fun `terminal refresh rejection and rejected refreshed access durably invalidate connections`() {
+        val owner = identity("notion-refresh-expired")
+
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("refresh-rejected-access", "refresh-rejected", "bot-refresh-rejected", "notion-workspace-refresh-rejected", "갱신 거부 공간"))
+        connect(owner)
+        val refreshRejectedId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-refresh-rejected'", UUID::class.java)!!
+        whenever(gateway.self("refresh-rejected-access")).thenThrow(NotionTokenInvalidException())
+        whenever(gateway.refresh("refresh-rejected")).thenThrow(providerError(HttpStatus.BAD_REQUEST, "invalid_grant"))
+        assertExpired(owner, refreshRejectedId)
+        assertThat(connectionStatus(refreshRejectedId)).isEqualTo("INVALID")
+
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("stale-access", "usable-refresh", "bot-refreshed-rejected", "notion-workspace-refreshed-rejected", "재거부 공간"))
+        connect(owner)
+        val refreshedRejectedId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-refreshed-rejected'", UUID::class.java)!!
+        whenever(gateway.self("stale-access")).thenThrow(NotionTokenInvalidException())
+        whenever(gateway.refresh("usable-refresh")).thenReturn(NotionOauthResult("rejected-fresh-access", "next-refresh", "bot-refreshed-rejected", "notion-workspace-refreshed-rejected", "재거부 공간"))
+        whenever(gateway.self("rejected-fresh-access")).thenThrow(NotionTokenInvalidException())
+        assertExpired(owner, refreshedRejectedId)
+        assertThat(connectionStatus(refreshedRejectedId)).isEqualTo("INVALID")
+    }
+
+    @Test fun `rate limits do not invalidate an active connection`() {
+        val owner = identity("notion-rate-limit")
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("rate-limited-access", "rate-limited-refresh", "bot-rate-limit", "notion-workspace-rate-limit", "속도 제한 공간"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-rate-limit'", UUID::class.java)!!
+        whenever(gateway.self("rate-limited-access")).thenThrow(providerError(HttpStatus.TOO_MANY_REQUESTS, "rate limited"))
+
+        mvc.perform(post("/api/connectors/notion/$connectionId/verify").with(user(owner)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isServiceUnavailable)
+            .andExpect(jsonPath("$.code").value("NOTION_RATE_LIMITED"))
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
+        verify(gateway, times(0)).refresh(any())
+    }
+
+    @Test fun `transport timeouts and non credential provider failures keep active connections valid`() {
+        val owner = identity("notion-transient")
+        whenever(gateway.exchange(any(), any())).thenReturn(NotionOauthResult("transient-access", "transient-refresh", "bot-transient", "notion-workspace-transient", "일시 장애 공간"))
+        connect(owner)
+        val connectionId = jdbc.queryForObject("select id from connector_connections where external_account_id='notion-workspace-transient'", UUID::class.java)!!
+
+        doThrow(ResourceAccessException("transport unavailable")).whenever(gateway).self("transient-access")
+        assertThatThrownBy { notion.verifyRead(owner.userId, connectionId) }
+            .isInstanceOf(ResourceAccessException::class.java)
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
+
+        doThrow(ResourceAccessException("request timed out", SocketTimeoutException("read timed out"))).whenever(gateway).self("transient-access")
+        assertThatThrownBy { notion.verifyRead(owner.userId, connectionId) }
+            .isInstanceOf(ResourceAccessException::class.java)
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
+
+        doThrow(HttpServerErrorException.create(
+            HttpStatus.INTERNAL_SERVER_ERROR, "provider unavailable", HttpHeaders.EMPTY, ByteArray(0), StandardCharsets.UTF_8,
+        )).whenever(gateway).self("transient-access")
+        assertThatThrownBy { notion.verifyRead(owner.userId, connectionId) }
+            .isInstanceOf(HttpServerErrorException::class.java)
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
+        verify(gateway, times(0)).refresh(any())
     }
 
     @Test fun `page write is previewed first approved once and workspace isolated`() {
@@ -137,19 +230,37 @@ class NotionConnectorIntegrationTest : IntegrationTestSupport() {
             .content("""{"parentPageId":"12345678901234567890123456789012","title":"실패 기록","paragraphs":["발행 실패를 기록합니다."]}"""))
             .andExpect(status().isOk).andReturn().response.contentAsString
         val requestId = UUID.fromString(com.fasterxml.jackson.databind.ObjectMapper().readTree(response)["id"].asText())
-        whenever(gateway.createPage(any(), any(), any(), any())).thenThrow(IllegalStateException("provider unavailable"))
+        whenever(gateway.createPage(any(), any(), any(), any())).thenThrow(HttpClientErrorException.create(
+            HttpStatus.BAD_REQUEST, "provider unavailable", HttpHeaders.EMPTY, ByteArray(0), StandardCharsets.UTF_8,
+        ))
 
         mvc.perform(post("/api/connectors/notion/page-writes/$requestId/approve").with(user(owner)).with(csrf()).header("Idempotency-Key", "failed-approval"))
             .andExpect(status().isOk).andExpect(jsonPath("$.status").value("FAILED"))
-            .andExpect(jsonPath("$.failureCode").value("NOTION_PAGE_CREATE_FAILED"))
+            .andExpect(jsonPath("$.failureCode").value("NOTION_PAGE_CREATE_REJECTED"))
         val stored = jdbc.queryForMap("select status, failure_code, failure_message from notion_page_write_requests where id=?", requestId)
         assertThat(stored["status"]).isEqualTo("FAILED")
-        assertThat(stored["failure_code"]).isEqualTo("NOTION_PAGE_CREATE_FAILED")
+        assertThat(stored["failure_code"]).isEqualTo("NOTION_PAGE_CREATE_REJECTED")
         assertThat(stored["failure_message"].toString()).contains("provider unavailable")
+        assertThat(connectionStatus(connectionId)).isEqualTo("ACTIVE")
     }
 
+    private fun assertExpired(owner: AuthenticatedUser, connectionId: UUID) {
+        mvc.perform(post("/api/connectors/notion/$connectionId/verify").with(user(owner)).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("NOTION_CONNECTION_EXPIRED"))
+            .andExpect(jsonPath("$.message").value("Notion 연결이 만료되었습니다. 업무 연결에서 다시 연결한 뒤 재시도해 주세요."))
+    }
+
+    private fun connectionStatus(connectionId: UUID): String =
+        jdbc.queryForObject("select status from connector_connections where id=?", String::class.java, connectionId)!!
+
+    private fun providerError(status: HttpStatus, message: String): HttpClientErrorException = HttpClientErrorException.create(
+        status, message, HttpHeaders.EMPTY, ByteArray(0), StandardCharsets.UTF_8,
+    )
+
     private fun identity(prefix: String): AuthenticatedUser {
-        val account = identities.register(RegisterUserCommand("$prefix-${UUID.randomUUID()}@example.com", "password123", "${prefix.replace("-", "_")}_${UUID.randomUUID().toString().take(8)}", prefix))
+        val handle = "${prefix.replace("-", "_").take(18)}_${UUID.randomUUID().toString().take(8)}"
+        val account = identities.register(RegisterUserCommand("$prefix-${UUID.randomUUID()}@example.com", "password123", handle, prefix))
         return AuthenticatedUser(account.id, account.email, "unused", true)
     }
     private fun start(owner: AuthenticatedUser): String {

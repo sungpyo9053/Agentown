@@ -99,12 +99,20 @@ class BuilderRun(
     @Column(name = "workflow_id", nullable = false) val workflowId: UUID,
     @Column(name = "workflow_version_id", nullable = false) val workflowVersionId: UUID,
     @Column(name = "template_version_id") val templateVersionId: UUID?,
+    @Enumerated(EnumType.STRING) @Column(name = "run_mode", nullable = false, length = 30) val runMode: BuilderRunMode = BuilderRunMode.SIMULATION,
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 30) var status: BuilderRunStatus = BuilderRunStatus.RUNNING,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "input_json", nullable = false, columnDefinition = "jsonb") val inputJson: Map<String, Any?>,
     @JdbcTypeCode(SqlTypes.JSON) @Column(name = "output_json", columnDefinition = "jsonb") var outputJson: Map<String, Any?>? = null,
     @Column(name = "current_node_id", length = 100) var currentNodeId: String? = null,
     @Column(name = "idempotency_key", nullable = false, length = 120) val idempotencyKey: String,
     @Column(name = "requirement_matched") var requirementMatched: Boolean? = null,
+    @JdbcTypeCode(SqlTypes.JSON) @Column(name = "destination_json", columnDefinition = "jsonb") val destinationJson: Map<String, Any?>? = null,
+    @Column(name = "external_write_request_id") var externalWriteRequestId: UUID? = null,
+    @Column(name = "attempt_count", nullable = false) var attemptCount: Int = 0,
+    @Column(name = "failure_code", length = 80) var failureCode: String? = null,
+    @Column(name = "failure_message", length = 500) var failureMessage: String? = null,
+    @Column(name = "input_tokens") var inputTokens: Long? = null,
+    @Column(name = "output_tokens") var outputTokens: Long? = null,
 ) : AuditedEntity()
 
 @Entity @Table(name = "builder_step_runs")

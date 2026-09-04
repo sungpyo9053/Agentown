@@ -44,6 +44,9 @@ export default function DashboardPage() {
   if (home.error || !home.data) return <AppShell kicker="LOAD FAILED" title="회사를 불러오지 못했습니다"><p className="border border-hairline bg-white p-6 text-sale">{home.error?.message ?? "회사 공간 응답이 없습니다."}</p><button onClick={() => home.refetch()} className="mt-4 rounded-pill bg-ink px-8 py-4 font-medium text-white">다시 시도</button></AppShell>;
 
   const running = executions.data?.filter(item => item.status === "RUNNING").length ?? 0;
+  const emptyWorkspace = !agents.isLoading && !harnesses.isLoading
+    && agents.data?.length === 0
+    && harnesses.data?.filter(item => item.status === "PUBLISHED").length === 0;
 
   return <AppShell kicker="COMPANY BOARD" title={home.data.title}>
     <p className="-mt-6 mb-8 text-sm font-medium text-mute">@{home.data.handle} · 방문 {home.data.visitCount}</p>
@@ -54,6 +57,11 @@ export default function DashboardPage() {
       <Stat label="실행 중" value={running} />
     </div>
 
+    {emptyWorkspace && <section className="mt-2 border border-coral/30 bg-orange-50 p-8 md:flex md:items-center md:justify-between md:gap-8">
+      <div><p className="text-xs font-semibold tracking-[.14em] text-coral">START WITH YOUR WORK</p><h2 className="mt-2 text-2xl font-semibold text-ink">자동화하고 싶은 일을 평소 말로 설명해 주세요</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-mute">직원이나 도구를 먼저 고를 필요가 없습니다. 지금 하는 일, 원하는 결과, 꼭 지켜야 할 조건을 적으면 필요한 자동화 구조부터 함께 만듭니다.</p></div>
+      <Link href="/assemble/automation" className="mt-6 inline-flex shrink-0 rounded-pill bg-coral px-8 py-4 text-sm font-medium text-white transition active:scale-95 md:mt-0">내 업무 설명하기</Link>
+    </section>}
+
     {automationTeams.data?.map(team => <section key={team.teamId} className="mt-2 border border-hairline bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-[.14em] text-coral">{team.category} · VERSION {team.versionNo}</p><h2 className="mt-2 text-2xl font-semibold">{team.teamName}</h2><p className="mt-1 text-sm text-mute">{team.workflowName} · 실제 직원 {team.employees.length}명</p></div><Link href="/assemble/automation" className="rounded-pill bg-cloud px-5 py-3 text-sm font-medium">Workflow 보기</Link></div><div className="mt-5 grid gap-3 md:grid-cols-2">{team.employees.map(member => <Link key={member.agentId} href={`/agents/${member.agentId}/edit`} className="border border-hairline bg-cloud p-4 transition hover:border-coral"><p className="text-xs font-semibold text-coral">{member.department} · 팀원 {member.sequenceNo}</p><h3 className="mt-2 font-medium">{member.name}</h3><p className="mt-1 text-sm leading-6 text-mute">{member.role}</p></Link>)}</div></section>)}
 
     <div className="mt-2 border border-hairline bg-white">
@@ -62,13 +70,13 @@ export default function DashboardPage() {
         <Link href="/management/interior" className="rounded-pill bg-cloud px-6 py-3 text-sm font-medium text-ink transition active:scale-95 active:opacity-50">공간 인테리어</Link>
       </div>
       <PixelOffice agents={agents.data ?? []} items={placedAssets(home.data.items)} backgroundKey={home.data.backgroundKey} onAgentClick={id => router.push(`/agents/${id}/edit`)} />
-      {!agents.isLoading && agents.data?.length === 0 && <div className="border-t border-hairline p-8 text-center"><p className="text-sm text-mute">아직 구성원이 없습니다.</p><Link href="/assemble/hire" className="mt-4 inline-block rounded-pill bg-ink px-8 py-4 text-sm font-medium text-white">직원 뽑기</Link></div>}
+      {!agents.isLoading && agents.data?.length === 0 && <div className="border-t border-hairline p-8 text-center"><p className="text-sm text-mute">업무를 설명하면 필요한 팀 구성을 자동화 설계에 담아드립니다.</p></div>}
     </div>
 
-    <WorkPanel harnesses={harnesses.data ?? []} runners={runners.data ?? []} pending={startWork.isPending} error={startWork.error} onSubmit={(harnessId, input) => startWork.mutate({ harnessId, input })} />
+    {!emptyWorkspace && <WorkPanel harnesses={harnesses.data ?? []} runners={runners.data ?? []} pending={startWork.isPending} error={startWork.error} onSubmit={(harnessId, input) => startWork.mutate({ harnessId, input })} />}
 
     <div className="mt-2 grid gap-2 lg:grid-cols-2">
-      <Panel title="진행 중인 목표" action={<Link href="/assemble/harness" className="text-sm font-medium text-ink underline">전체 보기</Link>}>
+      <Panel title="진행 중인 목표" action={<Link href={emptyWorkspace ? "/assemble/automation" : "/assemble/harness"} className="text-sm font-medium text-ink underline">{emptyWorkspace ? "새 자동화 시작" : "전체 보기"}</Link>}>
         <div className="divide-y divide-hairline">{harnesses.data?.slice(0, 5).map(item => <Link key={item.id} href={`/harnesses/${item.id}/edit`} className="flex items-center justify-between py-4"><span className="text-base font-medium text-ink">{item.name}</span><span className="text-sm font-medium text-mute">{item.status}</span></Link>)}{harnesses.data?.length === 0 && <p className="py-8 text-center text-sm text-mute">아직 목표가 없습니다.</p>}</div>
       </Panel>
       <Panel title="최근 실행">

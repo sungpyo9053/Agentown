@@ -63,6 +63,18 @@ class BuilderGenerationService(
         return view(jobs.findByIdAndWorkspaceId(jobId, workspace.id) ?: throw NotFoundException("BUILDER_GENERATION_JOB_NOT_FOUND", "분석 작업을 찾을 수 없습니다."))
     }
 
+    @Transactional(readOnly = true)
+    fun latestRecoverable(ownerId: UUID, conversationId: UUID): BuilderGenerationJobView? {
+        val workspace = workspaces.findByOwnerId(ownerId) ?: throw NotFoundException("WORKSPACE_NOT_FOUND", "워크스페이스를 찾을 수 없습니다.")
+        conversations.findByIdAndWorkspaceId(conversationId, workspace.id)
+            ?: throw NotFoundException("BUILDER_CONVERSATION_NOT_FOUND", "대화를 찾을 수 없습니다.")
+        return jobs.findFirstByWorkspaceIdAndConversationIdAndStatusInOrderByCreatedAtDesc(
+            workspace.id,
+            conversationId,
+            RECOVERABLE_STATUSES,
+        )?.let(::view)
+    }
+
     @Transactional
     fun cancel(ownerId: UUID, jobId: UUID, idempotencyKey: String): BuilderGenerationJobView {
         if (idempotencyKey.isBlank() || idempotencyKey.length > 120) throw BadRequestException("IDEMPOTENCY_KEY_REQUIRED", "유효한 Idempotency-Key가 필요합니다.")
@@ -84,6 +96,14 @@ class BuilderGenerationService(
         val ended = job.finishedAt ?: Instant.now()
         val elapsed = ChronoUnit.SECONDS.between(started, ended).coerceAtLeast(0)
         return BuilderGenerationJobView(job.id, job.conversationId, job.workflowId, job.status, job.stage, job.estimatedSeconds, elapsed, (job.estimatedSeconds - elapsed).coerceAtLeast(0), job.errorCode, job.errorMessage)
+    }
+
+    private companion object {
+        val RECOVERABLE_STATUSES = setOf(
+            BuilderGenerationStatus.QUEUED,
+            BuilderGenerationStatus.RUNNING,
+            BuilderGenerationStatus.FAILED,
+        )
     }
 }
 

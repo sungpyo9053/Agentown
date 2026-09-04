@@ -43,10 +43,19 @@ class WorkflowNodeCatalog {
         SimpleNodeContract(NodeType.MANUAL_TRIGGER) { _, input -> NodeSimulation(input) },
         SimpleNodeContract(NodeType.SCHEDULE_TRIGGER, requiredConfig = setOf("cron", "timezone")) { config, input -> NodeSimulation(input + mapOf("scheduledFor" to config["cron"], "timezone" to config["timezone"])) },
         SimpleNodeContract(NodeType.TEXT_INPUT) { _, input -> NodeSimulation(input) },
-        SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query")) { config, input ->
+        SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query", "lookbackHours")) { config, input ->
             NodeSimulation(input + ("newsItems" to listOf(
                 mapOf("title" to "주요 시장 뉴스", "summary" to "검증용 시장 뉴스 요약", "url" to "https://example.com/mock-news", "publishedAt" to "2026-08-26T08:00:00+09:00", "source" to config["source"]),
             )))
+        },
+        SimpleNodeContract(NodeType.KNOWLEDGE_SEARCH_MOCK, requiredConfig = setOf("source", "queryField")) { config, input ->
+            NodeSimulation(input + mapOf(
+                "searchResults" to listOf(mapOf("title" to "Mock FAQ", "content" to "검증용 FAQ 검색 결과", "source" to config["source"])),
+                "externalCallPerformed" to false,
+            ))
+        },
+        SimpleNodeContract(NodeType.DATA_CSV_COMPARE, requiredConfig = setOf("keyColumns", "comparisonMode")) { _, input ->
+            NodeSimulation(input + mapOf("changedRows" to emptyList<Map<String, Any?>>(), "externalCallPerformed" to false))
         },
         SimpleNodeContract(NodeType.DATA_DEDUPLICATE, requiredConfig = setOf("key")) { _, input ->
             val items = (input["newsItems"] as? List<*>)?.distinctBy { it.toString() }.orEmpty()
@@ -66,8 +75,17 @@ class WorkflowNodeCatalog {
             "wouldSend" to true, "channel" to config["channel"],
             "message" to FixedOutputRenderer.render(config["rendererKey"].toString(), input), "externalCallPerformed" to false,
         )) },
+        SimpleNodeContract(NodeType.EMAIL_SEND_MOCK, setOf("email:send"), setOf("recipient", "rendererKey")) { config, input -> NodeSimulation(mapOf(
+            "wouldSend" to true, "recipient" to config["recipient"],
+            "message" to FixedOutputRenderer.render(config["rendererKey"].toString(), input), "externalCallPerformed" to false,
+        )) },
         SimpleNodeContract(NodeType.NOTION_SEARCH_MOCK, setOf("notion:read"), setOf("database")) { _, input -> NodeSimulation(input + ("notionResult" to "환불은 승인 후 영업일 기준 3~5일 이내 처리됩니다.")) },
         SimpleNodeContract(NodeType.NOTION_READ_PAGE_MOCK, setOf("notion:read"), setOf("pageId")) { _, input -> NodeSimulation(input) },
+        SimpleNodeContract(NodeType.NOTION_CREATE_PAGE, setOf("notion:insert"), setOf("targetMode", "rendererKey")) { config, input -> NodeSimulation(mapOf(
+            "wouldCreate" to true, "targetMode" to config["targetMode"],
+            "title" to (input["title"] ?: "검토용 결과"), "content" to FixedOutputRenderer.render(config["rendererKey"].toString(), input),
+            "externalCallPerformed" to false,
+        )) },
     ).associateBy { it.type.wireName }
 
     fun require(type: String): WorkflowNodeContract = contracts[type] ?: throw BadRequestException("NODE_TYPE_NOT_ALLOWED", "허용되지 않은 노드입니다: $type")
@@ -88,17 +106,18 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                 issues += ValidationIssue("NODE_TYPE_NOT_ALLOWED", it.message ?: "허용되지 않은 노드", node.id); return@forEach
             }
             contract.validateConfig(node.config).forEach { issues += ValidationIssue("INVALID_NODE_CONFIG", it, node.id) }
-            if (node.connectionId != null) issues += ValidationIssue("MOCK_CONNECTION_ONLY", "MVP Mock 노드는 connection_id를 사용하지 않습니다.", node.id)
+            if (node.connectionId != null && node.nodeType.endsWith(".mock")) issues += ValidationIssue("MOCK_CONNECTION_ONLY", "Mock 노드는 connection_id를 사용하지 않습니다.", node.id)
         }
         if (graph.entryNodeId !in byId) issues += ValidationIssue("INVALID_ENTRY", "시작 노드가 그래프에 없습니다.")
         graph.edges.forEach { edge ->
             if (edge.source !in byId || edge.target !in byId) issues += ValidationIssue("INVALID_EDGE", "존재하지 않는 노드를 연결합니다: ${edge.id}")
             if (edge.source == edge.target) issues += ValidationIssue("SELF_EDGE", "자기 자신으로 연결할 수 없습니다.", edge.source)
+            if (edge.bindings.isEmpty()) issues += ValidationIssue("EDGE_BINDING_REQUIRED", "노드 사이 입력·출력 바인딩이 필요합니다: ${edge.id}")
         }
         if (hasCycle(graph)) issues += ValidationIssue("CYCLE", "MVP 워크플로우에는 순환을 허용하지 않습니다.")
         val reachable = reachableFrom(graph, graph.entryNodeId)
         graph.nodes.filter { it.id !in reachable }.forEach { issues += ValidationIssue("UNREACHABLE_NODE", "시작점에서 도달할 수 없습니다.", it.id) }
-        graph.nodes.filter { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName) }.forEach { reply ->
+        graph.nodes.filter { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.EMAIL_SEND_MOCK.wireName, NodeType.NOTION_CREATE_PAGE.wireName) }.forEach { reply ->
             if (pathExistsWithoutApproval(graph, graph.entryNodeId, reply.id)) {
                 issues += ValidationIssue("WRITE_REQUIRES_APPROVAL", "Slack 답변 전 모든 경로에 담당자 승인이 필요합니다.", reply.id)
             }
@@ -172,20 +191,29 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             requirement.decisions.joinToString(" "),
         ).joinToString(" ").lowercase()
         val outputAndSteps = listOf(requirement.objective, requirement.outputs.joinToString(" "), requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
+        val deliveryOutputsAndSteps = listOf(requirement.outputs.joinToString(" "), requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
         val types = graph.nodes.map { it.nodeType }.toSet()
         val hasSlackTrigger = NodeType.SLACK_NEW_MESSAGE_MOCK.wireName in types
         val hasSlackReply = types.any { it == NodeType.SLACK_REPLY_MOCK.wireName || it == NodeType.SLACK_SEND_MOCK.wireName }
-        val hasNotion = types.any { it == NodeType.NOTION_SEARCH_MOCK.wireName || it == NodeType.NOTION_READ_PAGE_MOCK.wireName }
+        val hasNotionReadNode = types.any { it == NodeType.NOTION_SEARCH_MOCK.wireName || it == NodeType.NOTION_READ_PAGE_MOCK.wireName }
+        val hasKnowledgeSearch = NodeType.KNOWLEDGE_SEARCH_MOCK.wireName in types
+        val hasNotionRead = hasNotionReadNode || hasKnowledgeSearch
+        val hasNotionWrite = NodeType.NOTION_CREATE_PAGE.wireName in types
+        val hasNotion = hasNotionRead || hasNotionWrite
         val hasNews = NodeType.NEWS_SEARCH_MOCK.wireName in types
         val hasApproval = NodeType.HUMAN_APPROVAL.wireName in types
         val hasClassification = NodeType.AI_CLASSIFY.wireName in types
         val hasGeneration = NodeType.AI_GENERATE.wireName in types
         val hasManualTrigger = types.any { it == NodeType.MANUAL_TRIGGER.wireName || it == NodeType.TEXT_INPUT.wireName }
         val requestsSlack = containsAny(requested, "slack", "슬랙")
-        val requestsNotion = containsAny(requested, "notion", "노션", "faq", "데이터베이스")
+        val mentionsNotion = containsAny(requested, "notion", "노션")
+        val requestsNotionWrite = mentionsNotion && containsAny(outputAndSteps, "저장", "발행", "페이지 생성", "페이지로", "기록", "올려", "create", "publish", "save")
+        val requestsNotionRead = containsAny(requested, "faq", "데이터베이스") ||
+            (mentionsNotion && containsAny(requested, "검색", "조회", "읽", "참고", "자료에서", "search", "read"))
+        val requestsNotion = requestsNotionRead || requestsNotionWrite
         val requestsNews = containsAny(requested, "뉴스", "기사", "news", "rss")
         val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
-        val requestsSlackOutbound = requestsSlack && containsAny(outputAndSteps, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
+        val requestsSlackOutbound = containsAny(deliveryOutputsAndSteps, "slack", "슬랙") && containsAny(deliveryOutputsAndSteps, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
         val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
         val requestsClassification = containsAny(requested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
         val requestsGeneration = if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
@@ -196,7 +224,8 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
 
         if (requestsSlackInbound && !hasSlackTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 Slack 시작 조건이 그래프에 없습니다.")
         if (requestsSlackOutbound && !hasSlackReply) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Slack 결과 전달 단계가 그래프에 없습니다.")
-        if (requestsNotion && !hasNotion) mismatch("MEANING_SOURCE_MISSING", "요구사항의 Notion/FAQ 자료 조회 단계가 그래프에 없습니다.")
+        if (requestsNotionRead && !hasNotionRead) mismatch("MEANING_SOURCE_MISSING", "요구사항의 Notion/FAQ 자료 조회 단계가 그래프에 없습니다.")
+        if (requestsNotionWrite && !hasNotionWrite) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Notion 페이지 저장 단계가 그래프에 없습니다.")
         if (requestsNews && !hasNews) mismatch("MEANING_SOURCE_MISSING", "요구사항의 뉴스 자료 수집 단계가 그래프에 없습니다.")
         if (requirement.humanApprovalRequired && !hasApproval) mismatch("MEANING_APPROVAL_MISSING", "요구사항의 사람 승인 단계가 그래프에 없습니다.")
         if (!requirement.humanApprovalRequired && hasApproval) mismatch("MEANING_UNREQUESTED_APPROVAL", "요구하지 않은 사람 승인 단계가 그래프에 추가되었습니다.")
@@ -222,7 +251,8 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
 
         val proposalIntegrations = proposal.integrations.joinToString(" ").lowercase()
         if ((hasSlackTrigger || hasSlackReply) && !containsAny(proposalIntegrations, "slack", "슬랙")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 Slack이 없습니다.")
-        if (hasNotion && !containsAny(proposalIntegrations, "notion", "노션")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 Notion이 없습니다.")
+        if ((hasNotionReadNode || hasNotionWrite) && !containsAny(proposalIntegrations, "notion", "노션")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 Notion이 없습니다.")
+        if (hasKnowledgeSearch && !containsAny(proposalIntegrations, "faq", "지식", "knowledge")) mismatch("MEANING_PROPOSAL_GRAPH_MISMATCH", "설계안의 연동 목록에 FAQ/지식 검색 소스가 없습니다.")
         return issues
     }
 
