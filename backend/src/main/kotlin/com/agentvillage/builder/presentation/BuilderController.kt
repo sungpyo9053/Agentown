@@ -12,9 +12,6 @@ import jakarta.validation.constraints.Size
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.web.bind.annotation.*
 import java.util.UUID
-import java.io.ByteArrayOutputStream
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 import org.springframework.http.ContentDisposition
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
@@ -90,18 +87,9 @@ class BuilderController(
     fun downloadPackage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable workflowId: UUID): ResponseEntity<ByteArray> {
         automationWorkflow(user, workflowId)
         val files = service.harnessPackage(user.userId, workflowId)
-        val bytes = ByteArrayOutputStream().use { output ->
-            ZipOutputStream(output).use { zip ->
-                files.toSortedMap().forEach { (path, content) ->
-                    zip.putNextEntry(ZipEntry(path))
-                    zip.write(content.toByteArray(Charsets.UTF_8))
-                    zip.closeEntry()
-                }
-            }
-            output.toByteArray()
-        }
+        val bytes = AgentPackageArchive.create(files)
         return ResponseEntity.ok()
-            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename("agentown-workflow-$workflowId.zip").build().toString())
+            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(AgentPackageArchive.FILE_NAME).build().toString())
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
             .body(bytes)
     }

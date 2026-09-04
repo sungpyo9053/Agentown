@@ -226,20 +226,25 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
                             }
                             val sourceContract = outputSchemaFor(node).firstOrNull { it.name == sourceField }
-                            if (sourceContract == null || !sourceContract.type.equals("array", true)) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'은 Task의 array 출력이어야 합니다.")
+                            if (sourceContract == null) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'이 Task 출력 계약에 없습니다.")
                             }
                             val targetContract = nextAgent?.inputSchema?.firstOrNull { it.name == targetField }
                             if (targetContract == null || !targetContract.type.equals("array", true)) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$targetField'은 array 입력이어야 합니다.")
                             }
-                            if (!bindingFieldsCompatible(sourceContract, targetContract)) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join '$sourceField'과 '$targetField'의 array item 계약이 일치하지 않습니다.")
-                            }
+                            val aggregationMode = if (sourceContract.type.equals("array", true)) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM"
+                            val compatible = if (aggregationMode == "APPEND_ARRAY_ITEMS") {
+                                bindingFieldsCompatible(sourceContract, targetContract)
+                            } else scalarItemCompatible(sourceContract, targetContract)
+                            if (!compatible) throw BadRequestException(
+                                "EXECUTION_NOT_CONFIGURED",
+                                "병렬 Join '$sourceField'과 '$targetField'의 array item 계약이 일치하지 않습니다.",
+                            )
                             mapOf(
                                 "sourceField" to sourceField,
                                 "targetField" to targetField,
-                                "aggregationMode" to "APPEND_ARRAY_ITEMS",
+                                "aggregationMode" to aggregationMode,
                             )
                         } }
                 }
@@ -319,6 +324,12 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         return sourceItems.all { (name, sourceField) ->
             targetItems[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
         } && targetItems.values.filter { it.required }.all { it.name in sourceItems }
+    }
+
+    private fun scalarItemCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
+        val targetItemType = target.itemType ?: return true
+        return source.type.equals(targetItemType, true) ||
+            (source.type.equals("integer", true) && targetItemType.equals("number", true))
     }
 
     fun compilePlan(

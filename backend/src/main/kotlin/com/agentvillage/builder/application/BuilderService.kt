@@ -69,6 +69,10 @@ data class BuilderSnapshot(
     val guideMarkdown: List<String>,
     val graph: WorkflowGraph?,
     val validation: WorkflowValidationResult?,
+    val sampleInput: Map<String, Any?>,
+    val packageStatus: String,
+    val interactiveStatus: String,
+    val automationStatus: String,
     val currentVersionId: UUID?,
     val approvedVersionId: UUID?,
     val messages: List<BuilderMessageView>,
@@ -295,6 +299,12 @@ class BuilderService(
         transition(context.workflow, WorkflowStatus.COMPILING)
         val approvedDesign = checkNotNull(design)
         val approvedGraph = checkNotNull(graph)
+        val externalInputs = ExternalWorkflowInputContract.resolve(approvedDesign.proposal, approvedDesign.agents)
+        val generatedSample = SchemaSampleGenerator.generate(externalInputs)
+        WorkflowInputContract.valueIssue(externalInputs, generatedSample)?.let {
+            transition(context.workflow, WorkflowStatus.FAILED)
+            throw BadRequestException("PACKAGE_SAMPLE_INPUT_INVALID", it)
+        }
         pipeline.record(context.pipeline(), "compile_workflow", approvedDesign.agents.size, approvedGraph.nodes.size)
         transition(context.workflow, WorkflowStatus.VALIDATING)
         val validation = validator.validate(approvedGraph, approvedDesign.requirement, approvedDesign.proposal, approvedDesign.agents, cumulativeInstruction(context.conversation.id))
@@ -303,7 +313,7 @@ class BuilderService(
         val version = saveVersion(context.workflow, approvedGraph, "최초 승인 설계 컴파일", approved = true)
         context.workflow.approvedVersionId = version.id
         transition(context.workflow, WorkflowStatus.READY_TO_SIMULATE)
-        messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계 승인과 서버 검증이 완료되었습니다. 캔버스와 샘플 시뮬레이션을 사용할 수 있습니다.", workflowVersionId = version.id))
+        messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계 승인이 완료되었습니다. 캔버스에서 구조를 확인하고 샘플 실행으로 서버 검증을 진행해 주세요.", workflowVersionId = version.id))
         return snapshot(ownerId, context.conversation.id)
     }
 
@@ -851,7 +861,35 @@ class BuilderService(
             if (requirement != null && proposal != null) validator.validate(it, requirement, proposal, agents, if ((version?.versionNo ?: 1) == 1) cumulativeInstruction(conversationId) else null)
             else validator.validate(it)
         }?.copy(graphHash = version!!.graphHash)
-        return BuilderSnapshot(context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions, proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation, version?.id, context.workflow.approvedVersionId, messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) }, versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) })
+        val externalInputs = proposal?.let { runCatching { ExternalWorkflowInputContract.resolve(it, agents) }.getOrNull() }.orEmpty()
+        val sampleInput = SchemaSampleGenerator.generate(externalInputs)
+        val packageValidated = proposal != null && WorkflowInputContract.valueIssue(externalInputs, sampleInput) == null
+        val runtimeConfigured = packageValidated && graph != null && runCatching {
+            tframexCompiler.compile(
+                proposal!!.name,
+                graph,
+                agents,
+                sampleInput,
+                proposal.outputSchema.takeIf { it.isNotEmpty() },
+                externalInputs,
+            )
+        }.isSuccess
+        val automationReady = runtimeConfigured && version?.id?.let {
+            runs.findFirstByWorkflowIdAndWorkflowVersionIdAndStatusOrderByUpdatedAtDesc(
+                context.workflow.id, it, BuilderRunStatus.SUCCEEDED,
+            )?.requirementMatched == true
+        } == true
+        return BuilderSnapshot(
+            context.workspace.id, conversationId, context.workflow.id, context.workflow.status, requirement, questions,
+            proposal, agents, agents.map { it.toMarkdown() }, guides, guides.map { it.toMarkdown() }, graph, validation,
+            sampleInput,
+            if (packageValidated) "PACKAGE_VALIDATED" else "EXECUTION_NOT_CONFIGURED",
+            if (packageValidated) "INTERACTIVE_READY" else "EXECUTION_NOT_CONFIGURED",
+            if (automationReady) "AUTOMATION_READY" else "EXECUTION_NOT_CONFIGURED",
+            version?.id, context.workflow.approvedVersionId,
+            messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) },
+            versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) },
+        )
     }
 
     @Transactional(readOnly = true)
@@ -893,7 +931,7 @@ class BuilderService(
         }
         requireCompletePackage(packageRenderer.render(MetaAgentDesignBundle(
             design.requirement, emptyList(), design.proposal, design.agents, design.guides,
-        )))
+        ), automationValidated = true))
         teamDeployments.deploy(
             ownerId = ownerId, workspaceId = context.workspace.id, workflowId = workflowId,
             workflowVersionId = version.id, workflowName = context.workflow.name,
@@ -912,9 +950,12 @@ class BuilderService(
         val design = storedDesign(context.conversation.id)
         val version = currentVersion(context.workflow)
         requireValidDesign(graph(version), design.requirement, design.proposal, design.agents, cumulativeInstruction(context.conversation.id))
+        val automationValidated = runs.findFirstByWorkflowIdAndWorkflowVersionIdAndStatusOrderByUpdatedAtDesc(
+            workflowId, version.id, BuilderRunStatus.SUCCEEDED,
+        )?.requirementMatched == true
         return (packageRenderer.render(MetaAgentDesignBundle(
             design.requirement, emptyList(), design.proposal, design.agents, design.guides,
-        )) + ("version.json" to mapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapOf(
+        ), automationValidated = automationValidated) + ("version.json" to mapper.writerWithDefaultPrettyPrinter().writeValueAsString(mapOf(
             "workflowId" to workflowId,
             "workflowVersionId" to version.id,
             "versionNo" to version.versionNo,

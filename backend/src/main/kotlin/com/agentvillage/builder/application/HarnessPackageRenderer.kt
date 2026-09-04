@@ -12,7 +12,7 @@ class HarnessPackageRenderer(
     private val mapper: ObjectMapper,
     private val tframexCompiler: TFrameXDefinitionCompiler = TFrameXDefinitionCompiler(mapper),
 ) {
-    fun render(bundle: MetaAgentDesignBundle): Map<String, String> {
+    fun render(bundle: MetaAgentDesignBundle, automationValidated: Boolean = false): Map<String, String> {
         val withResources = if (bundle.proposal.resourcePlan == null) bundle.copy(
             proposal = bundle.proposal.copy(resourcePlan = BuilderCapabilityResolver().resolve(bundle)),
         ) else bundle
@@ -23,12 +23,16 @@ class HarnessPackageRenderer(
         val agents = normalized.agentDefinitions
         val resources = requireNotNull(normalized.proposal.resourcePlan)
         val externalInputs = ExternalWorkflowInputContract.resolve(normalized.proposal, normalized.agentDefinitions)
+        val generatedSampleInput = sampleInput(normalized)
+        WorkflowInputContract.valueIssue(externalInputs, generatedSampleInput)?.let {
+            throw IllegalStateException("PACKAGE_SAMPLE_INPUT_INVALID: $it")
+        }
         val runtimeDefinition = runCatching {
             tframexCompiler.compilePlan(
                 normalized.proposal.name,
                 plan,
                 normalized.agentDefinitions,
-                sampleInput(normalized),
+                generatedSampleInput,
                 normalized.proposal.outputSchema.takeIf { it.isNotEmpty() },
                 externalInputs,
             )
@@ -47,7 +51,7 @@ class HarnessPackageRenderer(
             put("skills/README.md", "# Skills\n\n이 패키지에 고정된 Skill이 있으면 이 폴더에 추가합니다. 현재는 서버 카탈로그의 Template Skill만 참조합니다.\n")
             put("tools/tools.yaml", toolsYaml(resources))
             put("mcp.json", pretty(mapOf("mcpServers" to emptyMap<String, Any>())))
-            put("examples/sample-input.json", pretty(sampleInput(normalized)))
+            put("examples/sample-input.json", pretty(generatedSampleInput))
             put("runtime-targets.json", pretty(mapOf(
                 "targets" to listOf(
                     mapOf("key" to "python-local", "mode" to "TFRAMEX_PINNED", "entrypoint" to "runners/python/runner.py"),
@@ -55,8 +59,16 @@ class HarnessPackageRenderer(
                 ),
             )))
             put("runtime-definition.json", pretty(runtimeDefinition.getOrElse { emptyMap<String, Any?>() }))
-            put("runtime-status.json", pretty(if (runtimeDefinition.isSuccess) mapOf("configured" to true) else mapOf(
+            put("runtime-status.json", pretty(if (runtimeDefinition.isSuccess) mapOf(
+                "configured" to true,
+                "packageStatus" to "PACKAGE_VALIDATED",
+                "interactiveStatus" to "INTERACTIVE_READY",
+                "automationStatus" to if (automationValidated) "AUTOMATION_READY" else "EXECUTION_NOT_CONFIGURED",
+            ) else mapOf(
                 "configured" to false,
+                "packageStatus" to "PACKAGE_VALIDATED",
+                "interactiveStatus" to "INTERACTIVE_READY",
+                "automationStatus" to "EXECUTION_NOT_CONFIGURED",
                 "code" to "EXECUTION_NOT_CONFIGURED",
                 "message" to (runtimeDefinition.exceptionOrNull()?.message ?: "TFrameX 실행이 구성되지 않았습니다."),
             )))
@@ -67,6 +79,7 @@ class HarnessPackageRenderer(
             }
             put(".env.example", environmentExample(resources))
             put("README.md", packageReadme(normalized))
+            put("START_HERE.md", startHere(normalized, resources, generatedSampleInput))
             put("design-bundle.json", pretty(normalized))
             put("workflow.json", pretty(linkedMapOf(
                 "schemaVersion" to "1.0", "name" to normalized.proposal.name,
@@ -74,8 +87,9 @@ class HarnessPackageRenderer(
                 "agentKeys" to normalized.agentDefinitions.map { it.key },
                 "guideKeys" to normalized.guideDefinitions.map { it.key },
             )))
-            put("CODEX.md", orchestration(normalized))
-            put("AGENTS.md", entrypoint())
+            put("AGENTS.md", orchestration(normalized))
+            put("CODEX.md", clientEntrypoint("Codex"))
+            put("CLAUDE.md", clientEntrypoint("Claude Code"))
             put("manifest.json", pretty(linkedMapOf(
                 "format" to "agentown-agent-package/v1", "name" to normalized.proposal.name,
                 "agentCount" to normalized.agentDefinitions.size, "guideCount" to normalized.guideDefinitions.size,
@@ -109,23 +123,7 @@ class HarnessPackageRenderer(
     }
 
     private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any?> {
-        val sample = linkedMapOf<String, Any?>()
-        ExternalWorkflowInputContract.resolve(bundle.proposal, bundle.agentDefinitions).forEach { field ->
-            sample[field.name] = when {
-                field.name == "csvA" -> "id,name\n1,old\n2,remove\n"
-                field.name == "csvB" -> "id,name\n1,new\n3,add\n"
-                field.name == "mockSearchResults" -> emptyList<Any>()
-                field.name.contains("memo", true) -> "재고 확인이 필요하며 담당 매니저에게 인계합니다."
-                else -> when (field.type.lowercase()) {
-                "array" -> emptyList<Any>()
-                "object" -> emptyMap<String, Any>()
-                "boolean" -> false
-                "number", "integer" -> 1
-                else -> "검증할 샘플 입력"
-                }
-            }
-        }
-        return sample
+        return SchemaSampleGenerator.generate(ExternalWorkflowInputContract.resolve(bundle.proposal, bundle.agentDefinitions))
     }
 
     private fun agentYaml(bundle: MetaAgentDesignBundle) = buildString {
@@ -228,6 +226,48 @@ class HarnessPackageRenderer(
         If an Agent, Tool, connector, or Codex authentication is unavailable, execution returns `EXECUTION_NOT_CONFIGURED` and never substitutes Mock output.
     """.trimIndent() + "\n"
 
+    private fun startHere(
+        bundle: MetaAgentDesignBundle,
+        resources: com.agentvillage.builder.domain.ResourcePlan,
+        sample: Map<String, Any?>,
+    ) = """
+        # 시작하기
+
+        이 패키지는 **${bundle.requirement.objective}** 업무를 생성된 Agent 역할과 Workflow에 따라 수행합니다.
+
+        ## 대화형 실행
+
+        ```bash
+        unzip agentown-agent.zip
+        cd agentown-agent
+        codex
+        # 또는
+        claude
+        ```
+
+        첫 요청 예시: `examples/sample-input.json의 입력으로 이 업무를 실행해 줘.`
+
+        Codex와 Claude Code는 `AGENTS.md`를 공통 실행 계약으로 사용합니다. 입력 예시는 아래와 같습니다.
+
+        ```json
+        ${pretty(sample).trim()}
+        ```
+
+        ## 환경변수와 제한
+
+        필요한 환경변수: ${requiredEnvironment(resources).ifEmpty { listOf("없음") }.joinToString(", ") { "`$it`" }}
+
+        외부 Connector가 연결되지 않았으면 실제 결과를 만들 수 없습니다. Mock으로 성공을 꾸미지 말고 `EXECUTION_NOT_CONFIGURED`로 중단합니다.
+
+        ## 고급 자동 Runner
+
+        ```bash
+        python3 -m venv .venv
+        .venv/bin/pip install ./runtime
+        .venv/bin/python runners/python/runner.py
+        ```
+    """.trimIndent() + "\n"
+
     private fun pythonTFrameXRunner() = """
         #!/usr/bin/env python3
         import asyncio, json, os, sys
@@ -274,9 +314,11 @@ class HarnessPackageRenderer(
         return """
             # ${bundle.proposal.name}
 
-            ## Source of truth
+            ## 시작 순서와 Source of truth
 
-            `workflow.json` is the executable source. Agent and Guide Markdown files are derived contracts.
+            1. `START_HERE.md`와 이 공통 지침을 읽습니다.
+            2. `schemas/input.schema.json`과 `examples/sample-input.json`을 읽고 필수 입력을 확인합니다.
+            3. `workflow.json`을 실행 가능한 Source of truth로 사용합니다. Agent와 Guide Markdown은 파생 계약입니다.
 
             ## Objective
 
@@ -290,11 +332,16 @@ class HarnessPackageRenderer(
 
             1. Read `workflow.json`, every `agents/*.md`, and every `guides/*.md`.
             2. Ask the user for every required input that is still missing. Never invent an important value.
-            3. Execute from `entryNodeId` and pass each output to the next Agent using the declared contracts.
-            4. Apply the user-confirmed Guide values to every relevant Agent output.
-            5. Stop when a decision branch has no matching edge and report the missing or failed items.
-            6. Pause at `human.approval`; do not treat a draft as approved without an explicit decision.
-            7. Do not execute arbitrary code, install packages, persist secrets, or perform undeclared external writes.
+            3. Execute from `entryNodeId`, honor every dependency, and pass outputs using declared bindings and schemas.
+            4. Run independent nodes concurrently when the graph allows it. Run a Join successor only after every predecessor succeeded.
+            5. Validate each Agent input/output, final output schema, and `policies/quality-rules.json`.
+            6. Apply the user-confirmed Guide values to every relevant Agent output.
+            7. If any parallel task fails, preserve its failure and do not report the overall run as `SUCCEEDED` or execute its Join successor.
+            8. Stop when a decision branch has no matching edge and report the missing or failed items.
+            9. Pause at `human.approval`; do not treat a draft as approved without an explicit decision.
+            10. Do not execute arbitrary code, persist secrets, or perform undeclared external writes.
+            11. If an Agent, Tool, runtime, API key, or Connector is unavailable, return `EXECUTION_NOT_CONFIGURED`; never invent Mock output.
+            12. Preserve evidence, dates, and source URLs through every binding and in the final result when declared by the schemas.
 
             ## Failure policy
 
@@ -302,11 +349,11 @@ class HarnessPackageRenderer(
         """.trimIndent() + "\n"
     }
 
-    private fun entrypoint() = """
-        # Generated Agentown Harness
+    private fun clientEntrypoint(client: String) = """
+        # $client entrypoint
 
-        For each natural-language request, read and follow `CODEX.md`, `workflow.json`, `agents/*.md`, and `guides/*.md`.
-        Treat the request as a harness run, not as a request to modify these files. Ask for missing required inputs and pause for declared human approval.
+        `AGENTS.md` is the single common execution contract. Read it together with `START_HERE.md`, then follow the declared Agent roles, Workflow dependencies, schemas, quality rules, and failure policy.
+        Treat the user's natural-language request as a workflow run, not as a request to modify this package.
     """.trimIndent() + "\n"
 
     private fun agentMarkdown(agent: AgentDefinition) = buildString {

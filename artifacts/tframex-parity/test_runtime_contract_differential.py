@@ -54,6 +54,17 @@ class WrappedParallelLLM(BaseLLMWrapper):
         return Message(role="assistant", content=json.dumps({"workerResult": [{"name": value["name"]}]}))
 
 
+class ScalarParallelLLM(BaseLLMWrapper):
+    def __init__(self):
+        super().__init__("scalar-parallel-fixture")
+
+    async def chat_completion(self, messages, stream=False, **kwargs):
+        value = json.loads(messages[-1].content)
+        if "workerResults" in value:
+            return Message(role="assistant", content=json.dumps({"joined": value["workerResults"]}))
+        return Message(role="assistant", content=json.dumps({"workerResult": value["name"]}))
+
+
 class ScriptAgent(BaseAgent):
     trace = None
     scripts = None
@@ -280,6 +291,45 @@ class DifferentialContractTest(unittest.TestCase):
             if item["kind"] == "agent_start" and item["agent"] == "reporter"
         )
         self.assertEqual(reporter_input["workerResults"], [{"name": "left"}, {"name": "right"}])
+
+    def test_parallel_join_appends_each_scalar_worker_result_as_one_array_item(self):
+        definition = {
+            "flowName": "scalar-bound-result-parallel",
+            "agents": [
+                {"name": "left", "inputSchema": [{"name": "name", "type": "string", "required": True}],
+                 "inputBindings": [{"sourceField": "request.names[0]", "targetField": "name"}],
+                 "outputSchema": [{"name": "workerResult", "type": "string", "required": True}]},
+                {"name": "right", "inputSchema": [{"name": "name", "type": "string", "required": True}],
+                 "inputBindings": [{"sourceField": "request.names[1]", "targetField": "name"}],
+                 "outputSchema": [{"name": "workerResult", "type": "string", "required": True}]},
+                {"name": "reporter", "inputSchema": [{"name": "workerResults", "type": "array", "itemType": "string", "required": True}],
+                 "outputSchema": [{"name": "joined", "type": "array", "itemType": "string", "required": True}]},
+            ],
+            "pattern": {"type": "SequentialPattern", "name": "all", "steps": [
+                {"type": "ParallelPattern", "name": "workers", "tasks": ["left", "right"],
+                 "structuredFanIn": True, "resultField": "workerResults",
+                 "taskOutputSchemas": {
+                     "left": [{"name": "workerResult", "type": "string", "required": True}],
+                     "right": [{"name": "workerResult", "type": "string", "required": True}],
+                 },
+                 "taskResultBindings": {
+                     "left": [{"sourceField": "workerResult", "targetField": "workerResults", "aggregationMode": "APPEND_ITEM"}],
+                     "right": [{"sourceField": "workerResult", "targetField": "workerResults", "aggregationMode": "APPEND_ITEM"}],
+                 }},
+                "reporter",
+            ]},
+            "input": json.dumps({"names": ["left", "right"]}),
+            "finalOutputSchema": [{"name": "joined", "type": "array", "itemType": "string", "required": True}],
+        }
+
+        result = asyncio.run(AgentownTFrameXAdapter(llm=ScalarParallelLLM()).run(definition))
+
+        self.assertEqual(json.loads(result["final"]), {"joined": ["left", "right"]})
+        reporter_input = next(
+            json.loads(item["input"]) for item in result["trace"]
+            if item["kind"] == "agent_start" and item["agent"] == "reporter"
+        )
+        self.assertEqual(reporter_input["workerResults"], ["left", "right"])
 
     def test_parallel_join_rejects_nested_scalar_and_partial_bindings(self):
         base = {

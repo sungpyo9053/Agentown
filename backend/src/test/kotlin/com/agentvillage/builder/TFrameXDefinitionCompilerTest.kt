@@ -281,8 +281,8 @@ class TFrameXDefinitionCompilerTest {
     }
 
     @Test
-    fun `parallel agent join rejects implicit and scalar result bindings`() {
-        fun compile(binding: Map<String, String>) {
+    fun `parallel agent join rejects implicit bindings and aggregates scalar results`() {
+        fun compile(binding: Map<String, String>): Map<String, Any?> {
             val worker = AgentDefinition(
                 key = "worker", name = "Worker", role = "work", inputSchema = emptyList(),
                 outputSchema = listOf(FieldDefinition("result", "string", true, "scalar result")),
@@ -308,13 +308,16 @@ class TFrameXDefinitionCompilerTest {
                     WorkflowEdge("right-report", "right", "report", bindings = binding),
                 ),
             )
-            compiler.compile("invalid-parallel", graph, listOf(worker, reporter), emptyMap())
+            return compiler.compile("parallel", graph, listOf(worker, reporter), emptyMap())
         }
 
         assertThatThrownBy { compile(mapOf("context" to "context")) }
             .isInstanceOf(BadRequestException::class.java).hasMessageContaining("명시적 array 결과 binding")
-        assertThatThrownBy { compile(mapOf("results" to "result")) }
-            .isInstanceOf(BadRequestException::class.java).hasMessageContaining("array 출력")
+        val definition = compile(mapOf("results" to "result"))
+        val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        val bindings = parallel["taskResultBindings"] as Map<*, *>
+        assertThat(bindings.values.flatMap { it as List<Map<String, String>> })
+            .allMatch { it["aggregationMode"] == "APPEND_ITEM" }
     }
 
     @Test

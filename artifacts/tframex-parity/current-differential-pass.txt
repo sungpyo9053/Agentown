@@ -4,7 +4,7 @@ Command:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=core-runtime:/private/tmp/tframex-parity-venv/lib/python3.13/site-packages /private/tmp/tframex-parity-venv/bin/python -m unittest discover -s artifacts/tframex-parity -p 'test_*.py'
 
 Result:
-Ran 26 tests
+Ran 27 tests
 OK
 
 Covered contracts:
@@ -14,8 +14,8 @@ Covered contracts:
 - native TFrameX Tool dispatch
 - upstream Parallel failure artifacts
 - Agentown edge input bindings and structured Join context preservation
-- explicit top-level array fan-in bindings with complete named-task coverage
-- nested, scalar, partial, and unsupported aggregation binding rejection
+- explicit top-level array and scalar-to-array fan-in bindings with complete named-task coverage
+- nested, partial, and unsupported aggregation binding rejection
 - Reporter suppression after structured parallel child failure
 - deterministic quality Tool and real RouterPattern route selection
 - undeclared Agent and Tool output rejection

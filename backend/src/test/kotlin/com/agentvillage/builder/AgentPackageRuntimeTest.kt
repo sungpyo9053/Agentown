@@ -4,6 +4,7 @@ import com.agentvillage.builder.application.*
 import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -33,12 +34,23 @@ class AgentPackageRuntimeTest {
         assertThat(files).containsKeys(
             "runtime-definition.json", "runtime-status.json", "runtime/pyproject.toml",
             "runtime/agentown_tframex_adapter/adapter.py", "runners/python/runner.py",
+            "AGENTS.md", "CODEX.md", "CLAUDE.md", "START_HERE.md",
+            "agent.yaml", "workflow.yaml", "workflow.json", "examples/sample-input.json",
+            "schemas/input.schema.json", "schemas/output.schema.json",
         )
         assertThat(files.getValue("runtime/pyproject.toml"))
             .contains("23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603")
         assertThat(files.getValue("runners/python/runner.py"))
             .contains("AgentownTFrameXAdapter")
             .doesNotContain("Fixed Agentown mock runner", "제공된 근거와 입력을 선언된 출력 계약에 맞춰 처리한 검증용 결과입니다")
+        assertThat(files.getValue("CODEX.md")).contains("`AGENTS.md` is the single common execution contract")
+        assertThat(files.getValue("CLAUDE.md")).contains("`AGENTS.md` is the single common execution contract")
+        assertThat(files.getValue("AGENTS.md"))
+            .contains("Join successor only after every predecessor succeeded", "EXECUTION_NOT_CONFIGURED")
+        assertThat(files.getValue("START_HERE.md")).contains("codex", "claude", "examples/sample-input.json")
+        val status = mapper.readTree(files.getValue("runtime-status.json"))
+        assertThat(status["packageStatus"].asText()).isEqualTo("PACKAGE_VALIDATED")
+        assertThat(status["interactiveStatus"].asText()).isEqualTo("INTERACTIVE_READY")
     }
 
     @Test
@@ -53,6 +65,9 @@ class AgentPackageRuntimeTest {
 
         assertThat(status["configured"].asBoolean()).isFalse()
         assertThat(status["code"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
+        assertThat(status["packageStatus"].asText()).isEqualTo("PACKAGE_VALIDATED")
+        assertThat(status["interactiveStatus"].asText()).isEqualTo("INTERACTIVE_READY")
+        assertThat(status["automationStatus"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
         assertThat(files.getValue("runtime-definition.json")).doesNotContain("Mock research")
     }
 
@@ -68,6 +83,9 @@ class AgentPackageRuntimeTest {
         val definition = mapper.readTree(files.getValue("runtime-definition.json"))
 
         assertThat(status["configured"].asBoolean()).isTrue()
+        assertThat(status["automationStatus"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
+        val validatedStatus = mapper.readTree(HarnessPackageRenderer(mapper).render(bundle, automationValidated = true).getValue("runtime-status.json"))
+        assertThat(validatedStatus["automationStatus"].asText()).isEqualTo("AUTOMATION_READY")
         assertThat(definition["agents"].map { it["kind"]?.asText() }).containsOnly("tool")
         assertThat(definition.toString()).contains("data.csv.compare", "template.markdown.table")
         val inputSchema = mapper.readTree(files.getValue("schemas/input.schema.json"))
@@ -177,15 +195,52 @@ class AgentPackageRuntimeTest {
             generated.copy(proposal = generated.proposal.copy(inputSchema = constrainedInputs)),
         )
         val properties = mapper.readTree(files.getValue("schemas/input.schema.json"))["properties"]
+        val sample = mapper.readTree(files.getValue("examples/sample-input.json"))
 
         assertThat(properties["warehouses"]["type"].asText()).isEqualTo("array")
         assertThat(properties["warehouses"]["minItems"].asInt()).isEqualTo(3)
         assertThat(properties["warehouses"]["maxItems"].asInt()).isEqualTo(3)
         assertThat(properties["attempts"]["type"].asText()).isEqualTo("integer")
+        assertThat(sample["warehouses"]).hasSize(3)
+        assertThat(sample["attempts"].isIntegralNumber).isTrue()
+        assertThat(sample["warehouseResults"].isArray).isTrue()
         val resultItems = properties["warehouseResults"]["items"]
         assertThat(resultItems["additionalProperties"].asBoolean()).isFalse()
         assertThat(resultItems["required"].map { it.asText() }).containsExactly("warehouse", "evidenceIds")
         assertThat(resultItems["properties"]["evidenceIds"]["items"]["type"].asText()).isEqualTo("string")
+    }
+
+    @Test
+    fun `sample input recursively satisfies an exact three item object array contract`() {
+        val generated = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "서로 독립적인 자료들을 분석한 뒤 하나의 결과로 종합한다",
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+        val reportFields = listOf(
+            FieldDefinition(
+                "reports", "array", true, "분석할 기술 보고서", minItems = 3, maxItems = 3, itemType = "object",
+                itemSchema = listOf(
+                    FieldDefinition("title", "string", true, "보고서 제목"),
+                    FieldDefinition("publishedAt", "string", true, "발행일"),
+                    FieldDefinition("sourceUrls", "array", true, "근거 URL", minItems = 1, itemType = "string"),
+                ),
+            ),
+        )
+        val files = HarnessPackageRenderer(mapper).render(
+            generated.copy(proposal = generated.proposal.copy(inputSchema = reportFields)),
+        )
+        val sample: Map<String, Any?> = mapper.readValue(files.getValue("examples/sample-input.json"))
+
+        assertThat(WorkflowInputContract.valueIssue(reportFields, sample)).isNull()
+        val reports = sample["reports"] as List<*>
+        assertThat(reports).hasSize(3)
+        assertThat(reports).allSatisfy { report ->
+            val value = report as Map<*, *>
+            assertThat(value["title"].toString()).isNotBlank()
+            assertThat(value["publishedAt"]).isEqualTo("2026-09-05")
+            assertThat(value["sourceUrls"] as List<*>).hasSize(1)
+        }
     }
 
     @Test

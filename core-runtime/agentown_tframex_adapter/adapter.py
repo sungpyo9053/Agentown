@@ -85,14 +85,18 @@ class StructuredParallelPattern(BasePattern):
             for binding in self.task_result_bindings.get(task_name, []) if task_name else []:
                 source_field = str(binding.get("sourceField") or "")
                 target_field = str(binding.get("targetField") or self.result_field)
-                if binding.get("aggregationMode") != "APPEND_ARRAY_ITEMS":
-                    raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS")
+                aggregation_mode = binding.get("aggregationMode")
+                if aggregation_mode not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
+                    raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
                 extracted = _resolve_path(value, source_field)
                 if extracted is _MISSING:
                     failures.append(f"Parallel task '{task_name}' output is missing bound field '{source_field}'")
                     continue
                 bucket = joined.setdefault(target_field, [])
-                if isinstance(extracted, list):
+                if aggregation_mode == "APPEND_ARRAY_ITEMS":
+                    if not isinstance(extracted, list):
+                        failures.append(f"Parallel task '{task_name}' bound field '{source_field}' is not an array")
+                        continue
                     bucket.extend(extracted)
                 else:
                     bucket.append(extracted)
@@ -463,8 +467,8 @@ class AgentownTFrameXAdapter:
                             target = str(binding.get("targetField") or "")
                             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", source) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", target):
                                 raise DefinitionError("Parallel task result bindings support top-level fields only")
-                            if binding.get("aggregationMode") != "APPEND_ARRAY_ITEMS":
-                                raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS")
+                            if binding.get("aggregationMode") not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
+                                raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
                     for task_name, task_bindings in bindings.items():
                         fields = output_schemas.get(task_name)
                         if not isinstance(fields, list):
@@ -472,8 +476,14 @@ class AgentownTFrameXAdapter:
                         for binding in task_bindings:
                             source = binding["sourceField"]
                             source_contract = next((field for field in fields if isinstance(field, Mapping) and field.get("name") == source), None)
-                            if source_contract is None or str(source_contract.get("type") or "").lower() != "array":
+                            if source_contract is None:
+                                raise DefinitionError("Parallel binding source must be a declared output")
+                            source_type = str(source_contract.get("type") or "").lower()
+                            mode = binding.get("aggregationMode")
+                            if mode == "APPEND_ARRAY_ITEMS" and source_type != "array":
                                 raise DefinitionError("APPEND_ARRAY_ITEMS source must be a declared array output")
+                            if mode == "APPEND_ITEM" and source_type == "array":
+                                raise DefinitionError("APPEND_ITEM source must be a declared scalar output")
                 return StructuredParallelPattern(
                     name,
                     translated,

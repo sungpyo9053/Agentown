@@ -13,10 +13,7 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import java.io.ByteArrayOutputStream
 import java.util.UUID
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 @RestController
 @RequestMapping("/api/agent-development")
@@ -159,18 +156,9 @@ class AgentDevelopmentController(
         service.requireConversationPurpose(user.userId, sessionId, BuilderConversationPurpose.AGENT_DEVELOPMENT)
         val snapshot = service.snapshot(user.userId, sessionId)
         val files = service.harnessPackage(user.userId, snapshot.workflowId)
-        val bytes = ByteArrayOutputStream().use { output ->
-            ZipOutputStream(output).use { zip ->
-                files.toSortedMap().forEach { (path, content) ->
-                    zip.putNextEntry(ZipEntry(path))
-                    zip.write(content.toByteArray(Charsets.UTF_8))
-                    zip.closeEntry()
-                }
-            }
-            output.toByteArray()
-        }
+        val bytes = AgentPackageArchive.create(files)
         return ResponseEntity.ok()
-            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename("agentown-agent-${snapshot.workflowId}.zip").build().toString())
+            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(AgentPackageArchive.FILE_NAME).build().toString())
             .contentType(MediaType.APPLICATION_OCTET_STREAM)
             .body(bytes)
     }
