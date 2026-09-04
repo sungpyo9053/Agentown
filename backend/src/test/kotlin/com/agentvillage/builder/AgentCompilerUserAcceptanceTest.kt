@@ -37,6 +37,9 @@ class AgentCompilerUserAcceptanceTest {
         val bundle = compile("두 개의 CSV 파일을 비교해서 추가·삭제·수정된 행을 찾고 결과를 표로 만들어주는 에이전트를 만들어줘.")
         assertThat(bundle.clarificationQuestions).isEmpty()
         assertThat(bundle.proposal.graphPlan!!.nodes.map { it.nodeType }).contains("data.csv.compare").doesNotContain("ai.generate", "human.approval")
+        assertThat(bundle.proposal.inputSchema.map { it.name }).containsExactly("csvA", "csvB", "keyColumns")
+        assertThat(bundle.proposal.inputSchema.filter { it.required }.map { it.name }).containsExactly("csvA", "csvB")
+        assertThat(bundle.proposal.inputSchema.single { it.name == "keyColumns" }.type).isEqualTo("array")
     }
 
     @Test fun `TC06 competitor research never falls back to a fake parallel map`() {

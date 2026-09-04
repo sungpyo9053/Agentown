@@ -1,6 +1,7 @@
 package com.agentvillage.builder
 
 import com.agentvillage.builder.application.*
+import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.assertj.core.api.Assertions.assertThat
@@ -69,6 +70,13 @@ class AgentPackageRuntimeTest {
         assertThat(status["configured"].asBoolean()).isTrue()
         assertThat(definition["agents"].map { it["kind"]?.asText() }).containsOnly("tool")
         assertThat(definition.toString()).contains("data.csv.compare", "template.markdown.table")
+        val inputSchema = mapper.readTree(files.getValue("schemas/input.schema.json"))
+        assertThat(inputSchema["properties"].fieldNames().asSequence().toList()).containsExactly("csvA", "csvB", "keyColumns")
+        assertThat(inputSchema["required"].map { it.asText() }).containsExactly("csvA", "csvB")
+        assertThat(inputSchema["properties"]["keyColumns"]["type"].asText()).isEqualTo("array")
+        assertThat(definition["workflowInputSchema"].map { it["name"].asText() }).containsExactly("csvA", "csvB", "keyColumns")
+        assertThat(mapper.readTree(definition["input"].asText()).fieldNames().asSequence().toList())
+            .containsExactly("csvA", "csvB", "keyColumns")
         assertThat(files.getValue("runtime/agentown_tframex_adapter/capabilities.py"))
             .contains("def data_csv_compare", "def template_markdown_table")
             .doesNotContain("Mock research")
@@ -88,6 +96,96 @@ class AgentPackageRuntimeTest {
         assertThat(schema["required"].map { it.asText() }).containsExactly("text")
         assertThat(sample.fieldNames().asSequence().toList()).containsExactly("text")
         assertThat(schema.toString()).doesNotContain("analysis", "result")
+    }
+
+    @Test
+    fun `runtime definition uses the immutable workflow final output contract`() {
+        val generated = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "입력 기록을 분석해 결과를 반환하는 에이전트",
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+        val finalContract = listOf(FieldDefinition("publicResult", "string", true, "immutable public result"))
+        val bundle = generated.copy(proposal = generated.proposal.copy(outputSchema = finalContract))
+
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        val runtimeFields = mapper.readTree(files.getValue("runtime-definition.json"))["finalOutputSchema"]
+            .map { it["name"].asText() }
+        val packageFields = mapper.readTree(files.getValue("schemas/final-output.schema.json"))["required"]
+            .map { it.asText() }
+
+        assertThat(runtimeFields).containsExactlyElementsOf(packageFields).containsExactly("publicResult")
+        assertThat(mapper.readTree(files.getValue("schemas/output.schema.json"))["required"].map { it.asText() })
+            .containsExactly("publicResult")
+    }
+
+    @Test
+    fun `terminal tool derived schema is identical across every package contract`() {
+        val generated = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "입력 기록을 분석해 결과를 반환하는 에이전트",
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+        val originalPlan = generated.proposal.graphPlan!!
+        val aiNode = originalPlan.nodes.single { it.nodeType == "ai.generate" }
+        val sourceAgent = generated.agentDefinitions.single { it.key == aiNode.config["agentKey"] }
+            .copy(outputSchema = listOf(FieldDefinition("content", "string", true, "content")))
+        val render = WorkflowNodePlan("render", "template.render", "Render", mapOf("rendererKey" to "plain-text.v1"))
+        val plan = originalPlan.copy(
+            nodes = originalPlan.nodes + render,
+            edges = originalPlan.edges + WorkflowEdgePlan(
+                "render-edge", aiNode.id, render.id,
+                bindings = listOf(WorkflowFieldBinding("content", "content")),
+            ),
+        )
+        val bundle = generated.copy(
+            proposal = generated.proposal.copy(graphPlan = plan, outputSchema = emptyList()),
+            agentDefinitions = listOf(sourceAgent),
+        )
+
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        val runtimeRequired = mapper.readTree(files.getValue("runtime-definition.json"))["finalOutputSchema"].map { it["name"].asText() }
+        val outputRequired = mapper.readTree(files.getValue("schemas/output.schema.json"))["required"].map { it.asText() }
+        val finalRequired = mapper.readTree(files.getValue("schemas/final-output.schema.json"))["required"].map { it.asText() }
+        val templateRequired = mapper.readTree(files.getValue("templates/output-template.json"))["contentSchema"]["required"].map { it.asText() }
+
+        assertThat(runtimeRequired).containsExactly("content", "renderedResponse")
+        assertThat(outputRequired).isEqualTo(runtimeRequired)
+        assertThat(finalRequired).isEqualTo(runtimeRequired)
+        assertThat(templateRequired).isEqualTo(runtimeRequired)
+    }
+
+    @Test
+    fun `package JSON schema preserves integer type and exact array cardinality`() {
+        val generated = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "세 지점의 재고를 비교한다",
+            StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+        )
+        val constrainedInputs = listOf(
+            FieldDefinition("warehouses", "array", true, "exactly three warehouses", minItems = 3, maxItems = 3),
+            FieldDefinition("attempts", "integer", true, "retry count"),
+            FieldDefinition(
+                "warehouseResults", "array", false, "structured results", itemType = "object",
+                itemSchema = listOf(
+                    FieldDefinition("warehouse", "string", true, "warehouse"),
+                    FieldDefinition("evidenceIds", "array", true, "evidence", itemType = "string"),
+                ),
+            ),
+        )
+        val files = HarnessPackageRenderer(mapper).render(
+            generated.copy(proposal = generated.proposal.copy(inputSchema = constrainedInputs)),
+        )
+        val properties = mapper.readTree(files.getValue("schemas/input.schema.json"))["properties"]
+
+        assertThat(properties["warehouses"]["type"].asText()).isEqualTo("array")
+        assertThat(properties["warehouses"]["minItems"].asInt()).isEqualTo(3)
+        assertThat(properties["warehouses"]["maxItems"].asInt()).isEqualTo(3)
+        assertThat(properties["attempts"]["type"].asText()).isEqualTo("integer")
+        val resultItems = properties["warehouseResults"]["items"]
+        assertThat(resultItems["additionalProperties"].asBoolean()).isFalse()
+        assertThat(resultItems["required"].map { it.asText() }).containsExactly("warehouse", "evidenceIds")
+        assertThat(resultItems["properties"]["evidenceIds"]["items"]["type"].asText()).isEqualTo("string")
     }
 
     @Test

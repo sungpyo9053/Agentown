@@ -6,6 +6,7 @@ import com.agentvillage.builder.application.BuilderJobProgressService
 import com.agentvillage.builder.application.PipelineContext
 import com.agentvillage.builder.application.StructuredMetaAgentPipeline
 import com.agentvillage.builder.application.DeterministicMockMetaAgentModel
+import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.agentvillage.common.exception.BadRequestException
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -18,6 +19,93 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    @Test
+    fun `generated list input defaults normalize to runtime map`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val plan = WorkflowGraphPlan(
+            entryNodeId = "agent",
+            nodes = listOf(WorkflowNodePlan(
+                "agent", "ai.generate", "Agent",
+                mapOf("agentKey" to "worker", "instruction" to "work", "inputDefaults" to listOf(
+                    mapOf("field" to "region", "value" to "east"),
+                    mapOf("field" to "attempts", "value" to 2),
+                )),
+            )),
+            edges = emptyList(),
+        )
+
+        val normalized = pipeline.normalizeGeneratedInputDefaults(plan)
+
+        assertThat(normalized.nodes.single().config["inputDefaults"])
+            .isEqualTo(mapOf("region" to "east", "attempts" to 2))
+    }
+
+    @Test
+    fun `generated field metadata is canonicalized before semantic validation`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+
+        val fields = pipeline.canonicalFields(listOf(
+            FieldDefinition("title", "string", true, "title", minItems = 0, maxItems = 1, itemType = "string", itemSchema = emptyList()),
+            FieldDefinition("items", "array", true, "items", itemType = "object", itemSchema = emptyList()),
+        ))
+
+        assertThat(fields[0]).isEqualTo(FieldDefinition("title", "string", true, "title"))
+        assertThat(fields[1].itemSchema).isNull()
+    }
+
+    @Test
+    fun `final output schema follows terminal graph agent instead of agent list order`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        fun agent(key: String, output: String) = AgentDefinition(
+            key, key, key, emptyList(), listOf(FieldDefinition(output, "string", true, output)),
+            listOf("work"), listOf("invent"), listOf("input"),
+        )
+        val reporter = agent("reporter", "finalReport")
+        val worker = agent("worker", "intermediate")
+        val bundle = MetaAgentDesignBundle(
+            requirement = AutomationRequirement("work", "manual", emptyList(), listOf("report"), listOf("work"), emptyList(), emptyList(), false),
+            clarificationQuestions = emptyList(),
+            proposal = AutomationProposal(
+                "work", "work", listOf("work"), emptyList(), emptyList(), "stop",
+                graphPlan = WorkflowGraphPlan(
+                    "start",
+                    listOf(
+                        WorkflowNodePlan("start", "manual.trigger", "Start"),
+                        WorkflowNodePlan("work", "ai.generate", "Work", mapOf("agentKey" to "worker")),
+                        WorkflowNodePlan("report", "ai.generate", "Report", mapOf("agentKey" to "reporter")),
+                    ),
+                    listOf(WorkflowEdgePlan("a", "start", "work"), WorkflowEdgePlan("b", "work", "report")),
+                ),
+            ),
+            agentDefinitions = listOf(reporter, worker),
+            guideDefinitions = emptyList(),
+        )
+
+        assertThat(pipeline.terminalAgentOutputSchema(bundle).map { it.name }).containsExactly("finalReport")
+
+        val withTerminalTool = bundle.copy(proposal = bundle.proposal.copy(graphPlan = WorkflowGraphPlan(
+            "start",
+            bundle.proposal.graphPlan!!.nodes + WorkflowNodePlan("render", "template.render", "Render", mapOf("rendererKey" to "plain-text.v1")),
+            bundle.proposal.graphPlan!!.edges + WorkflowEdgePlan("c", "report", "render"),
+        )))
+        assertThat(pipeline.terminalAgentOutputSchema(withTerminalTool)).isEmpty()
+    }
+
     @Test
     fun `agent review wording does not invent a runtime human approval`() {
         val mapper = jacksonObjectMapper()

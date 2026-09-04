@@ -69,8 +69,8 @@ class AgentCompilerUserE2EIntegrationTest : IntegrationTestSupport() {
         val compareId = snapshot.graph!!.nodes.single { it.nodeType == "data.csv.compare" }.id
 
         val comparison = service.startSimulation(owner.id, snapshot.workflowId, mapOf(
-            "rowsA" to listOf(mapOf("id" to "1", "name" to "old"), mapOf("id" to "2", "name" to "remove")),
-            "rowsB" to listOf(mapOf("id" to "1", "name" to "new"), mapOf("id" to "3", "name" to "add")),
+            "csvA" to "id,name\n1,old\n2,remove\n",
+            "csvB" to "id,name\n1,new\n3,add\n",
         ), key("compare"))
         assertThat(comparison.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
         assertThat(comparison.output?.get("changedRows") as List<*>).hasSize(3)

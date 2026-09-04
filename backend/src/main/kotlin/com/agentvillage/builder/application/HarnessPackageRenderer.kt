@@ -1,6 +1,7 @@
 package com.agentvillage.builder.application
 
 import com.agentvillage.builder.domain.AgentDefinition
+import com.agentvillage.builder.domain.FieldDefinition
 import com.agentvillage.builder.domain.GuideDefinition
 import com.agentvillage.builder.domain.MetaAgentDesignBundle
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -21,7 +22,20 @@ class HarnessPackageRenderer(
         val plan = requireNotNull(normalized.proposal.graphPlan) { "proposal.graphPlan is required" }
         val agents = normalized.agentDefinitions
         val resources = requireNotNull(normalized.proposal.resourcePlan)
-        val externalInputs = externalInputFields(normalized)
+        val externalInputs = ExternalWorkflowInputContract.resolve(normalized.proposal, normalized.agentDefinitions)
+        val runtimeDefinition = runCatching {
+            tframexCompiler.compilePlan(
+                normalized.proposal.name,
+                plan,
+                normalized.agentDefinitions,
+                sampleInput(normalized),
+                normalized.proposal.outputSchema.takeIf { it.isNotEmpty() },
+                externalInputs,
+            )
+        }
+        @Suppress("UNCHECKED_CAST")
+        val effectiveOutputSchema = runtimeDefinition.getOrNull()?.get("finalOutputSchema") as? List<FieldDefinition>
+            ?: normalized.proposal.outputSchema
         return linkedMapOf<String, String>().apply {
             put("agent.yaml", agentYaml(normalized))
             put("workflow.yaml", workflowYaml(normalized))
@@ -29,7 +43,7 @@ class HarnessPackageRenderer(
                 ?: "# Deterministic package\n\n이 패키지는 AI Agent 없이 검증된 Function만 실행합니다.\n")
             put("prompts/reviewer.md", reviewerPrompt(normalized))
             put("schemas/input.schema.json", pretty(outputSchema(externalInputs)))
-            put("schemas/output.schema.json", pretty(outputSchema(agents.lastOrNull()?.outputSchema ?: normalized.proposal.outputSchema)))
+            put("schemas/output.schema.json", pretty(outputSchema(effectiveOutputSchema)))
             put("skills/README.md", "# Skills\n\n이 패키지에 고정된 Skill이 있으면 이 폴더에 추가합니다. 현재는 서버 카탈로그의 Template Skill만 참조합니다.\n")
             put("tools/tools.yaml", toolsYaml(resources))
             put("mcp.json", pretty(mapOf("mcpServers" to emptyMap<String, Any>())))
@@ -40,9 +54,6 @@ class HarnessPackageRenderer(
                     mapOf("key" to "generic-package", "mode" to "CONTRACT_EXPORT", "entrypoint" to "agent.yaml"),
                 ),
             )))
-            val runtimeDefinition = runCatching {
-                tframexCompiler.compilePlan(normalized.proposal.name, plan, normalized.agentDefinitions, sampleInput(normalized))
-            }
             put("runtime-definition.json", pretty(runtimeDefinition.getOrElse { emptyMap<String, Any?>() }))
             put("runtime-status.json", pretty(if (runtimeDefinition.isSuccess) mapOf("configured" to true) else mapOf(
                 "configured" to false,
@@ -74,11 +85,11 @@ class HarnessPackageRenderer(
                 "supportedRuntimeTargets" to listOf("python-local", "generic-package"),
                 "validationRequiredBeforeImport" to true,
             )))
-            put("schemas/final-output.schema.json", pretty(outputSchema(normalized.proposal.outputSchema)))
+            put("schemas/final-output.schema.json", pretty(outputSchema(effectiveOutputSchema)))
             put("templates/output-template.json", pretty(linkedMapOf(
                 "templateSelection" to normalized.proposal.templateSelection,
                 "executionContract" to normalized.proposal.executionContract,
-                "contentSchema" to outputSchema(normalized.proposal.outputSchema),
+                "contentSchema" to outputSchema(effectiveOutputSchema),
             )))
             put("policies/permissions.json", pretty(linkedMapOf(
                 "arbitraryCodeAllowed" to false,
@@ -99,7 +110,7 @@ class HarnessPackageRenderer(
 
     private fun sampleInput(bundle: MetaAgentDesignBundle): Map<String, Any?> {
         val sample = linkedMapOf<String, Any?>()
-        externalInputFields(bundle).forEach { field ->
+        ExternalWorkflowInputContract.resolve(bundle.proposal, bundle.agentDefinitions).forEach { field ->
             sample[field.name] = when {
                 field.name == "csvA" -> "id,name\n1,old\n2,remove\n"
                 field.name == "csvB" -> "id,name\n1,new\n3,add\n"
@@ -115,40 +126,6 @@ class HarnessPackageRenderer(
             }
         }
         return sample
-    }
-
-    private fun externalInputFields(bundle: MetaAgentDesignBundle): List<com.agentvillage.builder.domain.FieldDefinition> {
-        val plan = requireNotNull(bundle.proposal.graphPlan)
-        if (plan.nodes.any { it.nodeType == "data.csv.compare" }) return listOf(
-            com.agentvillage.builder.domain.FieldDefinition("csvA", "string", true, "비교 기준 CSV"),
-            com.agentvillage.builder.domain.FieldDefinition("csvB", "string", true, "비교 대상 CSV"),
-        )
-        val agents = bundle.agentDefinitions.associateBy { it.key }
-        val nodes = plan.nodes.associateBy { it.id }
-        val result = linkedMapOf<String, com.agentvillage.builder.domain.FieldDefinition>()
-        fun add(sourceField: String, targetNodeId: String, targetField: String) {
-            val tokens = sourceField.split('.', '[', limit = 3).filter { it.isNotBlank() }
-            val name = if (tokens.firstOrNull() == "request") tokens.getOrNull(1) else tokens.firstOrNull()
-            if (name.isNullOrBlank() || name in setOf("context", "result", "results", "output", "success")) return
-            val targetAgent = nodes[targetNodeId]?.config?.get("agentKey")?.toString()?.let(agents::get)
-            val contract = targetAgent?.inputSchema?.firstOrNull { it.name == targetField }
-            result.putIfAbsent(name, com.agentvillage.builder.domain.FieldDefinition(
-                name, contract?.type ?: "string", true, contract?.description ?: "사용자 실행 입력 $name",
-            ))
-        }
-        val sourceIds = plan.nodes.filter { it.nodeType.endsWith("trigger") || it.nodeType == "text.input" }.map { it.id }.toSet()
-        plan.edges.filter { it.source in sourceIds }.forEach { edge ->
-            edge.bindings.forEach { add(it.sourceField, edge.target, it.targetField) }
-        }
-        plan.nodes.filter { it.nodeType.startsWith("ai.") }.forEach { node ->
-            val agent = node.config["agentKey"]?.toString()?.let(agents::get) ?: return@forEach
-            val boundTargets = plan.edges.filter { it.target == node.id }.flatMap { edge -> edge.bindings.map { it.targetField } }.toSet()
-            val defaults = (node.config["inputDefaults"] as? Map<*, *>)?.keys?.map { it.toString() }.orEmpty().toSet()
-            agent.inputSchema.filter { it.required && it.name !in boundTargets && it.name !in defaults }
-                .forEach { result.putIfAbsent(it.name, it) }
-        }
-        if (result.isEmpty()) result["text"] = com.agentvillage.builder.domain.FieldDefinition("text", "string", true, "사용자 실행 입력")
-        return result.values.toList()
     }
 
     private fun agentYaml(bundle: MetaAgentDesignBundle) = buildString {
@@ -360,10 +337,7 @@ class HarnessPackageRenderer(
     private fun pretty(value: Any) = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value) + "\n"
 
     private fun outputSchema(fields: List<com.agentvillage.builder.domain.FieldDefinition>): Map<String, Any> {
-        val properties = fields.associate { field -> field.name to mapOf(
-            "type" to when (field.type) { "array" -> "array"; "object" -> "object"; "number" -> "number"; "boolean" -> "boolean"; else -> "string" },
-            "description" to field.description,
-        ) }
+        val properties = fields.associate { field -> field.name to fieldSchema(field) }
         return linkedMapOf(
             "\$schema" to "https://json-schema.org/draft/2020-12/schema",
             "type" to "object",
@@ -371,6 +345,38 @@ class HarnessPackageRenderer(
             "properties" to properties,
             "required" to fields.filter { it.required }.map { it.name },
         )
+    }
+
+    private fun fieldSchema(field: com.agentvillage.builder.domain.FieldDefinition): Map<String, Any> = linkedMapOf<String, Any>(
+            "type" to when (field.type.lowercase()) {
+                "array" -> "array"
+                "object" -> "object"
+                "number" -> "number"
+                "integer" -> "integer"
+                "boolean" -> "boolean"
+                else -> "string"
+            },
+            "description" to field.description,
+        ).apply {
+            field.minItems?.let { put("minItems", it) }
+            field.maxItems?.let { put("maxItems", it) }
+            field.itemType?.let { itemType ->
+                put("items", if (itemType.equals("object", true) && !field.itemSchema.isNullOrEmpty()) linkedMapOf(
+                    "type" to "object",
+                    "additionalProperties" to false,
+                    "properties" to field.itemSchema.associate { it.name to fieldSchema(it) },
+                    "required" to field.itemSchema.filter { it.required }.map { it.name },
+                ) else mapOf("type" to jsonType(itemType)))
+            }
+        }
+
+    private fun jsonType(type: String): String = when (type.lowercase()) {
+        "array" -> "array"
+        "object" -> "object"
+        "number" -> "number"
+        "integer" -> "integer"
+        "boolean" -> "boolean"
+        else -> "string"
     }
 
     private fun inputSchema(bundle: MetaAgentDesignBundle): Map<String, Any> = linkedMapOf(

@@ -1,6 +1,7 @@
 package com.agentvillage.builder.application
 
 import com.agentvillage.builder.domain.AgentDefinition
+import com.agentvillage.builder.domain.FieldDefinition
 import com.agentvillage.builder.domain.NodeType
 import com.agentvillage.builder.domain.WorkflowGraph
 import com.agentvillage.builder.domain.WorkflowGraphPlan
@@ -43,6 +44,8 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         graph: WorkflowGraph,
         agents: List<AgentDefinition>,
         input: Map<String, Any?>,
+        finalOutputSchema: List<FieldDefinition>? = null,
+        workflowInputSchema: List<FieldDefinition> = emptyList(),
     ): Map<String, Any?> {
         val unsupported = graph.nodes.filter { it.nodeType !in passThroughTypes && it.nodeType !in aiTypes && it.nodeType !in toolTypes && it.nodeType !in patternTypes }
         if (unsupported.isNotEmpty()) {
@@ -82,6 +85,70 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             node.id to "${key.replace('.', '-')}__${node.id}"
         }
         val incomingEdges = graph.edges.groupBy { it.target }
+        val nodesById = graph.nodes.associateBy { it.id }
+        fun toolName(node: WorkflowNode): String = when (node.nodeType) {
+            NodeType.DATA_CSV_COMPARE.wireName -> "data.csv.compare"
+            NodeType.QUALITY_CHECK.wireName -> "quality.check"
+            NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
+                "table.markdown.v1" -> "template.markdown.table"
+                "plain-text.v1", "plain-text" -> "template.plain-text"
+                else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX 렌더러입니다.")
+            }
+            else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX Tool입니다.")
+        }
+        fun nearestExecutableAncestors(nodeId: String): List<WorkflowNode> {
+            val found = linkedMapOf<String, WorkflowNode>()
+            val pending = ArrayDeque(incomingEdges[nodeId].orEmpty().map { it.source })
+            val visited = mutableSetOf<String>()
+            while (pending.isNotEmpty()) {
+                val currentId = pending.removeFirst()
+                if (!visited.add(currentId)) continue
+                val current = nodesById[currentId] ?: continue
+                if (current.nodeType in aiTypes || current.nodeType in toolTypes) {
+                    found[current.id] = current
+                } else {
+                    incomingEdges[current.id].orEmpty().forEach { pending.add(it.source) }
+                }
+            }
+            return found.values.toList()
+        }
+        fun isTerminalExecutable(node: WorkflowNode): Boolean = descendants(node.id, outgoing)
+            .none { descendant -> nodesById[descendant]?.nodeType in (aiTypes + toolTypes) }
+        lateinit var outputSchemaFor: (WorkflowNode) -> List<FieldDefinition>
+        fun upstreamMessageSchema(node: WorkflowNode): List<FieldDefinition> {
+            val ancestors = nearestExecutableAncestors(node.id)
+            if (ancestors.size > 1) {
+                val resultField = if (node.nodeType in aiTypes) {
+                    definitions[node.config["agentKey"]?.toString()]?.inputSchema
+                        ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
+                } else "results"
+                return (workflowInputSchema + listOf(
+                    FieldDefinition(resultField, "array", true, "parallel task results"),
+                    FieldDefinition("failures", "array", true, "parallel task failures"),
+                )).distinctBy { it.name }
+            }
+            return ancestors.singleOrNull()?.let(outputSchemaFor).orEmpty()
+        }
+        outputSchemaFor = { node ->
+            when {
+                node.nodeType in aiTypes -> definitions[node.config["agentKey"]?.toString()]?.outputSchema.orEmpty()
+                isTerminalExecutable(node) && finalOutputSchema != null -> finalOutputSchema
+                node.nodeType == NodeType.DATA_CSV_COMPARE.wireName -> listOf(
+                    FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
+                )
+                node.nodeType == NodeType.QUALITY_CHECK.wireName -> upstreamMessageSchema(node) +
+                    FieldDefinition("qualityPassed", "boolean", true, "quality gate result")
+                toolName(node) == "template.markdown.table" -> listOf(
+                    FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
+                    FieldDefinition("summary", "string", false, "optional change summary"),
+                    FieldDefinition("rendered", "string", true, "rendered Markdown table"),
+                )
+                else -> upstreamMessageSchema(node)
+                    .filter { it.name in setOf("content", "report", "response") }
+                    .ifEmpty { listOf(FieldDefinition("content", "string", false, "content to render")) } +
+                    FieldDefinition("renderedResponse", "string", true, "rendered plain text")
+            }.distinctBy { it.name }
+        }
         val runtimeAgents = executable.map { node ->
             val inputBindings = incomingEdges[node.id].orEmpty().flatMap { edge ->
                 edge.bindings.map { (targetField, sourceField) ->
@@ -97,20 +164,39 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     "inputBindings" to inputBindings, "inputDefaults" to (node.config["inputDefaults"] ?: emptyMap<String, Any?>()),
                 )
             } else {
-                val toolName = when (node.nodeType) {
-                    NodeType.DATA_CSV_COMPARE.wireName -> "data.csv.compare"
-                    NodeType.QUALITY_CHECK.wireName -> "quality.check"
-                    NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
-                        "table.markdown.v1" -> "template.markdown.table"
-                        "plain-text.v1", "plain-text" -> "template.plain-text"
-                        else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX 렌더러입니다.")
+                val toolName = toolName(node)
+                val upstreamSchema = upstreamMessageSchema(node)
+                val inputSchema = when (node.nodeType) {
+                    NodeType.DATA_CSV_COMPARE.wireName -> listOf(
+                        FieldDefinition("csvA", "string", true, "comparison baseline CSV"),
+                        FieldDefinition("csvB", "string", true, "comparison target CSV"),
+                        FieldDefinition("keyColumns", "array", false, "optional key columns"),
+                    )
+                    NodeType.QUALITY_CHECK.wireName -> upstreamSchema
+                    NodeType.TEMPLATE_RENDER.wireName -> when (toolName) {
+                        "template.markdown.table" -> (upstreamSchema + listOf(
+                            FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
+                            FieldDefinition("summary", "string", false, "optional change summary"),
+                        )).distinctBy { it.name }
+                        else -> upstreamSchema.ifEmpty { listOf(
+                            FieldDefinition("content", "string", false, "content to render"),
+                            FieldDefinition("report", "string", false, "report to render"),
+                            FieldDefinition("response", "string", false, "response to render"),
+                        ) }
                     }
-                    else -> throw BadRequestException("EXECUTION_NOT_CONFIGURED", "지원되지 않는 TFrameX Tool입니다.")
+                    else -> emptyList()
+                }
+                val outputSchema = outputSchemaFor(node)
+                val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
+                    ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
+                if (node.nodeType == NodeType.QUALITY_CHECK.wireName || toolName == "template.plain-text") {
+                    inputDefaults["agentownOutputContract"] = outputSchema
                 }
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "kind" to "tool", "toolName" to toolName,
-                    "tools" to listOf(toolName), "inputBindings" to inputBindings,
-                    "inputDefaults" to (node.config["inputDefaults"] ?: emptyMap<String, Any?>()),
+                    "tools" to listOf(toolName), "inputSchema" to inputSchema, "outputSchema" to outputSchema,
+                    "inputBindings" to inputBindings,
+                    "inputDefaults" to inputDefaults,
                 )
             }
         }
@@ -123,15 +209,58 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         val layers = prefixExecutable.groupBy { depth[it.id] ?: 0 }.toSortedMap().values.toList()
         val steps = layers.mapIndexed { index, layer ->
             val names = layer.sortedBy { it.id }.map { effectiveByNode.getValue(it.id) }
-            val nextAgent = layers.getOrNull(index + 1)?.singleOrNull()?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
+            val nextNode = layers.getOrNull(index + 1)?.singleOrNull()
+            val nextAgent = nextNode?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
             val resultField = nextAgent?.inputSchema?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
-            if (names.size == 1) names.single() else mapOf(
+            if (names.size == 1) names.single() else {
+                val resultBindings = layer.associate { node ->
+                    effectiveByNode.getValue(node.id) to outgoing[node.id].orEmpty()
+                        .filter { edge -> nextNode != null && edge.target == nextNode.id }
+                        .flatMap { edge -> edge.bindings
+                            .filterNot { (targetField, sourceField) -> targetField == "context" && sourceField == "context" }
+                            .map { (targetField, sourceField) ->
+                            if (nextAgent == null) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 결과의 명시적 binding 대상은 Agent Join이어야 합니다.")
+                            }
+                            if (sourceField.contains('.') || sourceField.contains('[') || targetField.contains('.') || targetField.contains('[')) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
+                            }
+                            val sourceContract = outputSchemaFor(node).firstOrNull { it.name == sourceField }
+                            if (sourceContract == null || !sourceContract.type.equals("array", true)) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'은 Task의 array 출력이어야 합니다.")
+                            }
+                            val targetContract = nextAgent?.inputSchema?.firstOrNull { it.name == targetField }
+                            if (targetContract == null || !targetContract.type.equals("array", true)) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$targetField'은 array 입력이어야 합니다.")
+                            }
+                            if (!bindingFieldsCompatible(sourceContract, targetContract)) {
+                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join '$sourceField'과 '$targetField'의 array item 계약이 일치하지 않습니다.")
+                            }
+                            mapOf(
+                                "sourceField" to sourceField,
+                                "targetField" to targetField,
+                                "aggregationMode" to "APPEND_ARRAY_ITEMS",
+                            )
+                        } }
+                }
+                if (resultBindings.values.any { it.isNotEmpty() } && resultBindings.values.any { it.isEmpty() }) {
+                    throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join의 모든 Task에 결과 binding이 필요합니다.")
+                }
+                if (nextAgent != null && resultBindings.values.all { it.isEmpty() }) {
+                    throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Agent Join에는 각 Task의 명시적 array 결과 binding이 필요합니다.")
+                }
+                mapOf(
                 "type" to "ParallelPattern",
                 "name" to "parallel-layer-$index",
                 "tasks" to names,
+                "taskOutputSchemas" to layer.associate { node ->
+                    effectiveByNode.getValue(node.id) to outputSchemaFor(node)
+                },
+                "taskResultBindings" to resultBindings.filterValues { it.isNotEmpty() },
                 "structuredFanIn" to true,
                 "resultField" to resultField,
             )
+            }
         }.toMutableList<Any>()
         val routerAgents = branchNodes.map { branch ->
             val routes = outgoing[branch.id].orEmpty().associate { edge ->
@@ -162,15 +291,34 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 },
             )
         }
-        val finalAgent = prefixExecutable.lastOrNull { it.nodeType in aiTypes }
-            ?.config?.get("agentKey")?.toString()?.let(definitions::get)
+        val derivedFinalOutputSchema = prefixExecutable
+            .maxWithOrNull(compareBy<WorkflowNode> { depth[it.id] ?: -1 }.thenBy { it.id })
+            ?.let(outputSchemaFor)
         return mapOf(
             "flowName" to flowName,
             "agents" to runtimeAgents + routerAgents,
             "pattern" to mapOf("type" to "SequentialPattern", "name" to "agentown-flow", "steps" to steps),
             "input" to mapper.writeValueAsString(input),
-            "finalOutputSchema" to finalAgent?.outputSchema.orEmpty(),
+            "workflowInputSchema" to workflowInputSchema,
+            "finalOutputSchema" to (finalOutputSchema ?: derivedFinalOutputSchema.orEmpty()),
         )
+    }
+
+    private fun bindingFieldsCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
+        fun typeCompatible(sourceType: String, targetType: String): Boolean =
+            sourceType.equals(targetType, true) || (sourceType.equals("integer", true) && targetType.equals("number", true))
+        if (target.required && !source.required) return false
+        if (!typeCompatible(source.type, target.type)) return false
+        if (!source.type.equals("array", true)) return true
+        val targetItemType = target.itemType ?: return true
+        val sourceItemType = source.itemType ?: return false
+        if (!typeCompatible(sourceItemType, targetItemType)) return false
+        if (!targetItemType.equals("object", true)) return true
+        val sourceItems = source.itemSchema?.associateBy { it.name } ?: return false
+        val targetItems = target.itemSchema?.associateBy { it.name } ?: return false
+        return sourceItems.all { (name, sourceField) ->
+            targetItems[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
+        } && targetItems.values.filter { it.required }.all { it.name in sourceItems }
     }
 
     fun compilePlan(
@@ -178,6 +326,8 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         plan: WorkflowGraphPlan,
         agents: List<AgentDefinition>,
         input: Map<String, Any?>,
+        finalOutputSchema: List<FieldDefinition>? = null,
+        workflowInputSchema: List<FieldDefinition> = emptyList(),
     ): Map<String, Any?> = compile(
         flowName,
         WorkflowGraph(
@@ -190,6 +340,8 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         ),
         agents,
         input,
+        finalOutputSchema,
+        workflowInputSchema,
     )
 
     private fun systemPrompt(agent: AgentDefinition, nodeLabel: String, nodeInstruction: String?): String = buildString {
@@ -202,8 +354,10 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         agent.forbiddenRules.forEach { appendLine("- $it") }
         appendLine("필요 근거:")
         agent.evidenceRequirements.forEach { appendLine("- $it") }
-        appendLine("반드시 JSON 객체만 반환하고 다음 출력 필드를 준수한다:")
-        agent.outputSchema.forEach { appendLine("- ${it.name}: ${it.type}, required=${it.required}, ${it.description}") }
+        appendLine("입력 계약(JSON, 중첩 itemSchema 포함):")
+        appendLine(mapper.writeValueAsString(agent.inputSchema))
+        appendLine("반드시 JSON 객체만 반환하고 아래 출력 계약 전체를 재귀적으로 준수한다. itemSchema의 필수 필드를 포함하고 선언되지 않은 필드는 반환하지 않는다:")
+        appendLine(mapper.writeValueAsString(agent.outputSchema))
         appendLine("입력에 없는 사실이나 실행 결과를 만들지 않는다.")
     }
 
@@ -263,8 +417,15 @@ class TFrameXCoreRuntimeClient(
     private val client = RestClient.builder().baseUrl(runtimeUrl).build()
     private val mapType = object : TypeReference<Map<String, Any?>>() {}
 
-    fun execute(flowName: String, graph: WorkflowGraph, agents: List<AgentDefinition>, input: Map<String, Any?>): TFrameXRuntimeResult {
-        val definition = compiler.compile(flowName, graph, agents, input)
+    fun execute(
+        flowName: String,
+        graph: WorkflowGraph,
+        agents: List<AgentDefinition>,
+        input: Map<String, Any?>,
+        finalOutputSchema: List<FieldDefinition>?,
+        workflowInputSchema: List<FieldDefinition> = emptyList(),
+    ): TFrameXRuntimeResult {
+        val definition = compiler.compile(flowName, graph, agents, input, finalOutputSchema, workflowInputSchema)
         val response = client.post().uri("/execute").contentType(MediaType.APPLICATION_JSON)
             .body(mapOf("definition" to definition))
             .exchange { _, result ->

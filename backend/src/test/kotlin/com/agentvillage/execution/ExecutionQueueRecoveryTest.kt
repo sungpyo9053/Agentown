@@ -407,6 +407,7 @@ class ExecutionQueueRecoveryTest : IntegrationTestSupport() {
                 snapshot = llmSnapshot(fixture.ownerId),
                 credentialBindings = mapOf("agent" to credentialId.toString()),
                 mode = ExecutionMode.CLOUD_API,
+                queuedAt = Instant.now().minusSeconds(86_400),
             ).also { it.timeoutAt = Instant.now().plusSeconds(30) },
         )
 
@@ -545,6 +546,7 @@ class ExecutionQueueRecoveryTest : IntegrationTestSupport() {
 
     @Nested
     @TestPropertySource(properties = [
+        "agentown.scheduling.enabled=true",
         "execution.heartbeat-interval-ms=100",
         "execution.lease-seconds=1",
         "execution.recovery-interval-ms=500",
@@ -594,6 +596,7 @@ class ExecutionQueueRecoveryTest : IntegrationTestSupport() {
         snapshot: Map<String, Any> = emptyMap(),
         credentialBindings: Map<String, String> = emptyMap(),
         mode: ExecutionMode = ExecutionMode.STUB,
+        queuedAt: Instant = Instant.now(),
     ) = Execution(
         harnessId = harnessId,
         harnessVersionId = null,
@@ -604,6 +607,7 @@ class ExecutionQueueRecoveryTest : IntegrationTestSupport() {
         inputJson = mapOf("topic" to "timeout recovery"),
         executionSnapshotJson = snapshot,
         credentialBindingsJson = credentialBindings,
+        queuedAt = queuedAt,
     )
 
     private fun llmSnapshot(agentId: UUID): Map<String, Any> = mapOf(

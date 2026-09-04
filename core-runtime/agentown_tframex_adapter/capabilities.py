@@ -13,7 +13,7 @@ def _rows(value: Any) -> list[dict[str, str]]:
     return []
 
 
-def data_csv_compare(csvA: Any, csvB: Any, keyColumns: list[str] | None = None, **context: Any):
+def data_csv_compare(csvA: Any, csvB: Any, keyColumns: list[str] | None = None, **_: Any):
     before = _rows(csvA)
     after = _rows(csvB)
     if not before and not after:
@@ -32,28 +32,64 @@ def data_csv_compare(csvA: Any, csvB: Any, keyColumns: list[str] | None = None, 
             changes.append({"changeType": "REMOVED", "key": list(item_key), "before": left[item_key]})
         elif left[item_key] != right[item_key]:
             changes.append({"changeType": "MODIFIED", "key": list(item_key), "before": left[item_key], "after": right[item_key]})
-    return {**context, "csvA": csvA, "csvB": csvB, "changedRows": changes}
+    return {"changedRows": changes}
 
 
 def template_markdown_table(changedRows: list[dict[str, Any]], **context: Any):
     lines = ["| changeType | key |", "|---|---|"]
     lines.extend(f"| {row.get('changeType', '')} | {', '.join(row.get('key', []))} |" for row in changedRows)
-    return {**context, "changedRows": changedRows, "rendered": "\n".join(lines)}
+    result = {"changedRows": changedRows, "rendered": "\n".join(lines)}
+    if context.get("summary") is not None:
+        result["summary"] = context["summary"]
+    return result
 
 
-def quality_check(**context: Any):
+def _contract_result(values: dict[str, Any], contract: list[dict[str, Any]] | None) -> dict[str, Any]:
+    if not contract:
+        return values
+    declared = [str(field.get("name")) for field in contract if field.get("name")]
+    return {name: values[name] for name in declared if name in values}
+
+
+def quality_check(agentownOutputContract: list[dict[str, Any]] | None = None, **context: Any):
     missing = context.get("missingLocations") or context.get("missingFields") or []
     failures = context.get("failures") or context.get("errors") or []
     status = str(context.get("reportStatus") or context.get("status") or "").upper()
-    passed = not missing and not failures and status in {"READY", "SUCCEEDED", "COMPLETED"}
-    return {**context, "qualityPassed": passed}
+    has_parallel_results = isinstance(context.get("results"), list) and bool(context["results"])
+    has_tool_result = any(name in context for name in ("changedRows", "rendered", "renderedResponse"))
+    passed = not missing and not failures and (
+        status in {"READY", "SUCCEEDED", "COMPLETED"} or has_parallel_results or has_tool_result
+    )
+    return _contract_result({**context, "qualityPassed": passed}, agentownOutputContract)
 
 
-def template_plain_text(content: Any = None, report: Any = None, response: Any = None, **context: Any):
+def template_plain_text(
+    content: Any = None,
+    report: Any = None,
+    response: Any = None,
+    agentownOutputContract: list[dict[str, Any]] | None = None,
+    **context: Any,
+):
     rendered = content if content is not None else report if report is not None else response
     if rendered is None:
         raise ValueError("Plain-text renderer input is missing")
-    return {**context, "content": content, "report": report, "renderedResponse": rendered, "response": rendered}
+    values = {**context, "rendered": rendered, "renderedResponse": rendered}
+    if content is not None:
+        values["content"] = content
+    if report is not None:
+        values["report"] = report
+    if response is not None:
+        values["response"] = response
+    if agentownOutputContract:
+        return _contract_result(values, agentownOutputContract)
+    result = {"renderedResponse": rendered}
+    if content is not None:
+        result["content"] = content
+    elif report is not None:
+        result["report"] = report
+    else:
+        result["response"] = response
+    return result
 
 
 BUILTIN_TOOLS = {

@@ -204,20 +204,21 @@ class BuilderService(
         generationDrafts.checkpoint(context.conversation.id, bundle)
         bundle = generationDrafts.reloadBundle(context.conversation.id)
         if (bundle.clarificationQuestions.isEmpty()) {
-            val firstValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
-            if (!firstValidation.valid) {
-                generationDrafts.validationFailed(context.conversation.id, firstValidation.issues)
-                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, firstValidation.issues, bundle, userInstruction = instruction)
+            var validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+            for (repairAttempt in 1..2) {
+                if (validation.valid) break
+                generationDrafts.validationFailed(context.conversation.id, validation.issues)
+                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, validation.issues, bundle, userInstruction = instruction)
                 generationDrafts.checkpoint(context.conversation.id, bundle)
                 bundle = generationDrafts.reloadBundle(context.conversation.id)
-                val repairedValidation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
-                if (!repairedValidation.valid) {
-                    generationDrafts.validationFailed(context.conversation.id, repairedValidation.issues)
-                    throw BadRequestException(
-                        if (repairedValidation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
-                        repairedValidation.issues.joinToString(" ") { it.message },
-                    )
-                }
+                validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+            }
+            if (!validation.valid) {
+                generationDrafts.validationFailed(context.conversation.id, validation.issues)
+                throw BadRequestException(
+                    if (validation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
+                    validation.issues.joinToString(" ") { it.message },
+                )
             }
         }
         val requirement = bundle.requirement
@@ -417,7 +418,11 @@ class BuilderService(
                 ?: throw BadRequestException("PATCH_TARGET_NOT_FOUND", "CSV 비교와 표 Renderer 연결을 찾지 못했습니다.")
             val agent = AgentDefinition(
                 "change-summary-writer", "변경사항 요약자", "결정적 CSV 비교 결과에서 중요한 변경만 사람이 이해하기 쉽게 요약한다.",
-                listOf(FieldDefinition("changedRows", "array", true, "결정적 CSV 비교 결과")), listOf(FieldDefinition("summary", "string", true, "중요 변경 요약")),
+                listOf(FieldDefinition("changedRows", "array", true, "결정적 CSV 비교 결과")),
+                listOf(
+                    FieldDefinition("changedRows", "array", true, "변경 없이 보존한 결정적 CSV 비교 결과"),
+                    FieldDefinition("summary", "string", true, "중요 변경 요약"),
+                ),
                 listOf("원본 비교 결과를 보존한다", "중요 변경의 이유를 간결히 설명한다"), listOf("변경 행을 새로 만들지 않는다", "비교 Function을 대체하지 않는다"), listOf("changedRows"),
             )
             val summaryNode = WorkflowNode("change-summary-${current.versionNo + 1}", NodeType.AI_GENERATE.wireName, "중요 변경 요약", NodePosition((compare.position.x + renderer.position.x) / 2, compare.position.y), mapOf("instruction" to "CSV 변경 행 중 중요한 부분을 사람이 이해하기 쉽게 요약", "agentKey" to agent.key))
@@ -570,14 +575,21 @@ class BuilderService(
         val version = currentVersion(context.workflow)
         val graph = graph(version)
         requireValidDesign(graph, design.requirement, design.proposal, design.agents, cumulativeInstruction(context.conversation.id))
+        val agentDevelopment = context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT
+        val workflowInputSchema = if (agentDevelopment) {
+            ExternalWorkflowInputContract.resolve(design.proposal, design.agents)
+        } else design.proposal.inputSchema
+        WorkflowInputContract.valueIssue(workflowInputSchema, input, enforceEmpty = agentDevelopment)?.let {
+            throw BadRequestException("INVALID_WORKFLOW_INPUT", it)
+        }
         context.workflow.status = WorkflowStatus.SIMULATING
         val run = runs.save(BuilderRun(
             workspaceId = context.workspace.id, workflowId = workflowId, workflowVersionId = version.id,
             templateVersionId = version.templateVersionId, inputJson = mask(input), idempotencyKey = idempotencyKey,
         ))
         pipeline.record(context.pipeline(), "simulate_workflow", input.size, graph.nodes.size)
-        if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) {
-            executeWithTFrameX(context, run, graph, design.agents, input)
+        if (agentDevelopment) {
+            executeWithTFrameX(context, run, graph, design.agents, design.proposal.outputSchema.takeIf { it.isNotEmpty() }, workflowInputSchema, input)
         } else {
             executeFrom(context, run, graph, graph.entryNodeId, input)
         }
@@ -589,10 +601,12 @@ class BuilderService(
         run: BuilderRun,
         graph: WorkflowGraph,
         agents: List<AgentDefinition>,
+        finalOutputSchema: List<FieldDefinition>?,
+        workflowInputSchema: List<FieldDefinition>,
         input: Map<String, Any?>,
     ) {
         val result = try {
-            tframexRuntime.execute(context.workflow.name, graph, agents, input)
+            tframexRuntime.execute(context.workflow.name, graph, agents, input, finalOutputSchema, workflowInputSchema)
         } catch (exception: com.agentvillage.common.exception.ApiException) {
             run.status = if (exception.code == "EXECUTION_NOT_CONFIGURED") BuilderRunStatus.EXECUTION_NOT_CONFIGURED else BuilderRunStatus.FAILED
             run.failureCode = exception.code
@@ -918,6 +932,8 @@ class BuilderService(
             requireNotNull(design.proposal.graphPlan) { "Workflow graph plan is required" },
             design.agents,
             emptyMap(),
+            design.proposal.outputSchema.takeIf { it.isNotEmpty() },
+            ExternalWorkflowInputContract.resolve(design.proposal, design.agents),
         )
         return linkedMapOf(
             "format" to "agentown-tframex-flow/v1",
@@ -964,6 +980,8 @@ class BuilderService(
             requireNotNull(bundle.proposal.graphPlan),
             bundle.agentDefinitions,
             input,
+            bundle.proposal.outputSchema.takeIf { it.isNotEmpty() },
+            ExternalWorkflowInputContract.resolve(bundle.proposal, bundle.agentDefinitions),
         )
         if (mapper.valueToTree<com.fasterxml.jackson.databind.JsonNode>(expected) != mapper.valueToTree<com.fasterxml.jackson.databind.JsonNode>(imported.runtimeDefinition)) {
             throw BadRequestException("TFRAMEX_FLOW_DEFINITION_MISMATCH", "설계 번들과 TFrameX 실행 정의가 일치하지 않습니다.")

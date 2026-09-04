@@ -56,7 +56,14 @@ class AgentDevelopmentTFrameXRealGoldenTest {
         val bundleReport = Path.of("build/reports/agent-development-tframex-real-golden-bundle.json")
         Files.createDirectories(bundleReport.parent)
         mapper.writerWithDefaultPrettyPrinter().writeValue(bundleReport.toFile(), bundle)
-        val definition = TFrameXDefinitionCompiler(mapper).compilePlan(bundle.proposal.name, plan, bundle.agentDefinitions, fixtureInput())
+        val definition = TFrameXDefinitionCompiler(mapper).compilePlan(
+            bundle.proposal.name,
+            plan,
+            bundle.agentDefinitions,
+            fixtureInput(),
+            bundle.proposal.outputSchema,
+            bundle.proposal.inputSchema,
+        )
         assertThat(mapper.writeValueAsString(definition)).contains("ParallelPattern", "structuredFanIn")
         val definitionFile = directory.resolve("definition.json")
         mapper.writeValue(definitionFile.toFile(), definition)

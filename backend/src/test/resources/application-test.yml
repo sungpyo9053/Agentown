@@ -1,6 +1,9 @@
 spring:
   jpa:
     show-sql: false
+agentown:
+  scheduling:
+    enabled: false
 builder:
   meta-agent:
     mode: mock

@@ -43,6 +43,7 @@
         "integrations": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 10 },
         "approvalPoints": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
         "failurePolicy": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "inputSchema": { "$ref": "#/$defs/fields" },
         "graphPlan": {
           "type": "object",
           "additionalProperties": false,
@@ -79,9 +80,39 @@
                         "type": "object", "additionalProperties": false,
                         "properties": {
                           "instruction": { "type": "string", "maxLength": 1000 },
-                          "agentKey": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" }
+                          "agentKey": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,59}$" },
+                          "inputDefaults": {
+                            "anyOf": [
+                              {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "field": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
+                                    "value": {
+                                      "anyOf": [
+                                        { "type": "string" },
+                                        { "type": "number" },
+                                        { "type": "integer" },
+                                        { "type": "boolean" },
+                                        {
+                                          "type": "array",
+                                          "maxItems": 100,
+                                          "items": { "type": ["string", "number", "integer", "boolean"] }
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["field", "value"]
+                                }
+                              },
+                              { "type": "null" }
+                            ]
+                          }
                         },
-                        "required": ["instruction", "agentKey"]
+                        "required": ["instruction", "agentKey", "inputDefaults"]
                       },
                       {
                         "type": "object", "additionalProperties": false,
@@ -200,7 +231,7 @@
           "required": ["entryNodeId", "nodes", "edges"]
         }
       },
-      "required": ["name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy", "graphPlan"]
+      "required": ["name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy", "inputSchema", "graphPlan"]
     },
     "agentDefinitions": {
       "type": "array",
@@ -265,11 +296,15 @@
         "additionalProperties": false,
         "properties": {
           "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
-          "type": { "type": "string", "enum": ["string", "boolean", "number", "object", "array"] },
+          "type": { "type": "string", "enum": ["string", "boolean", "number", "integer", "object", "array"] },
           "required": { "type": "boolean" },
-          "description": { "type": "string", "minLength": 1, "maxLength": 500 }
+          "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "minItems": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 },
+          "maxItems": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 },
+          "itemType": { "type": ["string", "null"], "enum": ["string", "boolean", "number", "integer", "object", "array", null] },
+          "itemSchema": { "anyOf": [{ "$ref": "#/$defs/fields" }, { "type": "null" }] }
         },
-        "required": ["name", "type", "required", "description"]
+        "required": ["name", "type", "required", "description", "minItems", "maxItems", "itemType", "itemSchema"]
       }
     },
     "rules": {

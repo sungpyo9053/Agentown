@@ -266,6 +266,15 @@ class StructuredMetaAgentPipeline(
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String, mode: DesignMode): MetaAgentDesignBundle {
+        val canonical = bundle.copy(
+            proposal = bundle.proposal.copy(
+                inputSchema = canonicalFields(bundle.proposal.inputSchema),
+                outputSchema = canonicalFields(bundle.proposal.outputSchema),
+            ),
+            agentDefinitions = bundle.agentDefinitions.map { agent ->
+                agent.copy(inputSchema = canonicalFields(agent.inputSchema), outputSchema = canonicalFields(agent.outputSchema))
+            },
+        )
         val instructionLower = instruction.lowercase()
         val deterministicCsv = instructionLower.contains("csv") &&
             listOf("비교", "diff", "달라진", "차이", "변경", "added", "removed", "modified").any(instructionLower::contains)
@@ -306,19 +315,20 @@ class StructuredMetaAgentPipeline(
         }
         val runtimeApprovalExplicit = Regex("(승인|담당자.{0,12}(검토|확인)|관리자.{0,12}(검토|확인)|사람.{0,12}(검토|확인)|사용자.{0,12}(검토|확인))")
             .containsMatchIn(instruction)
+        val generatedGraph = canonical.proposal.graphPlan?.let(::normalizeGeneratedInputDefaults)
         val graphWithoutInventedApproval = if (mode == DesignMode.AGENT_DEVELOPMENT && !runtimeApprovalExplicit) {
-            bundle.proposal.graphPlan?.let(::removeRuntimeApprovalNodes)
-        } else bundle.proposal.graphPlan
-        val removedInventedApproval = bundle.proposal.graphPlan?.nodes.orEmpty().any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName } &&
+            generatedGraph?.let(::removeRuntimeApprovalNodes)
+        } else generatedGraph
+        val removedInventedApproval = canonical.proposal.graphPlan?.nodes.orEmpty().any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName } &&
             graphWithoutInventedApproval?.nodes.orEmpty().none { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }
-        val normalized = bundle.copy(
-            requirement = if (removedInventedApproval) bundle.requirement.copy(humanApprovalRequired = false) else bundle.requirement,
+        val normalized = canonical.copy(
+            requirement = if (removedInventedApproval) canonical.requirement.copy(humanApprovalRequired = false) else canonical.requirement,
             clarificationQuestions = questions,
-            proposal = bundle.proposal.copy(
-                approvalPoints = if (removedInventedApproval) emptyList() else bundle.proposal.approvalPoints,
+            proposal = canonical.proposal.copy(
+                approvalPoints = if (removedInventedApproval) emptyList() else canonical.proposal.approvalPoints,
                 graphPlan = graphWithoutInventedApproval?.let(WorkflowGraphPlanNormalizer::normalize),
             ),
-            agentDefinitions = if (questions.isEmpty()) bundle.agentDefinitions else emptyList(),
+            agentDefinitions = if (questions.isEmpty()) canonical.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
         val standardized = when {
@@ -337,6 +347,24 @@ class StructuredMetaAgentPipeline(
         else preserveCumulativeClassificationRevision(standardized, instruction)
         val contractNormalized = cumulative.copy(proposal = cumulative.proposal.copy(graphPlan = cumulative.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
         return withExecutionMetadata(contractNormalized, instruction, mode)
+    }
+
+    internal fun normalizeGeneratedInputDefaults(plan: WorkflowGraphPlan): WorkflowGraphPlan = plan.copy(
+        nodes = plan.nodes.map { node ->
+            val raw = node.config["inputDefaults"]
+            if (raw !is List<*>) return@map node
+            val normalized = raw.mapNotNull { entry ->
+                val value = entry as? Map<*, *> ?: return@mapNotNull null
+                val field = value["field"]?.toString()?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+                field to value["value"]
+            }.toMap()
+            node.copy(config = node.config + ("inputDefaults" to normalized))
+        },
+    )
+
+    internal fun canonicalFields(fields: List<FieldDefinition>): List<FieldDefinition> = fields.map { field ->
+        if (!field.type.equals("array", true)) field.copy(minItems = null, maxItems = null, itemType = null, itemSchema = null)
+        else field.copy(itemSchema = field.itemSchema?.takeIf { it.isNotEmpty() }?.let(::canonicalFields))
     }
 
     private fun removeRuntimeApprovalNodes(plan: WorkflowGraphPlan): WorkflowGraphPlan {
@@ -435,7 +463,7 @@ class StructuredMetaAgentPipeline(
                 estimatedAiCallsPerRun = aiCalls,
                 separationRationale = executionRationale,
             ),
-            outputSchema = bundle.proposal.outputSchema.ifEmpty { bundle.agentDefinitions.lastOrNull()?.outputSchema.orEmpty() },
+            outputSchema = bundle.proposal.outputSchema.ifEmpty { terminalAgentOutputSchema(bundle) },
             executionContract = bundle.proposal.executionContract ?: TemplateExecutionContract(
                 contentSchemaVersion = "1.0",
                 rendererKey = "plain-text",
@@ -453,6 +481,38 @@ class StructuredMetaAgentPipeline(
         ))
     }
 
+    internal fun terminalAgentOutputSchema(bundle: MetaAgentDesignBundle): List<FieldDefinition> {
+        val plan = bundle.proposal.graphPlan ?: return emptyList()
+        val outgoing = plan.edges.groupBy { it.source }
+        val incoming = plan.nodes.associate { it.id to 0 }.toMutableMap()
+        plan.edges.forEach { edge -> incoming[edge.target] = (incoming[edge.target] ?: 0) + 1 }
+        val ready = java.util.PriorityQueue<String>()
+        incoming.filterValues { it == 0 }.keys.forEach(ready::add)
+        val depth = mutableMapOf(plan.entryNodeId to 0)
+        var visited = 0
+        while (ready.isNotEmpty()) {
+            val current = ready.remove()
+            visited += 1
+            outgoing[current].orEmpty().forEach { edge ->
+                depth[edge.target] = maxOf(depth[edge.target] ?: 0, (depth[current] ?: 0) + 1)
+                incoming[edge.target] = (incoming[edge.target] ?: 1) - 1
+                if (incoming[edge.target] == 0) ready += edge.target
+            }
+        }
+        if (visited != plan.nodes.size) return emptyList()
+        val executableTypes = setOf(
+            NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName, NodeType.DATA_CSV_COMPARE.wireName,
+            NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName,
+        )
+        val terminal = plan.nodes
+            .filter { it.nodeType in executableTypes }
+            .maxWithOrNull(compareBy<WorkflowNodePlan> { depth[it.id] ?: -1 }.thenBy { it.id })
+            ?: return emptyList()
+        if (terminal.nodeType !in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)) return emptyList()
+        val key = terminal.config["agentKey"]?.toString() ?: return emptyList()
+        return bundle.agentDefinitions.firstOrNull { it.key == key }?.outputSchema.orEmpty()
+    }
+
     private fun compileCsvComparison(bundle: MetaAgentDesignBundle, instruction: String): MetaAgentDesignBundle {
         val nodes = listOf(
             WorkflowNodePlan("manual-input", NodeType.MANUAL_TRIGGER.wireName, "CSV 두 파일 입력"),
@@ -466,6 +526,11 @@ class StructuredMetaAgentPipeline(
             proposal = bundle.proposal.copy(
                 name = "CSV 변경 행 비교", summary = "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.", capabilities = nodes.map { it.label }, integrations = emptyList(), approvalPoints = emptyList(),
                 failurePolicy = "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
+                inputSchema = listOf(
+                    FieldDefinition("csvA", "string", true, "비교 기준 CSV 문자열"),
+                    FieldDefinition("csvB", "string", true, "비교 대상 CSV 문자열"),
+                    FieldDefinition("keyColumns", "array", false, "행을 식별할 선택적 키 열 목록"),
+                ),
                 graphPlan = WorkflowGraphPlan(nodes.first().id, nodes, nodes.zipWithNext().mapIndexed { index, (from, to) ->
                     WorkflowEdgePlan("edge-${index + 1}", from.id, to.id, bindings = defaultBindings())
                 }),
@@ -764,7 +829,11 @@ class StructuredMetaAgentPipeline(
         listOf("사용한 입력과 판단 근거"),
     )
 
-    private fun invalid(): Nothing = throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
+    private fun invalid(detail: String? = null): Nothing = throw BadRequestException(
+        "INVALID_STRUCTURED_OUTPUT",
+        detail?.let { "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다: ${it.take(500)}" }
+            ?: "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.",
+    )
     private fun summary(input: Map<String, Any?>) = mapOf("fieldCount" to input.size, "instructionChars" to input["instruction"]?.toString()?.length)
     private fun failure(exception: Exception, durationMs: Long) = when (exception) {
         is MetaAgentExecutionException -> MetaAgentFailure(exception.errorCode, exception.errorType, exception.retryable, durationMs, exception.cliExitCode, exception.safeMessage)

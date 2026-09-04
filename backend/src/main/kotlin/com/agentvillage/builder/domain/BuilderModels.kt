@@ -79,6 +79,7 @@ data class AutomationProposal(
     val templateRevisionPreview: TemplateRevisionPreview? = null,
     val resourcePlan: ResourcePlan? = null,
     val agentDesign: AgentDesign? = null,
+    val inputSchema: List<FieldDefinition> = emptyList(),
 )
 
 enum class AgentDesignStatus { DRAFT, ANALYZING, NEEDS_USER_INPUT, VALIDATING, NEEDS_REVISION, READY_FOR_REVIEW, APPROVED, READY_TO_SIMULATE, SIMULATED, EXECUTION_NOT_CONFIGURED }
@@ -208,7 +209,16 @@ data class WorkflowEdgePlan(
 )
 data class WorkflowGraphPlan(val entryNodeId: String, val nodes: List<WorkflowNodePlan>, val edges: List<WorkflowEdgePlan>)
 
-data class FieldDefinition(val name: String, val type: String, val required: Boolean, val description: String)
+data class FieldDefinition(
+    val name: String,
+    val type: String,
+    val required: Boolean,
+    val description: String,
+    val minItems: Int? = null,
+    val maxItems: Int? = null,
+    val itemType: String? = null,
+    val itemSchema: List<FieldDefinition>? = null,
+)
 
 data class AgentDefinition(
     val key: String,

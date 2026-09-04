@@ -39,17 +39,28 @@ class RegisteredTool:
 class StructuredParallelPattern(BasePattern):
     """Expose full upstream ParallelPattern artifacts to the following Agent."""
 
-    def __init__(self, pattern_name: str, tasks: list[str | BasePattern], result_field: str = "results"):
+    def __init__(
+        self,
+        pattern_name: str,
+        tasks: list[str | BasePattern],
+        result_field: str = "results",
+        task_output_schemas: Optional[Mapping[str, list[dict[str, Any]]]] = None,
+        task_result_bindings: Optional[Mapping[str, list[dict[str, Any]]]] = None,
+    ):
         super().__init__(pattern_name)
         self.delegate = ParallelPattern(pattern_name, tasks)
+        self.tasks = tasks
         self.result_field = result_field
+        self.task_output_schemas = dict(task_output_schemas or {})
+        self.task_result_bindings = dict(task_result_bindings or {})
 
     async def execute(self, flow_ctx: FlowContext, engine: Engine, agent_call_kwargs=None) -> FlowContext:
         result = await self.delegate.execute(flow_ctx, engine, agent_call_kwargs=agent_call_kwargs)
         artifacts = result.shared_data.get(f"{self.pattern_name}_results", [])
         failures = []
         values = []
-        for artifact in artifacts:
+        joined: dict[str, list[Any]] = {}
+        for index, artifact in enumerate(artifacts):
             parts = artifact.get("parts") or []
             if parts and parts[0].get("type") == "text":
                 failures.append(parts[0].get("text"))
@@ -57,15 +68,45 @@ class StructuredParallelPattern(BasePattern):
             data = parts[0].get("data") if parts else None
             content = data.get("content") if isinstance(data, dict) else None
             try:
-                values.append(json.loads(content) if isinstance(content, str) else content)
+                value = json.loads(content) if isinstance(content, str) else content
             except json.JSONDecodeError:
-                values.append(content)
+                value = content
+            task = self.tasks[index] if index < len(self.tasks) else None
+            task_name = task if isinstance(task, str) else None
+            try:
+                _assert_semantic_success(
+                    value,
+                    self.task_output_schemas.get(task_name, []) if task_name else [],
+                    f"Parallel task '{task_name or index}' output",
+                )
+            except ValueError as exc:
+                failures.append(str(exc))
+            values.append(value)
+            for binding in self.task_result_bindings.get(task_name, []) if task_name else []:
+                source_field = str(binding.get("sourceField") or "")
+                target_field = str(binding.get("targetField") or self.result_field)
+                if binding.get("aggregationMode") != "APPEND_ARRAY_ITEMS":
+                    raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS")
+                extracted = _resolve_path(value, source_field)
+                if extracted is _MISSING:
+                    failures.append(f"Parallel task '{task_name}' output is missing bound field '{source_field}'")
+                    continue
+                bucket = joined.setdefault(target_field, [])
+                if isinstance(extracted, list):
+                    bucket.extend(extracted)
+                else:
+                    bucket.append(extracted)
         if failures:
+            result.shared_data.setdefault("_agentown_semantic_failures", []).extend(failures)
             raise RuntimeError(f"Parallel pattern '{self.pattern_name}' failed: {'; '.join(failures)}")
         initial = result.shared_data.get("_agentown_initial_input")
         envelope = dict(initial) if isinstance(initial, dict) else {}
         envelope.setdefault("request", initial if isinstance(initial, dict) else {})
-        envelope.update({self.result_field: values, "failures": failures})
+        if joined:
+            envelope.update(joined)
+        else:
+            envelope[self.result_field] = values
+        envelope["failures"] = failures
         result.update_current_message(Message(
             role="assistant",
             content=json.dumps(envelope, ensure_ascii=False),
@@ -86,13 +127,18 @@ class TracingLLMAgent(LLMAgent):
         if trace is not None:
             trace.append({"kind": "agent_start", "agent": name, "input": content})
         try:
-            self._validate_json_contract(content, self.config.get("input_schema") or [], "input")
+            self._validate_json_contract(
+                content, self.config.get("input_schema") or [], "input", exact=False,
+            )
             bound_message = Message(
                 role=input_message.role if isinstance(input_message, Message) else "user",
                 content=content,
             )
             result = await super().run(bound_message, **kwargs)
             self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
+            _assert_semantic_success(
+                _json_value(result.content or ""), self.config.get("output_schema") or [], "Agent output",
+            )
         except Exception as exc:
             if trace is not None:
                 trace.append({
@@ -105,8 +151,15 @@ class TracingLLMAgent(LLMAgent):
         return result
 
     @staticmethod
-    def _validate_json_contract(content: str, fields: list[dict[str, Any]], label: str) -> None:
-        if not fields:
+    def _validate_json_contract(
+        content: str,
+        fields: list[dict[str, Any]],
+        label: str,
+        *,
+        exact: bool = True,
+        enforce_empty: bool = False,
+    ) -> None:
+        if not fields and not enforce_empty:
             return
         try:
             value = json.loads(content)
@@ -114,13 +167,57 @@ class TracingLLMAgent(LLMAgent):
             raise ValueError(f"Agent {label} is not a JSON object") from exc
         if not isinstance(value, dict):
             raise ValueError(f"Agent {label} is not a JSON object")
-        expected = {"string": str, "array": list, "object": dict, "boolean": bool, "number": (int, float), "integer": int}
+        declared = {str(field["name"]) for field in fields}
+        if exact:
+            unexpected = sorted(set(value) - declared)
+            if unexpected:
+                raise ValueError(f"Agent {label} has unexpected fields: {unexpected}")
         for field in fields:
             key = field["name"]
             if field.get("required") and key not in value:
                 raise ValueError(f"Agent {label} is missing required field '{key}'")
-            if key in value and field.get("type") in expected and not isinstance(value[key], expected[field["type"]]):
-                raise ValueError(f"Agent {label} field '{key}' has invalid type")
+            if key in value:
+                TracingLLMAgent._validate_field_value(value[key], field, label, str(key))
+
+    @staticmethod
+    def _validate_field_value(actual: Any, field: dict[str, Any], label: str, path: str) -> None:
+        expected = {"string": str, "array": list, "object": dict, "boolean": bool, "number": (int, float), "integer": int}
+        expected_type = field.get("type")
+        if expected_type in expected:
+            valid = isinstance(actual, expected[expected_type])
+            # bool subclasses int in Python, but JSON Schema keeps boolean,
+            # integer, and number as distinct contracts.
+            if expected_type in {"integer", "number"} and isinstance(actual, bool):
+                valid = False
+            if not valid:
+                raise ValueError(f"Agent {label} field '{path}' has invalid type")
+        if expected_type != "array":
+            return
+        minimum = field.get("minItems")
+        maximum = field.get("maxItems")
+        if minimum is not None and len(actual) < int(minimum):
+            raise ValueError(f"Agent {label} field '{path}' has fewer than {minimum} items")
+        if maximum is not None and len(actual) > int(maximum):
+            raise ValueError(f"Agent {label} field '{path}' has more than {maximum} items")
+        item_type = field.get("itemType")
+        if not item_type:
+            return
+        item_schema = field.get("itemSchema")
+        for index, item in enumerate(actual):
+            item_path = f"{path}[{index}]"
+            TracingLLMAgent._validate_field_value(item, {"type": item_type}, label, item_path)
+            if item_type != "object" or item_schema is None:
+                continue
+            declared = {str(nested["name"]) for nested in item_schema}
+            unexpected = sorted(set(item) - declared)
+            if unexpected:
+                raise ValueError(f"Agent {label} field '{item_path}' has unexpected fields: {unexpected}")
+            for nested in item_schema:
+                key = nested["name"]
+                if nested.get("required") and key not in item:
+                    raise ValueError(f"Agent {label} is missing required field '{item_path}.{key}'")
+                if key in item:
+                    TracingLLMAgent._validate_field_value(item[key], nested, label, f"{item_path}.{key}")
 
 
 class ToolExecutorAgent(BaseAgent):
@@ -137,11 +234,30 @@ class ToolExecutorAgent(BaseAgent):
         if trace is not None:
             trace.append({"kind": "agent_start", "agent": name, "input": content})
             trace.append({"kind": "tool_start", "agent": name, "tool": tool_name, "input": content})
-        result = await self.config["engine"].execute_tool_by_llm_definition(tool_name, content)
-        if isinstance(result, dict) and "error" in result:
+        try:
+            TracingLLMAgent._validate_json_contract(
+                content, self.config.get("input_schema") or [], "input", exact=False,
+            )
+            result = await self.config["engine"].execute_tool_by_llm_definition(tool_name, content)
+            if isinstance(result, dict) and "error" in result:
+                raise RuntimeError(str(result["error"]))
+            TracingLLMAgent._validate_json_contract(
+                json.dumps(result, ensure_ascii=False),
+                self.config.get("output_schema") or [],
+                "output",
+            )
+            _assert_semantic_success(result, self.config.get("output_schema") or [], "Tool output")
+        except Exception as exc:
             if trace is not None:
-                trace.append({"kind": "tool_error", "agent": name, "tool": tool_name, "error": result["error"]})
-            raise RuntimeError(str(result["error"]))
+                trace.append({
+                    "kind": "tool_error", "agent": name, "tool": tool_name,
+                    "error": str(exc), "code": getattr(exc, "code", None),
+                })
+                trace.append({
+                    "kind": "agent_error", "agent": name, "error": str(exc),
+                    "code": getattr(exc, "code", None),
+                })
+            raise
         output = json.dumps(result, ensure_ascii=False)
         if trace is not None:
             trace.append({"kind": "tool_end", "agent": name, "tool": tool_name, "output": output})
@@ -194,6 +310,9 @@ class AgentownTFrameXAdapter:
         self.trace: list[dict[str, Any]] = []
 
     async def run(self, definition: Mapping[str, Any]) -> dict[str, Any]:
+        # Adapter instances are reusable. A failed prior execution must never
+        # poison a later run through stale trace entries.
+        self.trace.clear()
         app = TFrameXApp(default_llm=self.llm, mcp_config_file=None)
         self._register_tools(app)
         self._register_agents(app, definition)
@@ -201,6 +320,11 @@ class AgentownTFrameXAdapter:
         app.register_flow(flow)
         initial = definition.get("input", "")
         message = initial if isinstance(initial, Message) else Message(role="user", content=str(initial))
+        workflow_input_schema = list(definition.get("workflowInputSchema") or [])
+        if "workflowInputSchema" in definition:
+            TracingLLMAgent._validate_json_contract(
+                message.content, workflow_input_schema, "workflow input", enforce_empty=True,
+            )
         initial_value = _json_object(message.content)
         shared_data = dict(definition.get("sharedData") or {})
         if initial_value is not None:
@@ -212,6 +336,9 @@ class AgentownTFrameXAdapter:
                 initial_shared_data=shared_data,
             )
         failures = [item for item in self.trace if item.get("kind") in {"agent_error", "tool_error"}]
+        semantic_failures = context.shared_data.get("_agentown_semantic_failures") or []
+        if semantic_failures:
+            raise RuntimeError("; ".join(str(item) for item in semantic_failures))
         if failures:
             message = "; ".join(str(item.get("error")) for item in failures)
             if any(item.get("code") == ExecutionNotConfigured.code for item in failures):
@@ -223,10 +350,8 @@ class AgentownTFrameXAdapter:
             final_value = _json_object(final)
             if final_value is None:
                 raise ValueError("Final output is not a JSON object")
-            allowed = {str(field["name"]) for field in final_schema}
-            final_value = {key: value for key, value in final_value.items() if key in allowed}
-            final = json.dumps(final_value, ensure_ascii=False)
             TracingLLMAgent._validate_json_contract(final, final_schema, "final output")
+            _assert_semantic_success(final_value, final_schema, "Final output")
         return {
             "final": final,
             "history": [item.model_dump(exclude_none=True) for item in context.history],
@@ -277,7 +402,10 @@ class AgentownTFrameXAdapter:
             app.agent(
                 name=name,
                 description=config.get("description"),
-                system_prompt=config.get("systemPrompt"),
+                # TFrameX treats system_prompt as a Python format template.
+                # Agentown IR stores a literal prompt and embeds JSON contracts,
+                # so protect literal braces at this adapter boundary.
+                system_prompt=_literal_prompt_template(config.get("systemPrompt")),
                 tools=list(tools),
                 callable_agents=list(config.get("callableAgents") or []),
                 agent_class=agent_class,
@@ -313,7 +441,46 @@ class AgentownTFrameXAdapter:
                 raise DefinitionError("ParallelPattern requires non-empty tasks")
             translated = [self._step(item) for item in tasks]
             if value.get("structuredFanIn") is True:
-                return StructuredParallelPattern(name, translated, str(value.get("resultField") or "results"))
+                bindings = value.get("taskResultBindings")
+                if bindings:
+                    if not isinstance(bindings, Mapping):
+                        raise DefinitionError("Parallel taskResultBindings must be an object")
+                    task_names = {task for task in tasks if isinstance(task, str)}
+                    if len(task_names) != len(tasks):
+                        raise DefinitionError("Parallel taskResultBindings support named tasks only")
+                    if set(bindings) != task_names:
+                        raise DefinitionError("Parallel taskResultBindings must cover every named task")
+                    output_schemas = value.get("taskOutputSchemas")
+                    if not isinstance(output_schemas, Mapping) or set(output_schemas) != task_names:
+                        raise DefinitionError("Parallel taskResultBindings require output schemas for every named task")
+                    for task_bindings in bindings.values():
+                        if not isinstance(task_bindings, list) or not task_bindings:
+                            raise DefinitionError("Parallel taskResultBindings entries must be non-empty arrays")
+                        for binding in task_bindings:
+                            if not isinstance(binding, Mapping):
+                                raise DefinitionError("Parallel task result binding must be an object")
+                            source = str(binding.get("sourceField") or "")
+                            target = str(binding.get("targetField") or "")
+                            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", source) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", target):
+                                raise DefinitionError("Parallel task result bindings support top-level fields only")
+                            if binding.get("aggregationMode") != "APPEND_ARRAY_ITEMS":
+                                raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS")
+                    for task_name, task_bindings in bindings.items():
+                        fields = output_schemas.get(task_name)
+                        if not isinstance(fields, list):
+                            raise DefinitionError("Parallel task output schema must be an array")
+                        for binding in task_bindings:
+                            source = binding["sourceField"]
+                            source_contract = next((field for field in fields if isinstance(field, Mapping) and field.get("name") == source), None)
+                            if source_contract is None or str(source_contract.get("type") or "").lower() != "array":
+                                raise DefinitionError("APPEND_ARRAY_ITEMS source must be a declared array output")
+                return StructuredParallelPattern(
+                    name,
+                    translated,
+                    str(value.get("resultField") or "results"),
+                    value.get("taskOutputSchemas") if isinstance(value.get("taskOutputSchemas"), Mapping) else None,
+                    bindings,
+                )
             return ParallelPattern(name, translated)
         if kind == "RouterPattern":
             routes = value.get("routes")
@@ -349,6 +516,88 @@ class AgentownTFrameXAdapter:
 
 _PATH_TOKEN = re.compile(r"([^.\[\]]+)|\[(\d+)\]")
 _MISSING = object()
+
+
+def _literal_prompt_template(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    return value.replace("{", "{{").replace("}", "}}")
+_FAILED_TERMINAL_STATUSES = {"FAILED", "ERROR", "UNRESOLVED", "CANCELLED", "PARTIAL"}
+
+
+def _json_value(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+
+
+def _is_empty_contract_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _has_empty_semantic_item(value: Any) -> bool:
+    if _is_empty_contract_value(value):
+        return True
+    if isinstance(value, list):
+        return any(_is_empty_contract_value(item) for item in value)
+    return False
+
+
+def _requires_nonempty_semantic_value(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    return (
+        any(token in normalized for token in ("evidence", "source", "url", "date"))
+        or name.endswith("At")
+        or name.lower().endswith("_at")
+    )
+
+
+def _assert_semantic_success(
+    value: Any,
+    fields: list[dict[str, Any]],
+    label: str,
+) -> None:
+    failures: list[str] = []
+
+    def inspect(item: Any, path: str) -> None:
+        if isinstance(item, dict):
+            status = item.get("status")
+            if isinstance(status, str) and status.strip().upper() in _FAILED_TERMINAL_STATUSES:
+                failures.append(f"{path}.status={status.strip()}")
+            error = item.get("error")
+            if not _is_empty_contract_value(error):
+                failures.append(f"{path}.error={error}")
+            for key, child in item.items():
+                if key not in {"status", "error"}:
+                    inspect(child, f"{path}.{key}")
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                inspect(child, f"{path}[{index}]")
+
+    def inspect_declared(item: Any, contract: list[dict[str, Any]], path: str) -> None:
+        if not isinstance(item, dict):
+            return
+        for field in contract:
+            name = str(field.get("name") or "")
+            child = item.get(name)
+            child_path = f"{path}.{name}"
+            if field.get("required") and _requires_nonempty_semantic_value(name):
+                if name not in item or _has_empty_semantic_item(child):
+                    failures.append(f"{child_path} is required and must not be empty")
+            nested_contract = field.get("itemSchema")
+            if not isinstance(nested_contract, list) or child is None:
+                continue
+            if isinstance(child, list):
+                for index, nested_item in enumerate(child):
+                    inspect_declared(nested_item, nested_contract, f"{child_path}[{index}]")
+            elif isinstance(child, dict):
+                inspect_declared(child, nested_contract, child_path)
+
+    inspect(value, label)
+    inspect_declared(value, fields, label)
+    if failures:
+        raise ValueError(f"{label} failed semantic contract: {'; '.join(failures)}")
 
 
 def _json_object(content: str) -> Optional[dict[str, Any]]:
