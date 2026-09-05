@@ -291,6 +291,47 @@ class WorkflowGraphValidatorTest {
         assertThat(issues).noneMatch { it.code == "MEANING_EXPLICIT_INPUT_FIELDS_MISMATCH" }
     }
 
+    @Test fun `nested array item fields are not mistaken for top level workflow inputs`() {
+        val requirement = AutomationRequirement(
+            objective = "행사장 신청을 심사한다.", trigger = "수동 실행", inputs = listOf("applications"),
+            outputs = listOf("reviewTable"), steps = listOf("병렬 심사", "종합"), decisions = emptyList(),
+            exceptions = listOf("필수 근거 누락 시 실패"), humanApprovalRequired = false,
+        )
+        val proposal = AutomationProposal(
+            name = "행사장 심사", summary = "신청 심사", capabilities = listOf("심사"), integrations = emptyList(),
+            approvalPoints = emptyList(), failurePolicy = "실패 시 중단",
+            inputSchema = listOf(FieldDefinition(
+                "applications", "array", true, "대관 신청", 5, 5, "object",
+                listOf(
+                    FieldDefinition("venue", "string", true, "행사장"),
+                    FieldDefinition("eventDate", "string", true, "행사일"),
+                    FieldDefinition("capacity", "integer", true, "수용 인원"),
+                    FieldDefinition("insuranceValidUntil", "string", true, "보험 만료일"),
+                    FieldDefinition("evidenceUrls", "array", true, "근거 URL", 1, null, "string"),
+                ),
+            )),
+        )
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(WorkflowNode("start", NodeType.MANUAL_TRIGGER.wireName, "시작", NodePosition(0.0, 0.0))),
+            edges = emptyList(),
+        )
+
+        val instruction =
+            "입력은 applications 배열을 정확히 5개 받아야 하고 각 항목에는 venue, eventDate, capacity, insuranceValidUntil, evidenceUrls가 필수이며 evidenceUrls는 최소 1개여야 해."
+        val issues = validator.validate(
+            graph, requirement, proposal, emptyList(),
+            instruction,
+        ).issues
+
+        assertThat(issues).noneMatch { it.code == "MEANING_EXPLICIT_INPUT_FIELDS_MISMATCH" }
+        assertThat(issues).noneMatch { it.code == "MEANING_INPUT_CARDINALITY_MISMATCH" }
+
+        val wrongCardinality = proposal.copy(inputSchema = listOf(proposal.inputSchema.single().copy(minItems = 4, maxItems = 4)))
+        assertThat(validator.validate(graph, requirement, wrongCardinality, emptyList(), instruction).issues)
+            .anyMatch { it.code == "MEANING_INPUT_CARDINALITY_MISMATCH" }
+    }
+
     @Test fun `explicit primitive array item type rejects an object item contract`() {
         val requirement = AutomationRequirement(
             objective = "세 지점을 점검한다.", trigger = "수동 실행", inputs = listOf("warehouses"), outputs = listOf("summary"),

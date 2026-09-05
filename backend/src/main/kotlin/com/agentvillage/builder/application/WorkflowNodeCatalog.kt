@@ -512,7 +512,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private fun explicitArrayCardinalities(instruction: String): Map<String, Int> {
         val clause = explicitInputClause(instruction) ?: return emptyMap()
         val pattern = Regex(
-            """([A-Za-z][A-Za-z0-9]{0,59})\s*(?:(?:문자열|string|정수|integer|숫자|number|불리언|boolean|객체|object)\s*)?(?:배열|array)\s*\(?\s*(?:정확히|exactly)\s*(\d+)\s*(?:개|items?)?""",
+            """([A-Za-z][A-Za-z0-9]{0,59})\s*(?:(?:문자열|string|정수|integer|숫자|number|불리언|boolean|객체|object)\s*)?(?:배열|array)\s*(?:을|를)?\s*\(?\s*(?:정확히|exactly)\s*(\d+)\s*(?:개|items?)?""",
             RegexOption.IGNORE_CASE,
         )
         return pattern.findAll(clause).mapNotNull { match ->
@@ -581,10 +581,19 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         }.toList()
     }
 
-    private fun explicitInputClause(instruction: String): String? = Regex(
-        """(?:입력(?:\s*필드)?은|inputs?\s*(?:are|:))\s*([^\n.]+?)(?:이고|이며|이다|입니다|$)""",
-        RegexOption.IGNORE_CASE,
-    ).find(instruction)?.groupValues?.get(1)
+    private fun explicitInputClause(instruction: String): String? {
+        val clause = Regex(
+            """(?:입력(?:\s*필드)?은|inputs?\s*(?:are|:))\s*([^\n.]+?)(?:이고|이며|이다|입니다|$)""",
+            RegexOption.IGNORE_CASE,
+        ).find(instruction)?.groupValues?.get(1) ?: return null
+        return clause.split(
+            Regex(
+                """\s*(?:받아야\s*하고\s*)?(?:각\s*(?:항목|요소)(?:에는|은|는)?|each\s+(?:item|element)|items?\s+(?:contain|include|have))""",
+                RegexOption.IGNORE_CASE,
+            ),
+            limit = 2,
+        ).first().trim()
+    }
 
     private fun parseBranchCondition(value: String): Pair<String, String>? {
         val match = Regex("^([A-Za-z][A-Za-z0-9]*)=(true|false|[A-Za-z0-9_-]+)$").matchEntire(value.trim()) ?: return null
