@@ -62,6 +62,7 @@ class CodexCliMetaAgentModelTest {
             "정수 입력은 number가 아니라 integer 타입",
             "구조화 객체이면 itemType=object",
             "itemSchema에 객체의 모든 필드",
+            "반복 순번이나 슬롯을 위한 임의 필드를 만들지 않는다",
         )
     }
 
@@ -85,6 +86,7 @@ class CodexCliMetaAgentModelTest {
             "previousBundle의 올바른 필드",
             "모두 같은 집계 노드로 fan-in",
             "itemType=object와 재귀 itemSchema",
+            "반복 순번이나 슬롯용 임의 필드는 제거한다",
             "INVALID_AGENT_OUTPUT_SCHEMA",
             "reason 필드가 누락되었습니다.",
         )

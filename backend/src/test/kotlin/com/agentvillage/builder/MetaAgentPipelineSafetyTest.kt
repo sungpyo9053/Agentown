@@ -46,6 +46,61 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
+    fun `undeclared generated agent defaults are removed before semantic validation`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val plan = WorkflowGraphPlan(
+            entryNodeId = "inspect",
+            nodes = listOf(WorkflowNodePlan(
+                "inspect", "ai.generate", "Inspect",
+                mapOf(
+                    "agentKey" to "inspector",
+                    "instruction" to "inspect",
+                    "inputDefaults" to mapOf("severity" to "HIGH", "inspectionSlot" to 1),
+                ),
+            )),
+            edges = emptyList(),
+        )
+        val inspector = AgentDefinition(
+            "inspector", "Inspector", "Inspect equipment",
+            listOf(FieldDefinition("severity", "string", true, "severity")),
+            listOf(FieldDefinition("decision", "string", true, "decision")),
+            listOf("inspect"), listOf("do not invent"), listOf("input"),
+        )
+
+        val normalized = pipeline.removeUndeclaredAgentInputDefaults(plan, listOf(inspector))
+
+        assertThat(normalized.nodes.single().config["inputDefaults"])
+            .isEqualTo(mapOf("severity" to "HIGH"))
+    }
+
+    @Test
+    fun `duplicate branch edges to the same target merge without losing bindings`() {
+        val plan = WorkflowGraphPlan(
+            entryNodeId = "route",
+            nodes = listOf(
+                WorkflowNodePlan("route", "condition.branch", "Route", mapOf("expression" to "qualityPassed")),
+                WorkflowNodePlan("report", "workflow.end", "Report"),
+            ),
+            edges = listOf(
+                WorkflowEdgePlan("success-a", "route", "report", "qualityPassed=true", listOf(WorkflowFieldBinding("first", "first"))),
+                WorkflowEdgePlan("success-b", "route", "report", "qualityPassed=true", listOf(WorkflowFieldBinding("second", "second"))),
+            ),
+        )
+
+        val normalized = com.agentvillage.builder.application.WorkflowGraphPlanNormalizer.normalize(plan)
+
+        assertThat(normalized.edges).hasSize(1)
+        assertThat(normalized.edges.single().bindings).containsExactlyInAnyOrder(
+            WorkflowFieldBinding("first", "first"), WorkflowFieldBinding("second", "second"),
+        )
+    }
+
+    @Test
     fun `generated field metadata is canonicalized before semantic validation`() {
         val mapper = jacksonObjectMapper()
         val runs = mock<MetaAgentRunRepository>()

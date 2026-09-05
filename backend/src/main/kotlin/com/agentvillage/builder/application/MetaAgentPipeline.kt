@@ -315,7 +315,9 @@ class StructuredMetaAgentPipeline(
         }
         val runtimeApprovalExplicit = Regex("(승인|담당자.{0,12}(검토|확인)|관리자.{0,12}(검토|확인)|사람.{0,12}(검토|확인)|사용자.{0,12}(검토|확인))")
             .containsMatchIn(instruction)
-        val generatedGraph = canonical.proposal.graphPlan?.let(::normalizeGeneratedInputDefaults)
+        val generatedGraph = canonical.proposal.graphPlan
+            ?.let(::normalizeGeneratedInputDefaults)
+            ?.let { removeUndeclaredAgentInputDefaults(it, canonical.agentDefinitions) }
         val graphWithoutInventedApproval = if (mode == DesignMode.AGENT_DEVELOPMENT && !runtimeApprovalExplicit) {
             generatedGraph?.let(::removeRuntimeApprovalNodes)
         } else generatedGraph
@@ -361,6 +363,23 @@ class StructuredMetaAgentPipeline(
             node.copy(config = node.config + ("inputDefaults" to normalized))
         },
     )
+
+    internal fun removeUndeclaredAgentInputDefaults(
+        plan: WorkflowGraphPlan,
+        agents: List<AgentDefinition>,
+    ): WorkflowGraphPlan {
+        val agentsByKey = agents.associateBy { it.key }
+        return plan.copy(nodes = plan.nodes.map { node ->
+            if (node.nodeType !in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)) return@map node
+            val agent = node.config["agentKey"]?.toString()?.let(agentsByKey::get) ?: return@map node
+            val defaults = node.config["inputDefaults"] as? Map<*, *> ?: return@map node
+            val declared = agent.inputSchema.map { it.name }.toSet()
+            val filtered = defaults.entries
+                .filter { it.key?.toString() in declared }
+                .associate { it.key.toString() to it.value }
+            node.copy(config = node.config + ("inputDefaults" to filtered))
+        })
+    }
 
     internal fun canonicalFields(fields: List<FieldDefinition>): List<FieldDefinition> = fields.map { field ->
         if (!field.type.equals("array", true)) field.copy(minItems = null, maxItems = null, itemType = null, itemSchema = null)
@@ -854,12 +873,18 @@ internal object WorkflowGraphPlanNormalizer {
             edge.source == edge.target && plan.edges.any { candidate -> candidate.source == edge.source && candidate.target != edge.source }
         }
         val outgoingCounts = edgesWithoutRedundantSelfLoops.groupingBy { it.source }.eachCount()
-        val edges = edgesWithoutRedundantSelfLoops.map { edge ->
+        val normalizedEdges = edgesWithoutRedundantSelfLoops.map { edge ->
             val branch = branchById[edge.source] ?: return@map edge
             val expression = branch.config["expression"]?.toString().orEmpty()
             val typed = parseCondition(edge.condition, expression, outgoingCounts[edge.source] ?: 0)
             edge.copy(condition = typed?.serialize() ?: edge.condition.trim(), conditionSpec = typed)
         }
+        val edges = normalizedEdges
+            .groupBy { Triple(it.source, it.target, it.condition) }
+            .values
+            .map { duplicates ->
+                duplicates.first().copy(bindings = duplicates.flatMap { it.bindings }.distinct())
+            }
         val nodes = plan.nodes.map { node ->
             if (node.nodeType !in setOf(NodeType.TEMPLATE_RENDER.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.EMAIL_SEND_MOCK.wireName)) return@map node
             if (!node.config["rendererKey"]?.toString().isNullOrBlank()) return@map node
