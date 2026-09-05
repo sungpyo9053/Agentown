@@ -29,7 +29,12 @@ type Run = { id: string; status: string; currentNodeId?: string; output?: Record
 
 const storageKey = "agentown.agent-development.session.v1";
 const starter = "어떤 AI 에이전트를 만들고 싶으신가요? 역할과 원하는 결과를 자연스럽게 설명해 주세요.";
-const examples = ["업로드한 계약서의 위험 조항을 찾고 근거와 함께 설명하는 에이전트", "매주 회의록을 읽고 결정사항과 담당자별 할 일을 정리하는 에이전트", "고객 인터뷰를 분석해 반복되는 문제와 제품 기회를 찾는 에이전트"];
+const examples = [
+  "계약서 파일을 받아 위험 조항과 근거 문장을 찾고, 확인할 수 없는 내용은 담당자 검토로 넘겨줘.",
+  "회의록을 받아 결정사항과 담당자별 할 일을 정리하고, 담당자가 없는 항목은 미지정으로 표시해줘.",
+  "고객 인터뷰 여러 건을 각각 분석한 뒤 모두 끝나면 반복 문제와 제품 기회를 근거와 함께 표로 정리해줘.",
+];
+type GuidedDraft = { input: string; work: string; output: string; failure: string };
 function key(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 function defaultTestInput(snapshot?: Snapshot): Record<string, unknown> {
   if (snapshot?.sampleInput && Object.keys(snapshot.sampleInput).length > 0) return snapshot.sampleInput;
@@ -58,6 +63,7 @@ export default function AgentDevelopmentPage() {
   const [mobileInspector, setMobileInspector] = useState(false);
   const [run, setRun] = useState<Run>();
   const [testInput, setTestInput] = useState("");
+  const [guidedDraft, setGuidedDraft] = useState<GuidedDraft>({ input: "", work: "", output: "", failure: "" });
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setSessionId(window.localStorage.getItem(storageKey) ?? undefined), []);
@@ -110,6 +116,15 @@ export default function AgentDevelopmentPage() {
   const restoreVersion = useMutation({ mutationFn: (versionId: string) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/versions/${versionId}/restore`, { method: "POST", headers: { "Idempotency-Key": key("agent-version") }, body: "{}" }), onSuccess: store });
   const cancel = useMutation({ mutationFn: () => api<Job>(`/agent-development/jobs/${jobId}/cancel`, { method: "POST", headers: { "Idempotency-Key": key("agent-cancel") }, body: "{}" }), onSuccess: next => queryClient.setQueryData(["agent-development-job", next.id], next) });
   function submit(event: FormEvent) { event.preventDefault(); if (!message.trim() || pending) return; if (snapshot?.status !== "DRAFT" && snapshot?.graph && snapshot.currentVersionId && snapshot.validation) patch.mutate(message.trim()); else send.mutate(message.trim()); }
+  function applyGuide() {
+    const lines = [
+      `입력: ${guidedDraft.input.trim()}`,
+      `처리: ${guidedDraft.work.trim()}`,
+      `결과: ${guidedDraft.output.trim()}`,
+      guidedDraft.failure.trim() ? `실패 처리: ${guidedDraft.failure.trim()}` : "실패 처리: 필요한 정보가 없거나 실행할 수 없으면 성공으로 꾸미지 말고 이유를 알려줘.",
+    ];
+    setMessage(lines.join("\n"));
+  }
   function newSession() { window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
 
   const pending = create.isPending || send.isPending || patch.isPending || decideDesign.isPending || updateAgent.isPending || simulate.isPending || decideRun.isPending || restoreVersion.isPending || Boolean(jobId && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.data?.status ?? ""));
@@ -127,9 +142,22 @@ export default function AgentDevelopmentPage() {
 
       <main className="flex min-h-0 min-w-0 flex-col bg-white">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-hairline px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{snapshot?.proposal?.name ?? sessions.data?.find(item => item.conversationId === sessionId)?.title ?? "새 AI 에이전트"}</p><p className="text-[11px] text-mute">{koStatus(snapshot?.status ?? "DRAFT")}</p></div><div className="flex gap-2 lg:hidden"><button onClick={() => setMobileInspector(true)} title="에이전트 상세" aria-label="에이전트 상세" className="flex h-9 w-9 items-center justify-center rounded-md border border-hairline"><PanelRight className="h-4 w-4" /></button><button onClick={newSession} className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 text-xs"><Plus className="h-3.5 w-3.5" />새로 만들기</button></div></header>
+        <NextAction status={snapshot?.status} hasVersion={Boolean(snapshot?.currentVersionId)} run={run} open={nextPanel => { setPanel(nextPanel); setMobileInspector(true); }} />
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-4 py-6 md:px-8">
           <div className="mx-auto max-w-3xl space-y-5">
-            {!snapshot?.messages.length && <div className="py-10"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-6 w-6" /></div><h1 className="mt-5 text-center text-2xl font-semibold">만들고 싶은 에이전트를 설명하세요</h1><p className="mx-auto mt-2 max-w-lg text-center text-sm leading-6 text-mute">{starter}</p><div className="mt-8 grid gap-2">{examples.map(example => <button key={example} onClick={() => setMessage(example)} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>}
+            {!snapshot?.messages.length && <div className="py-6"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-6 w-6" /></div><h1 className="mt-5 text-center text-2xl font-semibold">코딩하지 말고, 업무를 네 칸으로 알려주세요</h1><p className="mx-auto mt-2 max-w-lg text-center text-sm leading-6 text-mute">{starter}</p>
+              <section className="mt-7 rounded-xl border border-hairline bg-cloud p-4 md:p-5" aria-labelledby="guided-request-title">
+                <div className="flex items-start justify-between gap-3"><div><h2 id="guided-request-title" className="text-sm font-semibold">처음이라면 여기만 채우세요</h2><p className="mt-1 text-xs leading-5 text-mute">짧게 적어도 Agentown이 역할·그래프·입출력 규칙으로 바꿉니다.</p></div><span className="rounded-pill bg-white px-3 py-1 text-[10px] font-semibold">초보자 추천</span></div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <GuideField number="1" label="무엇을 받나요?" placeholder="예: 고객 질문과 사내 FAQ" value={guidedDraft.input} onChange={input => setGuidedDraft(current => ({ ...current, input }))} />
+                  <GuideField number="2" label="어떻게 처리하나요?" placeholder="예: FAQ를 검색하고 근거를 확인" value={guidedDraft.work} onChange={work => setGuidedDraft(current => ({ ...current, work }))} />
+                  <GuideField number="3" label="어떤 결과가 필요하나요?" placeholder="예: 근거 링크가 포함된 답변 초안" value={guidedDraft.output} onChange={output => setGuidedDraft(current => ({ ...current, output }))} />
+                  <GuideField number="4" label="실패하면 어떻게 하나요?" placeholder="예: 근거가 없으면 담당자에게 전달" value={guidedDraft.failure} onChange={failure => setGuidedDraft(current => ({ ...current, failure }))} />
+                </div>
+                <button type="button" disabled={!guidedDraft.input.trim() || !guidedDraft.work.trim() || !guidedDraft.output.trim()} onClick={applyGuide} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">요청문 자동 완성 <ChevronRight className="h-4 w-4" /></button>
+              </section>
+              <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => setMessage(example)} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
+            </div>}
             {snapshot?.messages.map(item => <article key={item.id} className={`flex gap-3 ${item.role === "USER" ? "justify-end" : "justify-start"}`}>{item.role !== "USER" && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span>}<div className={`max-w-[82%] rounded-md px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "bg-[#e9e9e4] text-ink" : "border border-hairline bg-white"}`}>{item.content}</div></article>)}
             {pending && <article className="flex gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span><div className="min-w-64 rounded-md border border-hairline p-4"><div className="flex items-center justify-between gap-4"><p className="text-sm font-medium">에이전트를 구성하고 있습니다</p><span className="text-[11px] text-mute">{job.data ? `${stageLabel(job.data.stage)} · ${job.data.elapsedSeconds}초` : "요청 준비"}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cloud"><div className="h-full w-2/3 animate-pulse rounded-full bg-coral" /></div><button onClick={() => cancel.mutate()} disabled={!jobId} className="mt-3 flex items-center gap-1 text-xs text-mute hover:text-sale"><CircleStop className="h-3.5 w-3.5" />중지</button></div></article>}
             {error && <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error.message}</div>}
@@ -189,6 +217,15 @@ function OutputPanel({ snapshot, run, input, setInput, pending, simulate, decide
   if (!snapshot?.currentVersionId) return <Empty icon={TestTube2} text="설계를 승인하면 실제 버전에 대한 샘플 테스트를 실행할 수 있습니다." />;
   const sample = JSON.stringify(defaultTestInput(snapshot), null, 2);
   return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-3"><label className="text-[11px] font-semibold">테스트 입력</label><textarea aria-label="테스트 입력" value={input} onChange={event => setInput(event.target.value)} placeholder={sample} rows={4} className="mt-2 w-full resize-y rounded-md border border-hairline px-3 py-2 text-xs leading-5" /><button disabled={pending} onClick={simulate} className="mt-2 flex w-full items-center justify-center gap-1 rounded-md bg-ink py-2.5 text-xs text-white disabled:opacity-35"><Play className="h-3.5 w-3.5" />테스트 실행</button></div>{run && <div className="rounded-md border border-hairline bg-white p-3"><div className="flex items-center justify-between"><p className="text-xs font-semibold">실행 결과</p><span className="text-[10px] text-mute">{run.status}</span></div>{run.status === "SUCCEEDED" && run.requirementMatched === true && <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-[11px] font-semibold text-emerald-800">샘플 Runner 서버 검증이 완료되었습니다.</div>}{run.failureMessage && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] leading-5 text-amber-900"><p className="font-semibold">{run.failureCode ?? run.status}</p><p className="mt-1">{run.failureMessage}</p></div>}<div className="mt-3 space-y-1">{run.steps.map(step => <div key={`${step.sequenceNo}-${step.nodeId}`} className="flex items-center justify-between border-b border-hairline py-1.5 text-[11px]"><span>{step.sequenceNo}. {step.nodeType}</span><span className="text-mute">{step.status}</span></div>)}</div>{run.status === "WAITING_APPROVAL" && <div className="mt-3 grid grid-cols-2 gap-2"><button onClick={() => decide(false)} className="rounded-md border border-hairline py-2 text-xs">거절</button><button onClick={() => decide(true)} className="rounded-md bg-ink py-2 text-xs text-white">계속 실행</button></div>}<pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-[#f5f5f2] p-3 text-[11px] leading-5">{JSON.stringify(run.output ?? {}, null, 2)}</pre></div>}</div>;
+}
+function GuideField({ number, label, placeholder, value, onChange }: { number: string; label: string; placeholder: string; value: string; onChange: (value: string) => void }) { return <label className="rounded-md border border-hairline bg-white p-3 text-xs font-semibold"><span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-ink text-[10px] text-white">{number}</span>{label}<input value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder} maxLength={500} className="mt-3 w-full border-0 border-b border-hairline px-0 py-2 text-sm font-normal outline-none focus:border-ink" /></label>; }
+function NextAction({ status, hasVersion, run, open }: { status?: string; hasVersion: boolean; run?: Run; open: (panel: "team" | "graph" | "output") => void }) {
+  let text = "1. 만들 업무를 적고 요청문을 보내세요.";
+  let action: { label: string; panel: "team" | "graph" | "output" } | undefined;
+  if (status === "WAITING_DESIGN_APPROVAL") { text = "2. 팀과 실행 구조를 확인한 뒤 설계를 승인하세요."; action = { label: "팀 확인", panel: "team" }; }
+  else if (hasVersion && run?.status !== "SUCCEEDED") { text = "3. 자동 생성된 유효 샘플로 실제 실행을 시험하세요."; action = { label: "테스트 열기", panel: "output" }; }
+  else if (run?.status === "SUCCEEDED" && run.requirementMatched === true) { text = "4. 검증 완료. 팀 탭에서 패키지를 내려받아 사용할 수 있습니다."; action = { label: "패키지 받기", panel: "team" }; }
+  return <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline bg-amber-50 px-4 py-2.5 text-xs"><p><b className="mr-2">지금 할 일</b>{text}</p>{action && <button type="button" onClick={() => open(action.panel)} className="shrink-0 rounded-md bg-white px-3 py-1.5 font-semibold shadow-sm">{action.label}</button>}</div>;
 }
 function InspectorTab({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: typeof Users; label: string }) { return <button onClick={onClick} className={`flex items-center justify-center gap-1.5 border-b-2 text-xs ${active ? "border-ink bg-white text-ink" : "border-transparent text-mute hover:text-ink"}`}><Icon className="h-3.5 w-3.5" />{label}</button>; }
 function Empty({ icon: Icon, text }: { icon: typeof Users; text: string }) { return <div className="flex h-full min-h-52 flex-col items-center justify-center px-6 text-center text-xs leading-5 text-mute"><Icon className="mb-3 h-7 w-7" />{text}</div>; }

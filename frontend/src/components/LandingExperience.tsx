@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -15,6 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { blockFontClassName } from "@/lib/fonts";
+import { AgentCharacter, AgentVisualStatus } from "@/components/AgentCharacter";
 
 type Scenario = {
   id: "faq" | "csv" | "notion";
@@ -245,6 +246,31 @@ export function LandingExperience() {
 }
 
 function HeroProductWindow() {
+  const [phase, setPhase] = useState(0);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const sync = () => {
+      if (timer) clearInterval(timer);
+      if (media.matches) {
+        setPhase(6);
+      } else {
+        setPhase(0);
+        timer = setInterval(() => setPhase((current) => (current + 1) % 7), 1050);
+      }
+    };
+    sync();
+    media.addEventListener("change", sync);
+    return () => {
+      if (timer) clearInterval(timer);
+      media.removeEventListener("change", sync);
+    };
+  }, []);
+
+  const agentStatus = (activeAt: number): AgentVisualStatus => phase > activeAt ? "SUCCESS" : phase === activeAt ? "WORKING" : "IDLE";
+  const stageLabel = ["요청을 읽는 중", "실행 그래프 생성", "FAQ 검색 중", "근거 검증 중", "안전 분기 선택", "답변 작성 중", "샘플 실행 완료"][phase];
+
   return <div className="relative">
     <div className="absolute -inset-12 -z-10 rounded-full bg-zinc-100 blur-3xl" />
     <div className="overflow-hidden rounded-[1.75rem] border border-zinc-300 bg-white">
@@ -261,18 +287,47 @@ function HeroProductWindow() {
         </div>
         <div className="p-4 sm:p-6">
           <p className="text-[10px] font-semibold uppercase tracking-[.16em] text-mute">FAQ 기반 고객 답변</p>
-          <div className="mt-4 rounded-xl bg-cloud p-4 text-xs leading-5">“FAQ 근거가 있을 때만 답하고, 없으면 담당자에게 넘겨줘.”</div>
-          <div className="mt-5 flex flex-col items-center">
-            {[{title:"질문 받기",sub:"manual.trigger"},{title:"FAQ 검색",sub:"knowledge.search"},{title:"근거 확인",sub:"condition.branch"},{title:"답변 또는 담당자 확인",sub:"safe output"}].map((node, i) => <div key={node.title} className="contents">
-              <div className={`w-full max-w-[17rem] rounded-xl border p-3 ${i === 2 ? "border-zinc-900 bg-zinc-900 text-white" : "border-zinc-300 bg-white"}`}><b className="block text-xs">{node.title}</b><span className="mt-1 block text-[9px] opacity-55">{node.sub}</span></div>
-              {i < 3 && <span className="h-4 w-px bg-zinc-300"/>}
-            </div>)}
+          <div className={`hero-demo-prompt mt-4 rounded-xl bg-cloud p-4 text-xs leading-5 ${phase === 0 ? "hero-demo-prompt--active" : ""}`}>“FAQ 근거가 있을 때만 답하고, 없으면 담당자에게 넘겨줘.”</div>
+          <p className="sr-only">질문 입력 뒤 FAQ 검색 담당, 근거 검수 담당, 답변 작성 담당이 실제 그래프 순서로 실행되고 안전 분기에서 결과를 반환하는 데모입니다.</p>
+          <div className="hero-flow mt-4" aria-hidden="true">
+            <HeroGraphNode title="질문 받기" detail="manual.trigger" active={phase >= 1} />
+            <HeroConnector active={phase >= 2} />
+            <HeroAgentNode character="developer" name="검색 담당" title="FAQ 검색" detail="knowledge.search" active={phase >= 2} status={agentStatus(2)} />
+            <HeroConnector active={phase >= 3} />
+            <HeroAgentNode character="reviewer" name="근거 검수" title="근거 확인" detail="condition.branch" active={phase >= 3} status={agentStatus(3)} dark />
+            <HeroBranch active={phase >= 4} />
+            <HeroAgentNode character="writer" name="답변 작성" title="근거 기반 답변" detail="ai.generate" active={phase >= 5} status={agentStatus(5)} />
           </div>
-          <div className="mt-5 flex items-center justify-between rounded-xl bg-emerald-50 p-3 text-xs"><span className="font-semibold">샘플 실행 완료</span><span className="text-emerald-700">SUCCEEDED</span></div>
+          <div className={`hero-demo-result mt-4 flex items-center justify-between rounded-xl p-3 text-xs ${phase >= 6 ? "hero-demo-result--complete bg-emerald-50" : "bg-zinc-100"}`} aria-hidden="true"><span className="font-semibold">{stageLabel}</span><span className={phase >= 6 ? "text-emerald-700" : "text-mute"}>{phase >= 6 ? "SUCCEEDED" : "RUNNING"}</span></div>
         </div>
       </div>
     </div>
     <div className="absolute -bottom-5 -right-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-xs font-semibold sm:right-5">✓ 근거 없는 답변 차단</div>
+  </div>;
+}
+
+function HeroGraphNode({ title, detail, active, dark = false }: { title: string; detail: string; active: boolean; dark?: boolean }) {
+  return <div className={`hero-graph-node ${active ? "hero-graph-node--active" : ""} ${dark ? "hero-graph-node--dark" : ""}`}>
+    <b>{title}</b><span>{detail}</span>
+  </div>;
+}
+
+function HeroAgentNode({ character, name, title, detail, active, status, dark = false }: {
+  character: string; name: string; title: string; detail: string; active: boolean; status: AgentVisualStatus; dark?: boolean;
+}) {
+  return <div className={`hero-agent-row ${active ? "hero-agent-row--active" : ""}`}>
+    <div className="hero-agent-avatar"><AgentCharacter characterKey={character} status={status} className="h-14 w-11" /><span>{name}</span></div>
+    <HeroGraphNode title={title} detail={detail} active={active} dark={dark} />
+  </div>;
+}
+
+function HeroConnector({ active }: { active: boolean }) {
+  return <span className={`hero-connector ${active ? "hero-connector--active" : ""}`} />;
+}
+
+function HeroBranch({ active }: { active: boolean }) {
+  return <div className={`hero-branch ${active ? "hero-branch--active" : ""}`}>
+    <span className="hero-branch__line" /><span className="hero-branch__yes">근거 있음</span><span className="hero-branch__no">담당자 확인</span>
   </div>;
 }
 
