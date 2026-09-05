@@ -62,6 +62,7 @@ import java.util.concurrent.atomic.AtomicInteger
     "builder.production.reconciliation.stale-after-seconds=60",
     "builder.production.reconciliation.interval-ms=86400000",
     "builder.production.reconciliation.batch-size=2",
+    "spring.task.scheduling.enabled=false",
 ])
 class BuilderProductionExecutionIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var builder: BuilderService

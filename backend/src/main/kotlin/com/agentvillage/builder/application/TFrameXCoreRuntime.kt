@@ -488,6 +488,10 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         while (current != null && visited.add(current)) {
             effectiveByNode[current]?.let(steps::add)
             val next = outgoing[current].orEmpty()
+            if (next.size > 1 && next.all { nodes[it.target]?.nodeType == NodeType.WORKFLOW_END.wireName }) {
+                current = null
+                continue
+            }
             if (next.size > 1 || nodes[current]?.nodeType == NodeType.CONDITION_BRANCH.wireName) {
                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "중첩 RouterPattern 경로는 아직 구성되지 않았습니다.")
             }

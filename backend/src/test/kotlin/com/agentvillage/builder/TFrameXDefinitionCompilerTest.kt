@@ -456,17 +456,27 @@ class TFrameXDefinitionCompilerTest {
                 WorkflowNode("left", "ai.generate", "Left", NodePosition(0.0, 0.0), mapOf("agentKey" to "auditor")),
                 WorkflowNode("right", "ai.generate", "Right", NodePosition(0.0, 0.0), mapOf("agentKey" to "auditor")),
                 WorkflowNode("quality", "quality.check", "Quality", NodePosition(0.0, 0.0)),
+                WorkflowNode("route", "condition.branch", "Route", NodePosition(0.0, 0.0)),
                 WorkflowNode("aggregate", "ai.generate", "Aggregate", NodePosition(0.0, 0.0), mapOf("agentKey" to "aggregator")),
+                WorkflowNode("completed", "workflow.end", "Completed", NodePosition(0.0, 0.0)),
+                WorkflowNode("failed", "workflow.end", "Failed", NodePosition(0.0, 0.0)),
             ),
             edges = listOf(
                 WorkflowEdge("start-left", "start", "left"), WorkflowEdge("start-right", "start", "right"),
                 WorkflowEdge("left-quality", "left", "quality", bindings = mapOf("auditResults" to "result")),
                 WorkflowEdge("right-quality", "right", "quality", bindings = mapOf("auditResults" to "result")),
-                WorkflowEdge("quality-aggregate", "quality", "aggregate", bindings = mapOf("auditResults" to "auditResults")),
+                WorkflowEdge("quality-route", "quality", "route", bindings = mapOf("qualityPassed" to "qualityPassed")),
+                WorkflowEdge("route-aggregate", "route", "aggregate", "qualityPassed=true", mapOf("auditResults" to "auditResults")),
+                WorkflowEdge("route-failed", "route", "failed", "qualityPassed=false"),
+                WorkflowEdge("aggregate-completed", "aggregate", "completed", "status=SUCCEEDED"),
+                WorkflowEdge("aggregate-failed", "aggregate", "failed", "status=FAILED"),
             ),
         )
 
-        val definition = compiler.compile("whole-output-fan-in", graph, listOf(worker, aggregator), emptyMap())
+        val definition = compiler.compile(
+            "whole-output-fan-in", graph, listOf(worker, aggregator), emptyMap(),
+            finalOutputSchema = aggregator.outputSchema,
+        )
         val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
         assertThat((parallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> })
             .allMatch { it["sourceField"] == "${'$'}output" && it["targetField"] == "auditResults" && it["aggregationMode"] == "APPEND_ITEM" }
