@@ -330,7 +330,7 @@ function HeroProductWindow() {
         </div>
       </div>
     </div>
-    <div className="absolute -bottom-5 -right-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-xs font-semibold sm:right-5">✓ 근거 없는 답변 차단</div>
+    <div className="absolute -bottom-5 -right-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-xs font-semibold sm:right-5">✓ 실패 시 종합 단계 중단</div>
   </div>;
 }
 
