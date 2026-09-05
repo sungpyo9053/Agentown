@@ -7,6 +7,7 @@ import {
   Check,
   ChevronRight,
   Download,
+  FileText,
   FileSpreadsheet,
   GitBranch,
   MessageSquareText,
@@ -254,10 +255,10 @@ function HeroProductWindow() {
     const sync = () => {
       if (timer) clearInterval(timer);
       if (media.matches) {
-        setPhase(6);
+        setPhase(8);
       } else {
         setPhase(0);
-        timer = setInterval(() => setPhase((current) => (current + 1) % 7), 1050);
+        timer = setInterval(() => setPhase((current) => (current + 1) % 9), 1150);
       }
     };
     sync();
@@ -269,7 +270,12 @@ function HeroProductWindow() {
   }, []);
 
   const agentStatus = (activeAt: number): AgentVisualStatus => phase > activeAt ? "SUCCESS" : phase === activeAt ? "WORKING" : "IDLE";
-  const stageLabel = ["요청을 읽는 중", "실행 그래프 생성", "FAQ 검색 중", "근거 검증 중", "안전 분기 선택", "답변 작성 중", "샘플 실행 완료"][phase];
+  const progressItems = [
+    { label: "첨부 자료 읽음", doneAt: 2 },
+    { label: "수집 Agent 구성", doneAt: 4 },
+    { label: "정제 규칙 적용", doneAt: 6 },
+    { label: "실행 구조 검증", doneAt: 7 },
+  ];
 
   return <div className="relative">
     <div className="absolute -inset-12 -z-10 rounded-full bg-zinc-100 blur-3xl" />
@@ -278,31 +284,59 @@ function HeroProductWindow() {
         <div className="flex gap-1.5"><i className="h-2.5 w-2.5 rounded-full bg-zinc-200"/><i className="h-2.5 w-2.5 rounded-full bg-zinc-200"/><i className="h-2.5 w-2.5 rounded-full bg-zinc-200"/></div>
         <span className="text-[10px] font-semibold text-mute">에이전트 개발 · Version 1</span>
       </div>
-      <div className="grid min-h-[31rem] grid-cols-[5rem_1fr] sm:grid-cols-[8rem_1fr]">
-        <div className="border-r border-hairline-soft bg-cloud p-3 sm:p-4">
-          <span className="text-[10px] font-bold">AGENTOWN</span>
-          <div className="mt-8 space-y-2 text-[10px] text-mute">
-            <p className="rounded-lg bg-white px-2 py-2 text-ink">설계</p><p className="px-2 py-2">팀</p><p className="px-2 py-2">테스트</p><p className="px-2 py-2">버전</p>
+      <div className="grid min-h-[31rem] lg:grid-cols-[.82fr_1.18fr]">
+        <div className="border-b border-hairline-soft bg-cloud p-4 lg:border-b-0 lg:border-r sm:p-5">
+          <p className="text-[10px] font-semibold uppercase tracking-[.16em] text-mute">새 에이전트 만들기</p>
+          <h3 className="mt-2 text-sm font-bold">사내 시장 정보 시스템</h3>
+          <div className={`hero-demo-files mt-4 grid gap-2 ${phase >= 1 ? "hero-demo-files--visible" : ""}`} aria-hidden="true">
+            <HeroFile icon={<FileText />} kind="PDF" name="시장정보 요구사항 인터뷰.pdf" />
+            <HeroFile icon={<FileSpreadsheet />} kind="XLSX" name="경쟁사 모니터링 현황.xlsx" />
+          </div>
+          <div className={`hero-demo-prompt mt-3 rounded-xl bg-white p-3 text-[11px] leading-5 ${phase === 0 ? "hero-demo-prompt--active" : ""}`}>
+            부서마다 흩어진 시장 정보를 한곳에 모으려고 해. 인터뷰를 반영해 수집·정제 에이전트를 만들어줘.
+          </div>
+          <div className="mt-4 space-y-2" aria-label="에이전트 생성 진행 상황">
+            {progressItems.map((item) => <div key={item.label} className={`hero-progress-item ${phase >= item.doneAt ? "hero-progress-item--done" : ""}`}>
+              <span>{phase >= item.doneAt ? <Check className="h-3 w-3" /> : <i />}</span>{item.label}
+            </div>)}
+          </div>
+          <div className={`hero-follow-up mt-4 ${phase >= 8 ? "hero-follow-up--visible" : ""}`}>
+            <span>이어서 요청해 보세요</span><b>소스별 수집 주기를 비교해줘</b>
           </div>
         </div>
-        <div className="p-4 sm:p-6">
-          <p className="text-[10px] font-semibold uppercase tracking-[.16em] text-mute">FAQ 기반 고객 답변</p>
-          <div className={`hero-demo-prompt mt-4 rounded-xl bg-cloud p-4 text-xs leading-5 ${phase === 0 ? "hero-demo-prompt--active" : ""}`}>“FAQ 근거가 있을 때만 답하고, 없으면 담당자에게 넘겨줘.”</div>
-          <p className="sr-only">질문 입력 뒤 FAQ 검색 담당, 근거 검수 담당, 답변 작성 담당이 실제 그래프 순서로 실행되고 안전 분기에서 결과를 반환하는 데모입니다.</p>
-          <div className="hero-flow mt-4" aria-hidden="true">
-            <HeroGraphNode title="질문 받기" detail="manual.trigger" active={phase >= 1} />
-            <HeroConnector active={phase >= 2} />
-            <HeroAgentNode character="developer" name="검색 담당" title="FAQ 검색" detail="knowledge.search" active={phase >= 2} status={agentStatus(2)} />
-            <HeroConnector active={phase >= 3} />
-            <HeroAgentNode character="reviewer" name="근거 검수" title="근거 확인" detail="condition.branch" active={phase >= 3} status={agentStatus(3)} dark />
-            <HeroBranch active={phase >= 4} />
-            <HeroAgentNode character="writer" name="답변 작성" title="근거 기반 답변" detail="ai.generate" active={phase >= 5} status={agentStatus(5)} />
+        <div className="p-4 sm:p-5">
+          <div className="flex items-center justify-between">
+            <div><p className="text-[10px] font-semibold uppercase tracking-[.16em] text-mute">실제 실행 그래프</p><b className="mt-1 block text-xs">수집 → 병렬 처리 → 정제 → 검증</b></div>
+            <span className={`rounded-pill px-2.5 py-1 text-[9px] font-bold ${phase >= 7 ? "bg-emerald-100 text-emerald-800" : "bg-zinc-100 text-mute"}`}>{phase >= 7 ? "INTERACTIVE_READY" : "설계 중"}</span>
           </div>
-          <div className={`hero-demo-result mt-4 flex items-center justify-between rounded-xl p-3 text-xs ${phase >= 6 ? "hero-demo-result--complete bg-emerald-50" : "bg-zinc-100"}`} aria-hidden="true"><span className="font-semibold">{stageLabel}</span><span className={phase >= 6 ? "text-emerald-700" : "text-mute"}>{phase >= 6 ? "SUCCEEDED" : "RUNNING"}</span></div>
+          <p className="sr-only">첨부 자료를 읽은 뒤 세 수집 에이전트가 병렬로 실행되고, 정제 담당과 검증 Join을 거쳐 실행 가능한 에이전트 팀이 완성되는 데모입니다.</p>
+          <div className="hero-market-flow mt-5" aria-hidden="true">
+            <HeroGraphNode title="시장 정보 요청" detail="manual.trigger" active={phase >= 2} />
+            <HeroConnector active={phase >= 3} />
+            <div className={`hero-parallel-group ${phase >= 3 ? "hero-parallel-group--active" : ""}`}>
+              <HeroAgentNode character="researcher" name="뉴스 수집" title="뉴스·공시" detail="source.collect" active={phase >= 3} status={agentStatus(3)} />
+              <HeroAgentNode character="developer" name="경쟁사 수집" title="제품·가격" detail="source.collect" active={phase >= 4} status={agentStatus(4)} />
+              <HeroAgentNode character="reviewer" name="사내 자료" title="인터뷰·현황" detail="document.read" active={phase >= 4} status={agentStatus(4)} />
+            </div>
+            <HeroConnector active={phase >= 5} />
+            <HeroAgentNode character="writer" name="정제 담당" title="중복 제거·표준화" detail="records.normalize" active={phase >= 5} status={agentStatus(5)} dark />
+            <HeroConnector active={phase >= 6} />
+            <HeroGraphNode title="근거·스키마 검증 Join" detail="parallel.join · schema.validate" active={phase >= 6} dark />
+          </div>
+          <div className={`hero-demo-result mt-3 rounded-xl p-3 ${phase >= 7 ? "hero-demo-result--complete bg-emerald-50" : "bg-zinc-100"}`} aria-hidden="true">
+            <div className="flex items-center justify-between text-[10px]"><span className="font-semibold">시장 정보 에이전트 팀</span><span className={phase >= 7 ? "text-emerald-700" : "text-mute"}>{phase >= 7 ? "검증 완료" : "구성 중"}</span></div>
+            <p className={`mt-1.5 text-[10px] leading-4 text-charcoal transition-opacity ${phase >= 7 ? "opacity-100" : "opacity-0"}`}>출처를 보존하며 여러 소스를 병렬 수집하고, 하나라도 실패하면 종합 단계를 중단합니다.</p>
+          </div>
         </div>
       </div>
     </div>
     <div className="absolute -bottom-5 -right-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-xs font-semibold sm:right-5">✓ 근거 없는 답변 차단</div>
+  </div>;
+}
+
+function HeroFile({ icon, kind, name }: { icon: React.ReactNode; kind: string; name: string }) {
+  return <div className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-[9px]">
+    <span className="[&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</span><b className="text-mute">{kind}</b><span className="min-w-0 truncate">{name}</span>
   </div>;
 }
 
