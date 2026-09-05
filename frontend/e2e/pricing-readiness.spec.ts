@@ -27,3 +27,17 @@ test("모바일에서도 무료 시작과 유료 준비 상태가 먼저 보인�
   await expect(page.getByRole("link", { name: "무료로 시작하기" })).toBeVisible();
   await expect(page.getByText("PRO · 준비 중")).toBeVisible();
 });
+
+test("구독 화면은 서버 사용량을 표시하고 결제를 성공처럼 꾸미지 않는다", async ({ page }) => {
+  await page.route("**/api/agent-development/usage", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ plan: "FREE_BETA", designLimit: 1, designUsed: 1, designRemaining: 0, revisionLimitPerAgent: 2, unlimited: false, checkoutAvailable: false }),
+  }));
+  await page.goto("/settings/subscription");
+
+  await expect(page.getByText("새 설계 1/1")).toBeVisible();
+  await expect(page.getByText("새 설계 0회 남음")).toBeVisible();
+  await expect(page.getByText("결제되지 않는 버튼을 구독 완료처럼 표시하지 않습니다.")).toBeVisible();
+  await expect(page.getByRole("button", { name: /구독|결제/ })).toHaveCount(0);
+});

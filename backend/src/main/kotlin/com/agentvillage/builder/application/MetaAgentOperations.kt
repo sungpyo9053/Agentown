@@ -27,6 +27,16 @@ data class MetaAgentFailure(
     val safeMessage: String? = null,
 )
 
+data class BuilderUsageSummary(
+    val plan: String,
+    val designLimit: Int?,
+    val designUsed: Long,
+    val designRemaining: Long?,
+    val revisionLimitPerAgent: Int?,
+    val unlimited: Boolean,
+    val checkoutAvailable: Boolean = false,
+)
+
 @Service
 class MetaAgentAuditService(private val runs: MetaAgentRunRepository) {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -75,6 +85,20 @@ class BuilderUsageLimiter(
         .toSet()
 
     fun isUnlimited(ownerId: UUID) = ownerId in unlimited || users.require(ownerId).role == UserRole.ADMIN
+
+    @Transactional(readOnly = true)
+    fun summary(ownerId: UUID): BuilderUsageSummary {
+        val unlimitedOwner = isUnlimited(ownerId)
+        val used = records.countByOwnerIdAndLimitSlot(ownerId, "ONLY")
+        return BuilderUsageSummary(
+            plan = if (unlimitedOwner) "UNLIMITED" else "FREE_BETA",
+            designLimit = if (unlimitedOwner) null else 1,
+            designUsed = used,
+            designRemaining = if (unlimitedOwner) null else (1L - used).coerceAtLeast(0),
+            revisionLimitPerAgent = if (unlimitedOwner) null else maxRevisionsPerConversation,
+            unlimited = unlimitedOwner,
+        )
+    }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun claim(context: PipelineContext, idempotencyKey: String) {

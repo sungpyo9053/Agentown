@@ -96,6 +96,7 @@ interface BuilderGenerationJobRepository : JpaRepository<BuilderGenerationJob, U
 interface BuilderUsageRecordRepository : JpaRepository<BuilderUsageRecord, UUID> {
     fun findByOwnerIdAndIdempotencyKey(ownerId: UUID, idempotencyKey: String): BuilderUsageRecord?
     fun countByOwnerIdAndConversationId(ownerId: UUID, conversationId: UUID): Long
+    fun countByOwnerIdAndLimitSlot(ownerId: UUID, limitSlot: String): Long
 }
 interface BuilderActivityEventRepository : JpaRepository<BuilderActivityEvent, UUID> {
     fun findTop200ByOrderByCreatedAtDesc(): List<BuilderActivityEvent>

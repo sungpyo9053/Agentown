@@ -1,17 +1,30 @@
+"use client";
+
 import Link from "next/link";
 import { Check, ExternalLink } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { AppShell, Panel } from "@/components/AppShell";
 import { blockFontClassName } from "@/lib/fonts";
+import { api } from "@/lib/api";
+
+type Usage = { plan: "FREE_BETA" | "UNLIMITED"; designLimit?: number; designUsed: number; designRemaining?: number; revisionLimitPerAgent?: number; unlimited: boolean; checkoutAvailable: boolean };
 
 export default function SubscriptionPage() {
+  const usage = useQuery({ queryKey: ["agent-development-usage"], queryFn: () => api<Usage>("/agent-development/usage") });
+  const quota = usage.data;
   return <AppShell kicker="SETTING" title="구독 관리">
     <Panel>
       <div className="grid gap-2 md:grid-cols-2">
         <div className="bg-ink p-6 text-white">
           <p className="text-xs font-medium uppercase tracking-[.2em] text-stone">Free beta</p>
-          <p className={`${blockFontClassName} mt-3 text-5xl`}>무료 사용 중</p>
+          <p className={`${blockFontClassName} mt-3 text-5xl`}>{quota?.unlimited ? "제한 없음" : "무료 사용 중"}</p>
           <p className="mt-3 text-sm leading-6 text-stone">카드 등록 없이 첫 에이전트를 설계하고, 수정·테스트·패키지 다운로드까지 확인할 수 있습니다.</p>
-          <ul className="mt-6 space-y-2 text-sm"><li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>새 설계 1개</li><li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>설계 수정 2회</li><li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>샘플 실행과 패키지</li></ul>
+          {usage.isError ? <p className="mt-6 rounded-md bg-white/10 p-3 text-sm">현재 사용량을 불러오지 못했습니다. 새로고침 후 다시 확인해 주세요.</p> : <ul className="mt-6 space-y-2 text-sm">
+            <li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>{quota?.unlimited ? "새 설계 제한 없음" : `새 설계 ${quota ? `${quota.designUsed}/${quota.designLimit}` : "확인 중"}`}</li>
+            <li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>{quota?.unlimited ? "설계 수정 제한 없음" : `에이전트당 설계 수정 ${quota?.revisionLimitPerAgent ?? "-"}회`}</li>
+            <li className="flex gap-2"><Check className="h-4 w-4 text-leaf"/>샘플 실행과 패키지</li>
+          </ul>}
+          {!quota?.unlimited && quota && <p className="mt-5 border-t border-white/20 pt-4 text-sm font-semibold">새 설계 {quota.designRemaining}회 남음</p>}
         </div>
         <div className="border border-hairline p-6">
           <p className="text-xs font-medium uppercase tracking-[.2em] text-mute">Pro · 준비 중</p>

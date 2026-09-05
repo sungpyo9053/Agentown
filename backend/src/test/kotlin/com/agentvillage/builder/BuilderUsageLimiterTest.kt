@@ -41,6 +41,35 @@ class BuilderUsageLimiterTest {
     }
 
     @Test
+    fun `free beta summary reports server-derived remaining design usage`() {
+        val ownerId = UUID.randomUUID()
+        whenever(users.require(ownerId)).thenReturn(UserIdentity(ownerId, "user@example.com", "user", "사용자", UserRole.USER))
+        whenever(records.countByOwnerIdAndLimitSlot(ownerId, "ONLY")).thenReturn(1)
+
+        val summary = BuilderUsageLimiter(records, users, "").summary(ownerId)
+
+        assertThat(summary.plan).isEqualTo("FREE_BETA")
+        assertThat(summary.designUsed).isEqualTo(1)
+        assertThat(summary.designRemaining).isZero()
+        assertThat(summary.revisionLimitPerAgent).isEqualTo(2)
+        assertThat(summary.checkoutAvailable).isFalse()
+    }
+
+    @Test
+    fun `admin summary does not invent a finite quota`() {
+        val ownerId = UUID.randomUUID()
+        whenever(users.require(ownerId)).thenReturn(UserIdentity(ownerId, "admin@reviewdr.kr", "admin", "운영자", UserRole.ADMIN))
+        whenever(records.countByOwnerIdAndLimitSlot(ownerId, "ONLY")).thenReturn(0)
+
+        val summary = BuilderUsageLimiter(records, users, "").summary(ownerId)
+
+        assertThat(summary.plan).isEqualTo("UNLIMITED")
+        assertThat(summary.designLimit).isNull()
+        assertThat(summary.designRemaining).isNull()
+        assertThat(summary.unlimited).isTrue()
+    }
+
+    @Test
     fun `failed generation releases its one-time usage slot`() {
         val ownerId = UUID.randomUUID()
         val conversationId = UUID.randomUUID()

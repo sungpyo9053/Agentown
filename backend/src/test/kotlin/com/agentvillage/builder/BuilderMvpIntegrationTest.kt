@@ -8,6 +8,7 @@ import com.agentvillage.builder.domain.BuilderGenerationJob
 import com.agentvillage.builder.domain.BuilderGenerationStage
 import com.agentvillage.builder.domain.BuilderGenerationStatus
 import com.agentvillage.builder.domain.BuilderRunStatus
+import com.agentvillage.builder.domain.BuilderUsageRecord
 import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.builder.domain.AgentDesignStatus
 import com.agentvillage.builder.domain.DesignNodeKind
@@ -68,6 +69,30 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var jdbc: JdbcTemplate
     @Autowired lateinit var workflows: BuilderWorkflowRepository
     @Autowired lateinit var mapper: ObjectMapper
+
+    @Test
+    fun `agent development usage endpoint reports durable free quota`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("usage-$suffix@example.com", "password123", "usage_$suffix", "사용량 검증"))
+        val principal = AuthenticatedUser(owner.id, owner.email, "unused", true)
+
+        mvc.perform(get("/api/agent-development/usage").with(user(principal)))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.plan").value("FREE_BETA"))
+            .andExpect(jsonPath("$.designLimit").value(1))
+            .andExpect(jsonPath("$.designUsed").value(0))
+            .andExpect(jsonPath("$.designRemaining").value(1))
+            .andExpect(jsonPath("$.revisionLimitPerAgent").value(2))
+            .andExpect(jsonPath("$.checkoutAvailable").value(false))
+
+        val session = service.createConversation(owner.id, "usage-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        usageRecords.saveAndFlush(BuilderUsageRecord(ownerId = owner.id, conversationId = session.conversationId, workflowId = session.workflowId, limitSlot = "ONLY", idempotencyKey = "usage-claim-$suffix"))
+
+        mvc.perform(get("/api/agent-development/usage").with(user(principal)))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.designUsed").value(1))
+            .andExpect(jsonPath("$.designRemaining").value(0))
+    }
 
     @Test
     fun `latest recoverable generation job is newest conversation scoped owner safe view`() {

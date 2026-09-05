@@ -2,6 +2,7 @@ package com.agentvillage.builder.presentation
 
 import com.agentvillage.builder.application.BuilderGenerationService
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.builder.application.BuilderUsageLimiter
 import com.agentvillage.builder.application.AgentDefinitionUpdate
 import com.agentvillage.builder.application.TFrameXFlowImport
 import com.agentvillage.builder.domain.BuilderConversationPurpose
@@ -20,6 +21,7 @@ import java.util.UUID
 class AgentDevelopmentController(
     private val service: BuilderService,
     private val generation: BuilderGenerationService,
+    private val usage: BuilderUsageLimiter,
 ) {
     data class AgentDefinitionUpdateRequest(
         val name: String,
@@ -38,6 +40,10 @@ class AgentDevelopmentController(
         val designBundle: Map<String, Any?>,
         val runtimeDefinition: Map<String, Any?>,
     )
+
+    @GetMapping("/usage")
+    fun usage(@AuthenticationPrincipal user: AuthenticatedUser) = usage.summary(user.userId)
+
     @PostMapping("/sessions")
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) =
         service.createConversation(user.userId, key, BuilderConversationPurpose.AGENT_DEVELOPMENT)
