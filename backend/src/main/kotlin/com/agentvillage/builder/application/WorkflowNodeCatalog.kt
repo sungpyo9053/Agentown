@@ -257,6 +257,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else explicitInputFieldIssues(source, proposal) } +
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else explicitArrayItemTypeIssues(source, proposal) } +
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else inputCardinalityIssues(source, proposal) } +
+            sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else decisionPolicyIssues(source, proposal) } +
             semanticIssues(graph, requirement, proposal, agents)
         return structural.copy(valid = issues.isEmpty(), issues = issues)
     }
@@ -268,8 +269,14 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         WorkflowInputContract.schemaIssue(proposal.inputSchema)?.let {
             add(ValidationIssue("INVALID_WORKFLOW_INPUT_SCHEMA", it))
         }
+        WorkflowInputContract.strictObjectIssue(proposal.inputSchema, "Workflow 입력")?.let {
+            add(ValidationIssue("UNBOUNDED_WORKFLOW_INPUT_OBJECT", it))
+        }
         WorkflowInputContract.schemaIssue(proposal.outputSchema)?.let {
             add(ValidationIssue("INVALID_WORKFLOW_OUTPUT_SCHEMA", it))
+        }
+        WorkflowInputContract.strictObjectIssue(proposal.outputSchema, "Workflow 출력")?.let {
+            add(ValidationIssue("UNBOUNDED_WORKFLOW_OUTPUT_OBJECT", it))
         }
         agents.forEach { agent ->
             WorkflowInputContract.schemaIssue(agent.inputSchema)?.let {
@@ -277,6 +284,12 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             }
             WorkflowInputContract.schemaIssue(agent.outputSchema)?.let {
                 add(ValidationIssue("INVALID_AGENT_OUTPUT_SCHEMA", "Agent '${agent.key}' output: $it"))
+            }
+            WorkflowInputContract.strictObjectIssue(agent.inputSchema, "Agent '${agent.key}' 입력")?.let {
+                add(ValidationIssue("UNBOUNDED_AGENT_INPUT_OBJECT", it))
+            }
+            WorkflowInputContract.strictObjectIssue(agent.outputSchema, "Agent '${agent.key}' 출력")?.let {
+                add(ValidationIssue("UNBOUNDED_AGENT_OUTPUT_OBJECT", it))
             }
         }
     }
@@ -310,6 +323,31 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         val sourceApproval = requestsHumanApproval(source)
         compareFacet("사람 승인", sourceApproval, requirement.humanApprovalRequired)
         return issues
+    }
+
+    private fun decisionPolicyIssues(sourceInstruction: String, proposal: AutomationProposal): List<ValidationIssue> {
+        fun nested(fields: List<FieldDefinition>): Sequence<FieldDefinition> = sequence {
+            fields.forEach { field ->
+                yield(field)
+                yieldAll(nested(field.itemSchema.orEmpty()))
+                yieldAll(nested(field.objectSchema.orEmpty()))
+            }
+        }
+        val hasNumericDecisionInput = nested(proposal.inputSchema).any { it.type.lowercase() in setOf("number", "integer") }
+        val hasAcceptRejectOutput = nested(proposal.outputSchema).any { field ->
+            field.enumValues.orEmpty().map(String::uppercase).any {
+                it in setOf("ACCEPTED", "REJECTED", "APPROVED", "DENIED", "PASS", "FAIL", "PASSED", "FAILED")
+            }
+        }
+        if (!hasNumericDecisionInput || !hasAcceptRejectOutput) return emptyList()
+        val explicitRule = Regex("(?:\\d+(?:\\.\\d+)?\\s*%?|true|false).{0,24}(?:이상|이하|초과|미만|같|이면|일 때|>|<|>=|<=|accept|reject|승인|거절|합격|불합격)", RegexOption.IGNORE_CASE)
+            .containsMatchIn(sourceInstruction) ||
+            Regex("(?:이상|이하|초과|미만|>|<|>=|<=).{0,12}\\d+(?:\\.\\d+)?\\s*%?", RegexOption.IGNORE_CASE)
+                .containsMatchIn(sourceInstruction)
+        return if (explicitRule) emptyList() else listOf(ValidationIssue(
+            "MEANING_DECISION_POLICY_UNSPECIFIED",
+            "숫자 입력으로 합격·거절을 결정하는 기준이 사용자 요청에 없습니다. 임계값을 만들지 말고 clarificationQuestions로 확인해야 합니다.",
+        ))
     }
 
     private fun requestsHumanApproval(source: String): Boolean {
@@ -465,7 +503,15 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                             else -> null
                         }
                         val targetField = targetAgent?.inputSchema?.firstOrNull { it.name == targetRoot }
-                        if (sourceField != null && targetField != null && !bindingFieldsCompatible(sourceField, targetField)) {
+                        val parallelArrayDistribution = sourceField != null && targetField != null &&
+                            sourceField.type.equals("array", true) && !targetField.type.equals("array", true) &&
+                            graph.edges.count { candidate ->
+                                candidate.source == edge.source && candidate.target != edge.target &&
+                                    candidate.bindings.any { (candidateTarget, candidateSource) ->
+                                        rootField(candidateSource) == sourceRoot && rootField(candidateTarget) == targetRoot
+                                    }
+                            } >= 1 && arrayItemCompatible(sourceField, targetField)
+                        if (sourceField != null && targetField != null && !parallelArrayDistribution && !bindingFieldsCompatible(sourceField, targetField)) {
                             mismatch(
                                 "MEANING_BINDING_TYPE_MISMATCH",
                                 "edge '${edge.id}'의 '$sourceRoot'(${sourceField.type})을 '$targetRoot'(${targetField.type})에 연결할 수 없습니다.",
@@ -497,6 +543,13 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private fun bindingFieldsCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
         if (target.required && !source.required) return false
         if (!bindingTypesCompatible(source.type, target.type)) return false
+        if (source.type.equals("object", true)) {
+            val sourceFields = source.objectSchema?.associateBy { it.name } ?: return false
+            val targetFields = target.objectSchema?.associateBy { it.name } ?: return false
+            return sourceFields.all { (name, sourceField) ->
+                targetFields[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
+            } && targetFields.values.filter { it.required }.all { it.name in sourceFields }
+        }
         if (!source.type.equals("array", true)) return true
         val targetItemType = target.itemType ?: return true
         val sourceItemType = source.itemType ?: return false
@@ -507,6 +560,20 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         return sourceItems.all { (name, sourceField) ->
             targetItems[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
         } && targetItems.values.filter { it.required }.all { it.name in sourceItems }
+    }
+
+    private fun arrayItemCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
+        val itemType = source.itemType ?: return false
+        val item = FieldDefinition(
+            name = source.name,
+            type = itemType,
+            required = source.required,
+            description = source.description,
+            objectSchema = if (itemType.equals("object", true)) source.itemSchema else null,
+            format = source.itemFormat,
+            minLength = source.itemMinLength,
+        )
+        return bindingFieldsCompatible(item, target)
     }
 
     private fun explicitArrayCardinalities(instruction: String): Map<String, Int> {

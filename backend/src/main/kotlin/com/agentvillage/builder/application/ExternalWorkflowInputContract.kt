@@ -28,10 +28,10 @@ internal object ExternalWorkflowInputContract {
             if (name.isNullOrBlank() || name in setOf("context", "result", "results", "output", "success")) return
             val targetAgent = nodes[targetNodeId]?.config?.get("agentKey")?.toString()?.let(agents::get)
             val contract = targetAgent?.inputSchema?.firstOrNull { it.name == rootField(targetField) }
-            result.putIfAbsent(name, FieldDefinition(
-                name, contract?.type ?: "string", true, contract?.description ?: "사용자 실행 입력 $name",
-                contract?.minItems, contract?.maxItems, contract?.itemType, contract?.itemSchema,
-            ))
+            result.putIfAbsent(name, contract?.copy(
+                name = name, required = true,
+                description = contract.description.ifBlank { "사용자 실행 입력 $name" },
+            ) ?: FieldDefinition(name, "string", true, "사용자 실행 입력 $name"))
         }
         val sourceIds = plan.nodes.filter { it.nodeType.endsWith("trigger") || it.nodeType == "text.input" }.map { it.id }.toSet()
         plan.edges.filter { it.source in sourceIds }.forEach { edge ->

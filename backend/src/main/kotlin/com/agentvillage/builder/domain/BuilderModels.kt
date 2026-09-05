@@ -218,6 +218,16 @@ data class FieldDefinition(
     val maxItems: Int? = null,
     val itemType: String? = null,
     val itemSchema: List<FieldDefinition>? = null,
+    val itemFormat: String? = null,
+    val itemMinLength: Int? = null,
+    val objectSchema: List<FieldDefinition>? = null,
+    val format: String? = null,
+    val enumValues: List<String>? = null,
+    val minimum: Double? = null,
+    val maximum: Double? = null,
+    val minLength: Int? = null,
+    val uniqueItems: Boolean? = null,
+    val uniqueBy: String? = null,
 )
 
 data class AgentDefinition(

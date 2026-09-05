@@ -92,6 +92,10 @@ class CodexCliMetaAgentModel(
         proposal.inputSchema에는 사용자가 실행 시 직접 제공해야 하는 최상위 입력 필드만 선언한다. 사용자가 입력 필드 이름이나 개수를 명시했다면 정확히 그 필드만 사용하고, Agent 사이 내부 전달 필드나 출력·근거 필드를 외부 입력으로 추가하지 않는다.
         사용자가 배열 항목 수를 정확히 지정했다면 해당 FieldDefinition의 minItems와 maxItems를 같은 값으로 선언한다. 최소 또는 최대 개수만 지정했다면 해당 제약만 선언하고 나머지는 null로 둔다. 배열이 아닌 필드의 minItems와 maxItems는 모두 null이어야 한다. 정수 입력은 number가 아니라 integer 타입으로 선언한다.
         배열 항목이 원시값이면 itemType에 해당 타입을 선언하고 itemSchema는 null로 둔다. 배열 항목이 구조화 객체이면 itemType=object로 선언하고 itemSchema에 객체의 모든 필드를 FieldDefinition으로 재귀적으로 선언한다. 구조화 객체 배열을 itemType 또는 itemSchema가 없는 일반 array로 축약하지 않는다. 배열이 아닌 필드의 itemType과 itemSchema는 모두 null이어야 한다.
+        object 필드는 objectSchema에 내부 필드를 재귀적으로 선언한다. 최종 출력이나 Agent 입출력의 object를 내부 계약 없는 빈 object로 두지 않는다.
+        날짜는 format=date 또는 date-time, URL은 format=uri, 비어 있으면 안 되는 문자열은 minLength=1, 제한된 상태·판정 값은 enumValues, 숫자 범위는 minimum/maximum으로 선언한다. 문자열 배열 항목의 URL/날짜/최소 길이는 itemFormat/itemMinLength로 선언한다. 중복 금지 배열은 uniqueItems=true, 객체 배열에서 특정 식별자가 고유해야 하면 uniqueBy에 그 필드명을 선언한다.
+        모든 FieldDefinition에는 minItems, maxItems, itemType, itemSchema, itemFormat, itemMinLength, objectSchema, format, enumValues, minimum, maximum, minLength, uniqueItems, uniqueBy를 항상 포함하고 적용되지 않는 값은 null로 둔다.
+        판정·합격·거절처럼 결과를 바꾸는 업무 규칙이나 숫자 임계값이 사용자 요청에 없으면 LLM이 임의 기준을 만들지 말고 clarificationQuestions로 최소 질문을 반환한다.
         반복 작업의 지점명, 역할명 같은 고정값은 존재하지 않는 sourceField로 가장하지 말고 해당 ai.generate 노드 config.inputDefaults에 [{"field":"필드명","value":"고정값"}] 형식으로 선언한다. inputDefaults의 field는 반드시 해당 Agent inputSchema에 선언된 필드여야 하며, 반복 순번이나 슬롯을 위한 임의 필드를 만들지 않는다. edge sourceField는 상류 출력 또는 사용자 입력 스키마에 실제로 존재하는 필드만 참조한다.
         condition.branch에는 expression, ai.classify에는 categories와 agentKey, ai.generate에는 instruction과 agentKey,
         schedule.trigger에는 cron과 timezone, news.search.mock에는 source, query, lookbackHours, data.deduplicate에는 key,
@@ -131,6 +135,8 @@ class CodexCliMetaAgentModel(
         - 검증 오류가 Agent의 선언되지 않은 출력을 가리키면 해당 sourceField를 그 Agent outputSchema에 정확한 타입과 required=true로 추가한다. 집계 Agent의 최종 edge에 쓰는 모든 필드는 집계 Agent outputSchema에 선언한다.
         - 반복 작업의 고정값은 응답에서 해당 노드 config.inputDefaults=[{"field":"필드명","value":"고정값"}] 형식으로 둔다. field는 반드시 해당 Agent inputSchema에 선언돼야 하며 반복 순번이나 슬롯용 임의 필드는 제거한다. previousBundle의 map 형식 inputDefaults는 서버가 정규화한 값이다.
         - 정확한 배열 크기는 minItems와 maxItems로 보존한다. 원시 배열은 itemType, 객체 배열은 itemType=object와 재귀 itemSchema를 선언한다.
+        - object 필드는 재귀 objectSchema를 선언하고 날짜·URL·상태 enum·숫자 범위·문자열 최소 길이·배열 중복 및 객체 식별자 고유성 제약을 format, enumValues, minimum/maximum, minLength, uniqueItems, uniqueBy에 보존한다.
+        - 모든 FieldDefinition의 제약 필드를 빠짐없이 포함하고 적용되지 않는 값은 null로 둔다.
         - 사용자가 배열 항목 타입을 문자열, 정수, 숫자, 불리언 또는 객체로 명시했다면 해당 itemType을 그대로 보존한다.
         - 각 Agent의 입력·출력 스키마와 proposal 최종 출력 스키마를 보존하며 누락 필드, 타입, 필수 여부를 검증 피드백에 맞춰 고친다.
         - 독립 작업은 별도 ai.generate 노드로 유지하고 모두 같은 집계 노드로 fan-in한다. parallel.map.mock으로 축약하지 않는다.

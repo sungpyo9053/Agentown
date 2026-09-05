@@ -46,6 +46,7 @@ class StructuredParallelPattern(BasePattern):
         result_field: str = "results",
         task_output_schemas: Optional[Mapping[str, list[dict[str, Any]]]] = None,
         task_result_bindings: Optional[Mapping[str, list[dict[str, Any]]]] = None,
+        success_fields: Optional[list[str]] = None,
     ):
         super().__init__(pattern_name)
         self.delegate = ParallelPattern(pattern_name, tasks)
@@ -53,6 +54,7 @@ class StructuredParallelPattern(BasePattern):
         self.result_field = result_field
         self.task_output_schemas = dict(task_output_schemas or {})
         self.task_result_bindings = dict(task_result_bindings or {})
+        self.success_fields = list(success_fields or [])
 
     async def execute(self, flow_ctx: FlowContext, engine: Engine, agent_call_kwargs=None) -> FlowContext:
         result = await self.delegate.execute(flow_ctx, engine, agent_call_kwargs=agent_call_kwargs)
@@ -111,6 +113,8 @@ class StructuredParallelPattern(BasePattern):
         else:
             envelope[self.result_field] = values
         envelope["failures"] = failures
+        for field in self.success_fields:
+            envelope[field] = True
         result.update_current_message(Message(
             role="assistant",
             content=json.dumps(envelope, ensure_ascii=False),
@@ -125,6 +129,7 @@ class TracingLLMAgent(LLMAgent):
             content,
             self.config.get("input_bindings") or [],
             self.config.get("input_defaults") or {},
+            self.config.get("input_schema") or [],
         )
         name = self.agent_id.split("_ctx", 1)[0]
         trace = self.config.get("trace_sink")
@@ -195,6 +200,41 @@ class TracingLLMAgent(LLMAgent):
                 valid = False
             if not valid:
                 raise ValueError(f"Agent {label} field '{path}' has invalid type")
+        if expected_type == "string":
+            minimum_length = field.get("minLength")
+            if minimum_length is not None and len(actual) < int(minimum_length):
+                raise ValueError(f"Agent {label} field '{path}' is shorter than {minimum_length}")
+            if field.get("enumValues") and actual not in field["enumValues"]:
+                raise ValueError(f"Agent {label} field '{path}' is not an allowed value")
+            value_format = field.get("format")
+            if value_format == "uri":
+                from urllib.parse import urlparse
+                parsed = urlparse(actual)
+                if not parsed.scheme or not parsed.netloc:
+                    raise ValueError(f"Agent {label} field '{path}' is not a URI")
+            elif value_format in {"date", "date-time"}:
+                from datetime import date, datetime
+                try:
+                    (date.fromisoformat(actual) if value_format == "date" else datetime.fromisoformat(actual.replace("Z", "+00:00")))
+                except ValueError as exc:
+                    raise ValueError(f"Agent {label} field '{path}' has invalid {value_format} format") from exc
+        if expected_type in {"integer", "number"}:
+            if field.get("minimum") is not None and actual < field["minimum"]:
+                raise ValueError(f"Agent {label} field '{path}' is below minimum")
+            if field.get("maximum") is not None and actual > field["maximum"]:
+                raise ValueError(f"Agent {label} field '{path}' is above maximum")
+        if expected_type == "object" and field.get("objectSchema"):
+            nested_contract = field["objectSchema"]
+            declared = {str(nested["name"]) for nested in nested_contract}
+            unexpected = sorted(set(actual) - declared)
+            if unexpected:
+                raise ValueError(f"Agent {label} field '{path}' has unexpected fields: {unexpected}")
+            for nested in nested_contract:
+                key = nested["name"]
+                if nested.get("required") and key not in actual:
+                    raise ValueError(f"Agent {label} is missing required field '{path}.{key}'")
+                if key in actual:
+                    TracingLLMAgent._validate_field_value(actual[key], nested, label, f"{path}.{key}")
         if expected_type != "array":
             return
         minimum = field.get("minItems")
@@ -203,13 +243,24 @@ class TracingLLMAgent(LLMAgent):
             raise ValueError(f"Agent {label} field '{path}' has fewer than {minimum} items")
         if maximum is not None and len(actual) > int(maximum):
             raise ValueError(f"Agent {label} field '{path}' has more than {maximum} items")
+        if field.get("uniqueItems") and len({json.dumps(item, sort_keys=True, ensure_ascii=False) for item in actual}) != len(actual):
+            raise ValueError(f"Agent {label} field '{path}' has duplicate items")
+        unique_by = field.get("uniqueBy")
+        if unique_by:
+            keys = [item.get(unique_by) for item in actual if isinstance(item, dict) and unique_by in item]
+            if len(keys) != len(actual) or len({json.dumps(key, sort_keys=True, ensure_ascii=False) for key in keys}) != len(keys):
+                raise ValueError(f"Agent {label} field '{path}' requires unique '{unique_by}' values")
         item_type = field.get("itemType")
         if not item_type:
             return
         item_schema = field.get("itemSchema")
         for index, item in enumerate(actual):
             item_path = f"{path}[{index}]"
-            TracingLLMAgent._validate_field_value(item, {"type": item_type}, label, item_path)
+            TracingLLMAgent._validate_field_value(item, {
+                "type": item_type,
+                "format": field.get("itemFormat"),
+                "minLength": field.get("itemMinLength"),
+            }, label, item_path)
             if item_type != "object" or item_schema is None:
                 continue
             declared = {str(nested["name"]) for nested in item_schema}
@@ -231,6 +282,7 @@ class ToolExecutorAgent(BaseAgent):
             content,
             self.config.get("input_bindings") or [],
             self.config.get("input_defaults") or {},
+            self.config.get("input_schema") or [],
         )
         name = self.agent_id.split("_ctx", 1)[0]
         trace = self.config.get("trace_sink")
@@ -283,6 +335,8 @@ class ConditionRouterAgent(BaseAgent):
             trace.append({"kind": "agent_start", "agent": name, "input": content})
         for condition in self.config.get("route_conditions") or []:
             actual = _resolve_path(value, str(condition.get("field") or ""))
+            if actual is _MISSING and condition.get("fallbackField"):
+                actual = _resolve_path(value, str(condition["fallbackField"]))
             if actual is not _MISSING and _condition_matches(
                 actual,
                 str(condition.get("operator") or "EQUALS"),
@@ -445,6 +499,12 @@ class AgentownTFrameXAdapter:
                 raise DefinitionError("ParallelPattern requires non-empty tasks")
             translated = [self._step(item) for item in tasks]
             if value.get("structuredFanIn") is True:
+                success_fields = value.get("successFields", [])
+                if not isinstance(success_fields, list) or any(
+                    not isinstance(field, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", field)
+                    for field in success_fields
+                ):
+                    raise DefinitionError("Parallel successFields must contain top-level field names")
                 bindings = value.get("taskResultBindings")
                 if bindings:
                     if not isinstance(bindings, Mapping):
@@ -494,6 +554,7 @@ class AgentownTFrameXAdapter:
                     str(value.get("resultField") or "results"),
                     value.get("taskOutputSchemas") if isinstance(value.get("taskOutputSchemas"), Mapping) else None,
                     bindings,
+                    success_fields,
                 )
             return ParallelPattern(name, translated)
         if kind == "RouterPattern":
@@ -665,6 +726,7 @@ def _apply_input_bindings(
     content: str,
     bindings: list[dict[str, Any]],
     defaults: Mapping[str, Any] | None = None,
+    target_schema: list[dict[str, Any]] | None = None,
 ) -> str:
     value = _json_object(content)
     if value is None:
@@ -692,6 +754,21 @@ def _apply_input_bindings(
             continue
         resolved = _resolve_path(source, source_field)
         if resolved is not _MISSING:
+            target_root = target_field.split(".", 1)[0].split("[", 1)[0]
+            target_contract = next(
+                (field for field in (target_schema or []) if str(field.get("name")) == target_root),
+                None,
+            )
+            if (
+                isinstance(resolved, list)
+                and isinstance(parallel_index, int)
+                and parallel_index > 0
+                and isinstance(parallel_size, int)
+                and len(resolved) == parallel_size
+                and target_contract is not None
+                and str(target_contract.get("type")) != "array"
+            ):
+                resolved = resolved[parallel_index - 1]
             _set_path(result, target_field, resolved)
     return json.dumps(result, ensure_ascii=False)
 

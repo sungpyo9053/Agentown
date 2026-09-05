@@ -154,7 +154,12 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     FieldDefinition("failures", "array", true, "parallel task failures"),
                 )).distinctBy { it.name }
             }
-            return ancestors.singleOrNull()?.let(outputSchemaFor).orEmpty()
+            return ancestors.singleOrNull()?.let(outputSchemaFor)
+                ?: workflowInputSchema.takeIf {
+                    incomingEdges[node.id].orEmpty().any { edge ->
+                        nodesById[edge.source]?.nodeType in passThroughTypes
+                    }
+                }.orEmpty()
         }
         outputSchemaFor = { node ->
             when {
@@ -185,9 +190,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         val runtimeAgents = executable.map { node ->
             val inputBindings = incomingEdges[node.id].orEmpty().flatMap { edge ->
                 edge.bindings.map { (targetField, sourceField) ->
-                    mapOf("sourceField" to sourceField, "targetField" to targetField)
+                    mapOf("sourceField" to sourceField, "targetField" to indexedArrayRoot(targetField))
                 }
-            }
+            }.distinct()
             if (node.nodeType in aiTypes) {
                 val source = definitions.getValue(node.config.getValue("agentKey").toString())
                 val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
@@ -233,6 +238,13 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName || toolName == "template.plain-text") {
                     inputDefaults["agentownOutputContract"] = outputSchema
                 }
+                if (node.nodeType == NodeType.QUALITY_CHECK.wireName) {
+                    inputDefaults["agentownInputContract"] = inputSchema
+                    val hasExplicitRouter = outgoing[node.id].orEmpty().any { edge ->
+                        nodesById[edge.target]?.nodeType == NodeType.CONDITION_BRANCH.wireName
+                    }
+                    inputDefaults["agentownFailClosed"] = !hasExplicitRouter
+                }
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName && nearestExecutableAncestors(node.id).size > 1) {
                     inputDefaults["agentownResultFields"] = listOf(parallelResultFieldFor(node))
                 }
@@ -257,16 +269,25 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             val nextAgent = nextNode?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
             val resultField = nextNode?.let(::parallelResultFieldFor) ?: "results"
             if (names.size == 1) names.single() else {
+                val successFields = layer.flatMap { node -> outgoing[node.id].orEmpty() }
+                    .mapNotNull { edge -> branchNodes.firstOrNull { it.id == edge.target } }
+                    .flatMap { branch -> outgoing[branch.id].orEmpty() }
+                    .mapNotNull { edge -> runCatching { parseCondition(edge.condition) }.getOrNull() }
+                    .filter { it.value.equals("true", true) || it.value.equals("false", true) }
+                    .map { it.field }
+                    .distinct()
                 val resultBindings = layer.associate { node ->
                     effectiveByNode.getValue(node.id) to outgoing[node.id].orEmpty()
                         .filter { edge -> nextNode != null && edge.target == nextNode.id }
                         .flatMap { edge -> edge.bindings
                             .filterNot { (targetField, sourceField) -> targetField == "context" && sourceField == "context" }
                             .map { (targetField, sourceField) ->
-                            if (sourceField.contains('.') || sourceField.contains('[') || targetField.contains('.') || targetField.contains('[')) {
+                            if (sourceField.contains('.') || sourceField.contains('[') ||
+                                targetField.contains('.') || (targetField.contains('[') && indexedArrayRoot(targetField) == targetField)
+                            ) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
                             }
-                            val effectiveTargetField = if (nextAgent == null) resultField else targetField
+                            val effectiveTargetField = if (nextAgent == null) resultField else indexedArrayRoot(targetField)
                             val targetContract = if (nextAgent == null) {
                                 nextNode?.let(::upstreamMessageSchema)?.firstOrNull { it.name == effectiveTargetField }
                             } else {
@@ -322,6 +343,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 "taskResultBindings" to resultBindings.filterValues { it.isNotEmpty() },
                 "structuredFanIn" to true,
                 "resultField" to resultField,
+                "successFields" to successFields,
             )
             }
         }.toMutableList<Any>()
@@ -360,11 +382,15 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 "kind" to "router",
                 "routeConditions" to outgoing[branch.id].orEmpty().map { edge ->
                     val condition = parseCondition(edge.condition)
+                    val qualityFallback = nearestExecutableAncestors(branch.id).singleOrNull()
+                        ?.takeIf { it.nodeType == NodeType.QUALITY_CHECK.wireName }
+                        ?.let { "qualityPassed" }
                     mapOf(
                         "key" to edge.condition,
                         "field" to condition.field,
                         "operator" to condition.operator.name,
                         "value" to condition.value,
+                        "fallbackField" to qualityFallback,
                     )
                 },
             )
@@ -382,11 +408,21 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         )
     }
 
+    private fun indexedArrayRoot(field: String): String =
+        Regex("^([A-Za-z][A-Za-z0-9_]*)\\[\\d+]$").matchEntire(field)?.groupValues?.get(1) ?: field
+
     private fun bindingFieldsCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
         fun typeCompatible(sourceType: String, targetType: String): Boolean =
             sourceType.equals(targetType, true) || (sourceType.equals("integer", true) && targetType.equals("number", true))
         if (target.required && !source.required) return false
         if (!typeCompatible(source.type, target.type)) return false
+        if (source.type.equals("object", true)) {
+            val sourceFields = source.objectSchema?.associateBy { it.name } ?: return false
+            val targetFields = target.objectSchema?.associateBy { it.name } ?: return false
+            return sourceFields.all { (name, sourceField) ->
+                targetFields[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
+            } && targetFields.values.filter { it.required }.all { it.name in sourceFields }
+        }
         if (!source.type.equals("array", true)) return true
         val targetItemType = target.itemType ?: return true
         val sourceItemType = source.itemType ?: return false
@@ -401,6 +437,13 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
 
     private fun scalarItemCompatible(source: FieldDefinition, target: FieldDefinition): Boolean {
         val targetItemType = target.itemType ?: return true
+        if (source.type.equals("object", true) && targetItemType.equals("object", true)) {
+            val targetFields = target.itemSchema?.associateBy { it.name } ?: return true
+            val sourceFields = source.objectSchema?.associateBy { it.name } ?: return false
+            return sourceFields.all { (name, sourceField) ->
+                targetFields[name]?.let { bindingFieldsCompatible(sourceField, it) } == true
+            } && targetFields.values.filter { it.required }.all { it.name in sourceFields }
+        }
         return source.type.equals(targetItemType, true) ||
             (source.type.equals("integer", true) && targetItemType.equals("number", true))
     }

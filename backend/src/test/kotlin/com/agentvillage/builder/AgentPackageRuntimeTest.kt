@@ -82,9 +82,11 @@ class AgentPackageRuntimeTest {
         val status = mapper.readTree(files.getValue("runtime-status.json"))
         val definition = mapper.readTree(files.getValue("runtime-definition.json"))
 
-        assertThat(status["configured"].asBoolean()).isTrue()
+        assertThat(status["configured"].asBoolean()).isFalse()
+        assertThat(status["runtimeConfigured"].asBoolean()).isTrue()
         assertThat(status["automationStatus"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
         val validatedStatus = mapper.readTree(HarnessPackageRenderer(mapper).render(bundle, automationValidated = true).getValue("runtime-status.json"))
+        assertThat(validatedStatus["configured"].asBoolean()).isTrue()
         assertThat(validatedStatus["automationStatus"].asText()).isEqualTo("AUTOMATION_READY")
         assertThat(definition["agents"].map { it["kind"]?.asText() }).containsOnly("tool")
         assertThat(definition.toString()).contains("data.csv.compare", "template.markdown.table")
@@ -221,10 +223,11 @@ class AgentPackageRuntimeTest {
             FieldDefinition(
                 "reports", "array", true, "분석할 기술 보고서", minItems = 3, maxItems = 3, itemType = "object",
                 itemSchema = listOf(
-                    FieldDefinition("title", "string", true, "보고서 제목"),
-                    FieldDefinition("publishedAt", "string", true, "발행일"),
-                    FieldDefinition("sourceUrls", "array", true, "근거 URL", minItems = 1, itemType = "string"),
+                    FieldDefinition("title", "string", true, "보고서 제목", minLength = 1),
+                    FieldDefinition("publishedAt", "string", true, "발행일", format = "date"),
+                    FieldDefinition("sourceUrls", "array", true, "근거 URL", minItems = 1, itemType = "string", itemFormat = "uri"),
                 ),
+                uniqueBy = "title",
             ),
         )
         val files = HarnessPackageRenderer(mapper).render(
@@ -233,6 +236,10 @@ class AgentPackageRuntimeTest {
         val sample: Map<String, Any?> = mapper.readValue(files.getValue("examples/sample-input.json"))
 
         assertThat(WorkflowInputContract.valueIssue(reportFields, sample)).isNull()
+        val schemaItems = mapper.readTree(files.getValue("schemas/input.schema.json"))["properties"]["reports"]
+        assertThat(schemaItems["x-agentown-uniqueBy"].asText()).isEqualTo("title")
+        assertThat(schemaItems["items"]["properties"]["publishedAt"]["format"].asText()).isEqualTo("date")
+        assertThat(schemaItems["items"]["properties"]["sourceUrls"]["items"]["format"].asText()).isEqualTo("uri")
         val reports = sample["reports"] as List<*>
         assertThat(reports).hasSize(3)
         assertThat(reports).allSatisfy { report ->

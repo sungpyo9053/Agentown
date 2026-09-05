@@ -101,6 +101,18 @@ class WorkflowInputContractTest {
     }
 
     @Test
+    fun `executable contracts reject unbounded objects`() {
+        assertThat(WorkflowInputContract.strictObjectIssue(listOf(
+            FieldDefinition("result", "object", true, "structured result"),
+        ))).contains("objectSchema")
+        assertThat(WorkflowInputContract.strictObjectIssue(listOf(
+            FieldDefinition("result", "object", true, "structured result", objectSchema = listOf(
+                FieldDefinition("status", "string", true, "status", enumValues = listOf("SUCCEEDED", "FAILED")),
+            )),
+        ))).isNull()
+    }
+
+    @Test
     fun `nested object array rejects malformed items and missing evidence`() {
         val resultFields = listOf(
             FieldDefinition("warehouse", "string", true, "warehouse"),
@@ -123,6 +135,38 @@ class WorkflowInputContractTest {
         assertThat(WorkflowInputContract.valueIssue(contract, mapOf("warehouseResults" to listOf(
             mapOf("warehouse" to "동부", "evidenceIds" to listOf("E-WH-001"), "status" to "SUCCEEDED"),
         )))).isNull()
+    }
+
+    @Test
+    fun `commercial field constraints reject invalid dates urls ranges enums and duplicate identifiers`() {
+        val row = listOf(
+            FieldDefinition("supplierId", "string", true, "supplier", minLength = 1),
+            FieldDefinition("inspectedAt", "string", true, "inspection date", format = "date"),
+            FieldDefinition("defectRate", "number", true, "percent", minimum = 0.0, maximum = 100.0),
+            FieldDefinition("decision", "string", true, "decision", enumValues = listOf("ACCEPTED", "REJECTED")),
+            FieldDefinition("evidenceUrls", "array", true, "evidence", minItems = 1, itemType = "string", itemFormat = "uri"),
+        )
+        val contract = listOf(FieldDefinition(
+            "inspectionRows", "array", true, "rows", minItems = 2, itemType = "object",
+            itemSchema = row, uniqueBy = "supplierId",
+        ))
+        fun row(id: String, date: String = "2026-09-06", rate: Double = 1.0, decision: String = "ACCEPTED") = mapOf(
+            "supplierId" to id, "inspectedAt" to date, "defectRate" to rate,
+            "decision" to decision, "evidenceUrls" to listOf("https://example.com/$id"),
+        )
+
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(row("A"), row("B"))))).isNull()
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(row("A"), row("A")))))
+            .contains("supplierId", "고유")
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(row("A", date = "09/06/2026"), row("B")))))
+            .contains("날짜 형식")
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(row("A", rate = 101.0), row("B")))))
+            .contains("maximum")
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(row("A", decision = "MAYBE"), row("B")))))
+            .contains("허용값")
+        assertThat(WorkflowInputContract.valueIssue(contract, mapOf("inspectionRows" to listOf(
+            row("A") + ("evidenceUrls" to listOf("not-a-url")), row("B"),
+        )))).contains("URI 형식")
     }
 
     @Test

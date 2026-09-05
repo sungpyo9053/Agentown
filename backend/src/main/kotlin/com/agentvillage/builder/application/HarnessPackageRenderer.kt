@@ -60,12 +60,16 @@ class HarnessPackageRenderer(
             )))
             put("runtime-definition.json", pretty(runtimeDefinition.getOrElse { emptyMap<String, Any?>() }))
             put("runtime-status.json", pretty(if (runtimeDefinition.isSuccess) mapOf(
-                "configured" to true,
+                "configured" to automationValidated,
+                "runtimeConfigured" to true,
                 "packageStatus" to "PACKAGE_VALIDATED",
                 "interactiveStatus" to "INTERACTIVE_READY",
                 "automationStatus" to if (automationValidated) "AUTOMATION_READY" else "EXECUTION_NOT_CONFIGURED",
+                "code" to if (automationValidated) null else "EXECUTION_NOT_CONFIGURED",
+                "message" to if (automationValidated) null else "유효한 샘플의 실제 Runner 성공 검증이 아직 없습니다.",
             ) else mapOf(
                 "configured" to false,
+                "runtimeConfigured" to false,
                 "packageStatus" to "PACKAGE_VALIDATED",
                 "interactiveStatus" to "INTERACTIVE_READY",
                 "automationStatus" to "EXECUTION_NOT_CONFIGURED",
@@ -279,7 +283,7 @@ class HarnessPackageRenderer(
         from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
 
         status = json.loads((root / "runtime-status.json").read_text())
-        if not status.get("configured"):
+        if not status.get("runtimeConfigured"):
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": status.get("code"), "message": status.get("message")}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
         definition = json.loads((root / "runtime-definition.json").read_text())
@@ -407,13 +411,28 @@ class HarnessPackageRenderer(
         ).apply {
             field.minItems?.let { put("minItems", it) }
             field.maxItems?.let { put("maxItems", it) }
+            field.format?.let { put("format", it) }
+            field.enumValues?.let { put("enum", it) }
+            field.minimum?.let { put("minimum", it) }
+            field.maximum?.let { put("maximum", it) }
+            field.minLength?.let { put("minLength", it) }
+            field.uniqueItems?.let { put("uniqueItems", it) }
+            field.uniqueBy?.let { put("x-agentown-uniqueBy", it) }
+            field.objectSchema?.let { nested -> putAll(linkedMapOf(
+                "additionalProperties" to false,
+                "properties" to nested.associate { it.name to fieldSchema(it) },
+                "required" to nested.filter { it.required }.map { it.name },
+            )) }
             field.itemType?.let { itemType ->
                 put("items", if (itemType.equals("object", true) && !field.itemSchema.isNullOrEmpty()) linkedMapOf(
                     "type" to "object",
                     "additionalProperties" to false,
                     "properties" to field.itemSchema.associate { it.name to fieldSchema(it) },
                     "required" to field.itemSchema.filter { it.required }.map { it.name },
-                ) else mapOf("type" to jsonType(itemType)))
+                ) else linkedMapOf<String, Any>("type" to jsonType(itemType)).apply {
+                    field.itemFormat?.let { put("format", it) }
+                    field.itemMinLength?.let { put("minLength", it) }
+                })
             }
         }
 

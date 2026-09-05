@@ -318,6 +318,7 @@ class StructuredMetaAgentPipeline(
         val generatedGraph = canonical.proposal.graphPlan
             ?.let(::normalizeGeneratedInputDefaults)
             ?.let { removeUndeclaredAgentInputDefaults(it, canonical.agentDefinitions) }
+            ?.let { normalizeEntryBindings(it, canonical.proposal.inputSchema) }
         val graphWithoutInventedApproval = if (mode == DesignMode.AGENT_DEVELOPMENT && !runtimeApprovalExplicit) {
             generatedGraph?.let(::removeRuntimeApprovalNodes)
         } else generatedGraph
@@ -381,9 +382,40 @@ class StructuredMetaAgentPipeline(
         })
     }
 
+    internal fun normalizeEntryBindings(
+        plan: WorkflowGraphPlan,
+        inputSchema: List<FieldDefinition>,
+    ): WorkflowGraphPlan {
+        val onlyInput = inputSchema.singleOrNull()?.name ?: return plan
+        val declared = inputSchema.map { it.name }.toSet()
+        val nodeTypes = plan.nodes.associate { it.id to it.nodeType }
+        return plan.copy(edges = plan.edges.map { edge ->
+            if (nodeTypes[edge.source] !in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) return@map edge
+            edge.copy(bindings = edge.bindings.map { binding ->
+                val sourceRoot = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                if (sourceRoot in declared || sourceRoot in setOf("context", "status", "error")) binding
+                else WorkflowFieldBinding(onlyInput, if (binding.targetField == sourceRoot) onlyInput else binding.targetField)
+            })
+        })
+    }
+
     internal fun canonicalFields(fields: List<FieldDefinition>): List<FieldDefinition> = fields.map { field ->
-        if (!field.type.equals("array", true)) field.copy(minItems = null, maxItems = null, itemType = null, itemSchema = null)
-        else field.copy(itemSchema = field.itemSchema?.takeIf { it.isNotEmpty() }?.let(::canonicalFields))
+        when {
+            field.type.equals("array", true) -> field.copy(
+                itemSchema = field.itemSchema?.takeIf { it.isNotEmpty() }?.let(::canonicalFields),
+                objectSchema = null, format = null, enumValues = null, minimum = null, maximum = null, minLength = null,
+            )
+            field.type.equals("object", true) -> field.copy(
+                minItems = null, maxItems = null, itemType = null, itemSchema = null, itemFormat = null,
+                itemMinLength = null, uniqueItems = null, uniqueBy = null,
+                objectSchema = field.objectSchema?.takeIf { it.isNotEmpty() }?.let(::canonicalFields),
+                format = null, enumValues = null, minimum = null, maximum = null, minLength = null,
+            )
+            else -> field.copy(
+                minItems = null, maxItems = null, itemType = null, itemSchema = null, itemFormat = null,
+                itemMinLength = null, objectSchema = null, uniqueItems = null, uniqueBy = null,
+            )
+        }
     }
 
     private fun removeRuntimeApprovalNodes(plan: WorkflowGraphPlan): WorkflowGraphPlan {

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import date, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 
 def _rows(value: Any) -> list[dict[str, str]]:
@@ -51,9 +53,105 @@ def _contract_result(values: dict[str, Any], contract: list[dict[str, Any]] | No
     return {name: values[name] for name in declared if name in values}
 
 
+def _matches_contract(value: Any, field: dict[str, Any]) -> bool:
+    expected = field.get("type")
+    expected_types = {
+        "string": str,
+        "array": list,
+        "object": dict,
+        "boolean": bool,
+        "number": (int, float),
+        "integer": int,
+    }
+    if expected in expected_types:
+        if not isinstance(value, expected_types[expected]):
+            return False
+        if expected in {"number", "integer"} and isinstance(value, bool):
+            return False
+    if expected == "string":
+        if field.get("minLength") is not None and len(value) < int(field["minLength"]):
+            return False
+        if field.get("enumValues") and value not in field["enumValues"]:
+            return False
+        if field.get("format") == "uri" and not all((urlparse(value).scheme, urlparse(value).netloc)):
+            return False
+        try:
+            if field.get("format") == "date":
+                date.fromisoformat(value)
+            elif field.get("format") == "date-time":
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if expected in {"number", "integer"}:
+        if field.get("minimum") is not None and value < field["minimum"]:
+            return False
+        if field.get("maximum") is not None and value > field["maximum"]:
+            return False
+    if expected == "object" and field.get("objectSchema"):
+        nested_contract = field["objectSchema"]
+        declared = {str(nested.get("name")) for nested in nested_contract}
+        if any(key not in declared for key in value):
+            return False
+        for nested in nested_contract:
+            name = str(nested.get("name"))
+            if nested.get("required") and name not in value:
+                return False
+            if name in value and not _matches_contract(value[name], nested):
+                return False
+    if expected != "array":
+        return True
+    minimum = field.get("minItems")
+    maximum = field.get("maxItems")
+    if minimum is not None and len(value) < int(minimum):
+        return False
+    if maximum is not None and len(value) > int(maximum):
+        return False
+    if field.get("uniqueItems") and len({repr(item) for item in value}) != len(value):
+        return False
+    unique_by = field.get("uniqueBy")
+    if unique_by:
+        keys = [item.get(unique_by) for item in value if isinstance(item, dict) and unique_by in item]
+        if len(keys) != len(value) or len({repr(key) for key in keys}) != len(keys):
+            return False
+    item_type = field.get("itemType")
+    item_schema = field.get("itemSchema")
+    for item in value:
+        if item_type and not _matches_contract(item, {"type": item_type}):
+            return False
+        if item_type == "string" and not _matches_contract(item, {
+            "type": "string", "format": field.get("itemFormat"), "minLength": field.get("itemMinLength"),
+        }):
+            return False
+        if item_type == "object" and item_schema:
+            declared = {str(nested.get("name")) for nested in item_schema}
+            if any(key not in declared for key in item):
+                return False
+            for nested in item_schema:
+                name = str(nested.get("name"))
+                if nested.get("required") and name not in item:
+                    return False
+                if name in item and not _matches_contract(item[name], nested):
+                    return False
+    return True
+
+
+def _context_matches_contract(context: dict[str, Any], contract: list[dict[str, Any]] | None) -> bool:
+    if not contract:
+        return True
+    for field in contract:
+        name = str(field.get("name"))
+        if field.get("required") and name not in context:
+            return False
+        if name in context and not _matches_contract(context[name], field):
+            return False
+    return True
+
+
 def quality_check(
+    agentownInputContract: list[dict[str, Any]] | None = None,
     agentownOutputContract: list[dict[str, Any]] | None = None,
     agentownResultFields: list[str] | None = None,
+    agentownFailClosed: bool = False,
     **context: Any,
 ):
     missing = context.get("missingLocations") or context.get("missingFields") or []
@@ -62,9 +160,12 @@ def quality_check(
     result_fields = agentownResultFields or ["results"]
     has_parallel_results = any(isinstance(context.get(name), list) and bool(context[name]) for name in result_fields)
     has_tool_result = any(name in context for name in ("changedRows", "rendered", "renderedResponse"))
-    passed = not missing and not failures and (
-        status in {"READY", "SUCCEEDED", "COMPLETED"} or has_parallel_results or has_tool_result
-    )
+    contract_passed = _context_matches_contract(context, agentownInputContract)
+    positive_signal = bool(agentownInputContract) or status in {"READY", "SUCCEEDED", "COMPLETED"} \
+        or has_parallel_results or has_tool_result
+    passed = contract_passed and not missing and not failures and positive_signal
+    if not passed and agentownFailClosed:
+        raise ValueError("Quality contract validation failed")
     return _contract_result({**context, "qualityPassed": passed}, agentownOutputContract)
 
 

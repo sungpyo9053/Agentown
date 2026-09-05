@@ -185,6 +185,152 @@ class TFrameXDefinitionCompilerTest {
     }
 
     @Test
+    fun `entry quality gate preserves array input through parallel join and aggregate`(@TempDir directory: Path) {
+        val rowFields = listOf(
+            FieldDefinition("recordId", "string", true, "stable record id", minLength = 1),
+            FieldDefinition("score", "number", true, "measured score", minimum = 0.0, maximum = 100.0),
+        )
+        val recordContract = FieldDefinition(
+            "records", "array", true, "independent records", minItems = 3, maxItems = 3,
+            itemType = "object", itemSchema = rowFields, uniqueBy = "recordId",
+        )
+        val worker = AgentDefinition(
+            key = "worker", name = "Worker", role = "Process exactly one assigned record",
+            inputSchema = listOf(FieldDefinition("record", "object", true, "one record", objectSchema = rowFields)),
+            outputSchema = listOf(FieldDefinition("result", "object", true, "one result", objectSchema = rowFields)),
+            behaviorRules = listOf("Use only the assigned record"), forbiddenRules = emptyList(),
+            evidenceRequirements = emptyList(),
+        )
+        val aggregator = AgentDefinition(
+            key = "aggregator", name = "Aggregator", role = "Aggregate all verified results",
+            inputSchema = listOf(FieldDefinition(
+                "results", "array", true, "all results", minItems = 3, maxItems = 3,
+                itemType = "object", itemSchema = rowFields, uniqueBy = "recordId",
+            )),
+            outputSchema = listOf(FieldDefinition(
+                "summary", "array", true, "final result rows", minItems = 3, maxItems = 3,
+                itemType = "object", itemSchema = rowFields, uniqueBy = "recordId",
+            )),
+            behaviorRules = listOf("Use every result"), forbiddenRules = emptyList(), evidenceRequirements = emptyList(),
+        )
+        val nodes = buildList {
+            add(WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("input-quality", "quality.check", "Validate input", NodePosition(0.0, 0.0)))
+            repeat(3) { index -> add(WorkflowNode(
+                "worker-${index + 1}", "ai.generate", "Worker ${index + 1}", NodePosition(0.0, 0.0),
+                mapOf("agentKey" to "worker"),
+            )) }
+            add(WorkflowNode("result-quality", "quality.check", "Validate results", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("route", "condition.branch", "Route", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("aggregate", "ai.generate", "Aggregate", NodePosition(0.0, 0.0), mapOf("agentKey" to "aggregator")))
+            add(WorkflowNode("failed", "workflow.end", "Failed", NodePosition(0.0, 0.0)))
+            add(WorkflowNode("done", "workflow.end", "Done", NodePosition(0.0, 0.0)))
+        }
+        val edges = buildList {
+            add(WorkflowEdge("start-quality", "start", "input-quality", bindings = mapOf("records" to "records")))
+            repeat(3) { index -> add(WorkflowEdge(
+                "quality-worker-${index + 1}", "input-quality", "worker-${index + 1}",
+                bindings = mapOf("record" to "records"),
+            )) }
+            repeat(3) { index -> add(WorkflowEdge(
+                "worker-${index + 1}-quality", "worker-${index + 1}", "result-quality",
+                bindings = mapOf("worker${index + 1}Result" to "result"),
+            )) }
+            add(WorkflowEdge("quality-route", "result-quality", "route", bindings = mapOf("qualityPassed" to "qualityPassed")))
+            add(WorkflowEdge("route-success", "route", "aggregate", "qualityPassed=true", mapOf("results" to "results")))
+            add(WorkflowEdge("route-failed", "route", "failed", "qualityPassed=false"))
+            add(WorkflowEdge("aggregate-done", "aggregate", "done"))
+        }
+
+        val definition = compiler.compile(
+            "generic-array-fanout",
+            WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "start", nodes = nodes, edges = edges),
+            listOf(worker, aggregator),
+            mapOf("records" to listOf(
+                mapOf("recordId" to "r-1", "score" to 10),
+                mapOf("recordId" to "r-2", "score" to 20),
+                mapOf("recordId" to "r-3", "score" to 30),
+            )),
+            finalOutputSchema = aggregator.outputSchema,
+            workflowInputSchema = listOf(recordContract),
+        )
+
+        val agents = definition["agents"] as List<Map<String, Any?>>
+        val quality = agents.single { it["name"] == "quality-check__input-quality" }
+        assertThat((quality["inputSchema"] as List<FieldDefinition>).map { it.name }).containsExactly("records")
+        assertThat((quality["outputSchema"] as List<FieldDefinition>).map { it.name })
+            .containsExactly("records", "qualityPassed")
+        assertThat((quality["inputDefaults"] as Map<String, Any?>)["agentownInputContract"])
+            .isEqualTo(listOf(recordContract))
+        assertThat((quality["inputDefaults"] as Map<String, Any?>)["agentownFailClosed"]).isEqualTo(true)
+        assertThat(agents.filter { it["name"].toString().startsWith("worker__worker-") })
+            .allMatch { agent ->
+                (agent["inputBindings"] as List<Map<String, String>>).contains(
+                    mapOf("sourceField" to "records", "targetField" to "record"),
+                )
+            }
+
+        val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
+        val definitionFile = directory.resolve("definition.json")
+        mapper.writeValue(definitionFile.toFile(), definition)
+        val script = directory.resolve("execute.py")
+        Files.writeString(script, """
+            import asyncio, json, os, sys
+            from tframex.models.primitives import Message
+            from tframex.util.llms import BaseLLMWrapper
+            from agentown_tframex_adapter import AgentownTFrameXAdapter
+            from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
+
+            class FixtureLLM(BaseLLMWrapper):
+                def __init__(self): super().__init__("fixture")
+                async def chat_completion(self, messages, stream=False, **kwargs):
+                    value = json.loads(messages[-1].content)
+                    if "results" in value:
+                        return Message(role="assistant", content=json.dumps({"summary": value["results"]}))
+                    if os.environ.get("FAIL_RECORD") == value["record"]["recordId"]:
+                        return Message(role="assistant", content=json.dumps({"result": {"recordId": value["record"]["recordId"], "score": "invalid"}}))
+                    return Message(role="assistant", content=json.dumps({"result": value["record"]}))
+
+            definition = json.load(open(sys.argv[1]))
+            adapter = AgentownTFrameXAdapter(llm=FixtureLLM(), tools=BUILTIN_TOOLS)
+            try:
+                result = asyncio.run(adapter.run(definition))
+                print("RESULT_JSON=" + json.dumps(result, ensure_ascii=False))
+            except Exception as error:
+                print("RESULT_JSON=" + json.dumps({"error": str(error), "trace": adapter.trace}, ensure_ascii=False))
+                raise SystemExit(1)
+        """.trimIndent())
+        val process = ProcessBuilder(python, script.toString(), definitionFile.toString())
+            .directory(directory.toFile()).redirectErrorStream(true)
+            .also { processBuilder ->
+                val repositoryRoot = System.getenv("AGENTOWN_REPO_ROOT")?.let(Path::of)
+                    ?: Path.of(System.getProperty("user.dir"))
+                processBuilder.environment()["PYTHONPATH"] = repositoryRoot.resolve("core-runtime").toAbsolutePath().normalize().toString()
+            }
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertThat(process.waitFor()).describedAs(output).isZero()
+        val result = mapper.readTree(output.substringAfterLast("RESULT_JSON="))
+        assertThat(mapper.readTree(result["final"].asText())["summary"].map { it["recordId"].asText() })
+            .containsExactly("r-1", "r-2", "r-3")
+
+        val failing = ProcessBuilder(python, script.toString(), definitionFile.toString())
+            .directory(directory.toFile()).redirectErrorStream(true)
+            .also { processBuilder ->
+                val repositoryRoot = System.getenv("AGENTOWN_REPO_ROOT")?.let(Path::of)
+                    ?: Path.of(System.getProperty("user.dir"))
+                processBuilder.environment()["PYTHONPATH"] = repositoryRoot.resolve("core-runtime").toAbsolutePath().normalize().toString()
+                processBuilder.environment()["FAIL_RECORD"] = "r-2"
+            }
+            .start()
+        val failureOutput = failing.inputStream.bufferedReader().use { it.readText() }
+        assertThat(failing.waitFor()).describedAs(failureOutput).isNotZero()
+        val failure = mapper.readTree(failureOutput.substringAfterLast("RESULT_JSON="))
+        assertThat(failure["trace"].filter { it["kind"].asText() == "agent_start" }.map { it["agent"].asText() })
+            .doesNotContain("aggregator__aggregate")
+    }
+
+    @Test
     fun `parallel scalar results fan in through quality and router using downstream agent array contract`(@TempDir directory: Path) {
         val reviewer = AgentDefinition(
             key = "reviewer", name = "Reviewer", role = "Review one independent proposal",
@@ -223,8 +369,8 @@ class TFrameXDefinitionCompilerTest {
                 ))
             }
             add(WorkflowEdge("quality-route", "quality", "route", bindings = mapOf("qualityPassed" to "qualityPassed")))
-            add(WorkflowEdge("route-success", "route", "aggregate", "qualityPassed=true", mapOf("reviewResults" to "reviewResults")))
-            add(WorkflowEdge("route-failed", "route", "failed", "qualityPassed=false"))
+            add(WorkflowEdge("route-success", "route", "aggregate", "allSucceeded=true", mapOf("reviewResults" to "reviewResults")))
+            add(WorkflowEdge("route-failed", "route", "failed", "allSucceeded=false"))
             add(WorkflowEdge("aggregate-done", "aggregate", "done"))
         }
 
@@ -277,7 +423,11 @@ class TFrameXDefinitionCompilerTest {
         val process = ProcessBuilder(python, script.toString(), definitionFile.toString())
             .directory(directory.toFile())
             .redirectErrorStream(true)
-            .also { it.environment()["PYTHONPATH"] = Path.of("core-runtime").toAbsolutePath().normalize().toString() }
+            .also {
+                val repositoryRoot = System.getenv("AGENTOWN_REPO_ROOT")?.let(Path::of)
+                    ?: Path.of(System.getProperty("user.dir"))
+                it.environment()["PYTHONPATH"] = repositoryRoot.resolve("core-runtime").toAbsolutePath().normalize().toString()
+            }
             .start()
         val output = process.inputStream.bufferedReader().use { it.readText() }
         assertThat(process.waitFor()).describedAs(output).isZero()
@@ -285,7 +435,7 @@ class TFrameXDefinitionCompilerTest {
         assertThat(mapper.readTree(result["final"].asText())["selectionTable"].map { it["supplier"].asText() })
             .containsExactly("a", "b", "c", "d")
         assertThat(result["trace"].filter { it["kind"].asText() == "router_select" }.map { it["route"].asText() })
-            .containsExactly("qualityPassed=true")
+            .containsExactly("allSucceeded=true")
     }
 
     @Test
@@ -360,7 +510,7 @@ class TFrameXDefinitionCompilerTest {
         val edges = buildList {
             repeat(3) { index ->
                 add(WorkflowEdge("start-$index", "start", "review-$index", bindings = mapOf("memo" to "memo$index")))
-                add(WorkflowEdge("review-$index-join", "review-$index", "join", bindings = mapOf("reviewResults" to "reviewResults")))
+                add(WorkflowEdge("review-$index-join", "review-$index", "join", bindings = mapOf("reviewResults[$index]" to "reviewResults")))
             }
             add(WorkflowEdge("join-quality", "join", "quality", bindings = mapOf("context" to "context")))
             add(WorkflowEdge("quality-route", "quality", "route", bindings = mapOf("context" to "context")))
@@ -380,6 +530,9 @@ class TFrameXDefinitionCompilerTest {
         assertThat(router["type"]).isEqualTo("RouterPattern")
         assertThat((router["routes"] as Map<*, *>).keys).containsExactlyInAnyOrder("qualityPassed=true", "qualityPassed=false")
         val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+        val collectorRuntime = runtimeAgents.single { it["name"] == "collector__join" }
+        assertThat(collectorRuntime["inputBindings"] as List<Map<String, String>>)
+            .allMatch { it["targetField"] == "reviewResults" }
         assertThat(runtimeAgents).anyMatch { it["kind"] == "router" }
         assertThat(runtimeAgents).anyMatch { it["toolName"] == "quality.check" }
         assertThat(runtimeAgents.filter { it["kind"] == "tool" })

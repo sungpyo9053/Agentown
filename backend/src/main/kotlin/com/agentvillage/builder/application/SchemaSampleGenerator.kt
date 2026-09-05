@@ -16,9 +16,11 @@ internal object SchemaSampleGenerator {
                 val count = field.minItems ?: if (field.maxItems == 0) 0 else 1
                 List(count) { itemIndex -> arrayItem(field, "$path[$itemIndex]", itemIndex) }
             }
-            "object" -> emptyMap<String, Any?>()
+            "object" -> linkedMapOf<String, Any?>().apply {
+                field.objectSchema.orEmpty().forEach { nested -> put(nested.name, value(nested, "$path.${nested.name}", index)) }
+            }
             "boolean" -> false
-            "number", "integer" -> 1
+            "number", "integer" -> field.minimum ?: 1
             else -> sampleText(field, index)
         }
     }
@@ -34,7 +36,10 @@ internal object SchemaSampleGenerator {
         else -> sampleText(field, index)
     }
 
-    private fun sampleText(field: FieldDefinition, index: Int): String = with(field.name) { when {
+    private fun sampleText(field: FieldDefinition, index: Int): String = field.enumValues?.firstOrNull() ?: with(field.name) { when {
+        field.format == "date" -> "2026-09-05"
+        field.format == "date-time" -> "2026-09-05T09:00:00+09:00"
+        field.format == "uri" -> "https://example.com/evidence-${index + 1}"
         contains("date", true) || endsWith("At") -> "2026-09-05"
         contains("url", true) -> "https://example.com/evidence-${index + 1}"
         contains("status", true) -> "READY"

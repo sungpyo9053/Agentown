@@ -302,9 +302,19 @@
           "minItems": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 },
           "maxItems": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 },
           "itemType": { "type": ["string", "null"], "enum": ["string", "boolean", "number", "integer", "object", "array", null] },
-          "itemSchema": { "anyOf": [{ "$ref": "#/$defs/fields" }, { "type": "null" }] }
+          "itemSchema": { "anyOf": [{ "$ref": "#/$defs/fields" }, { "type": "null" }] },
+          "itemFormat": { "type": ["string", "null"], "enum": ["date", "date-time", "uri", null] },
+          "itemMinLength": { "type": ["integer", "null"], "minimum": 0 },
+          "objectSchema": { "anyOf": [{ "$ref": "#/$defs/fields" }, { "type": "null" }] },
+          "format": { "type": ["string", "null"], "enum": ["date", "date-time", "uri", null] },
+          "enumValues": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+          "minimum": { "type": ["number", "null"] },
+          "maximum": { "type": ["number", "null"] },
+          "minLength": { "type": ["integer", "null"], "minimum": 0 },
+          "uniqueItems": { "type": ["boolean", "null"] },
+          "uniqueBy": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" }
         },
-        "required": ["name", "type", "required", "description", "minItems", "maxItems", "itemType", "itemSchema"]
+        "required": ["name", "type", "required", "description", "minItems", "maxItems", "itemType", "itemSchema", "itemFormat", "itemMinLength", "objectSchema", "format", "enumValues", "minimum", "maximum", "minLength", "uniqueItems", "uniqueBy"]
       }
     },
     "rules": {

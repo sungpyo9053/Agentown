@@ -20,6 +20,31 @@ import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
     @Test
+    fun `single workflow input replaces an invented entry binding`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val plan = WorkflowGraphPlan(
+            entryNodeId = "start",
+            nodes = listOf(
+                WorkflowNodePlan("start", "manual.trigger", "Start"),
+                WorkflowNodePlan("input", "text.input", "Input"),
+            ),
+            edges = listOf(WorkflowEdgePlan("edge", "start", "input", bindings = listOf(WorkflowFieldBinding("message", "message")))),
+        )
+
+        val normalized = pipeline.normalizeEntryBindings(
+            plan,
+            listOf(FieldDefinition("applications", "array", true, "applications", itemType = "object")),
+        )
+
+        assertThat(normalized.edges.single().bindings).containsExactly(WorkflowFieldBinding("applications", "applications"))
+    }
+
+    @Test
     fun `generated list input defaults normalize to runtime map`() {
         val mapper = jacksonObjectMapper()
         val runs = mock<MetaAgentRunRepository>()

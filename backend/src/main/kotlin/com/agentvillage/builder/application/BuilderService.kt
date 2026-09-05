@@ -209,24 +209,33 @@ class BuilderService(
         bundle = generationDrafts.reloadBundle(context.conversation.id)
         if (bundle.clarificationQuestions.isEmpty()) {
             var validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
-            for (repairAttempt in 1..2) {
-                if (validation.valid) break
-                generationDrafts.validationFailed(context.conversation.id, validation.issues)
-                bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, validation.issues, bundle, userInstruction = instruction)
+            if (validation.issues.any { it.code == "MEANING_DECISION_POLICY_UNSPECIFIED" }) {
+                bundle = bundle.copy(clarificationQuestions = listOf(ClarificationQuestion(
+                    id = "decision-policy",
+                    field = "decisionPolicy",
+                    question = "합격·승인과 거절을 나누는 정확한 수치 또는 조건을 알려주세요.",
+                )))
                 generationDrafts.checkpoint(context.conversation.id, bundle)
-                bundle = generationDrafts.reloadBundle(context.conversation.id)
-                validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
-            }
-            if (!validation.valid) {
-                generationDrafts.validationFailed(context.conversation.id, validation.issues)
-                throw BadRequestException(
-                    if (validation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
-                    validation.issues.joinToString(" ") { it.message },
-                )
+            } else {
+                for (repairAttempt in 1..2) {
+                    if (validation.valid) break
+                    generationDrafts.validationFailed(context.conversation.id, validation.issues)
+                    bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, validation.issues, bundle, userInstruction = instruction)
+                    generationDrafts.checkpoint(context.conversation.id, bundle)
+                    bundle = generationDrafts.reloadBundle(context.conversation.id)
+                    validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
+                }
+                if (!validation.valid) {
+                    generationDrafts.validationFailed(context.conversation.id, validation.issues)
+                    throw BadRequestException(
+                        if (validation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
+                        validation.issues.joinToString(" ") { it.message },
+                    )
+                }
             }
         }
         val requirement = bundle.requirement
-        val questions = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) emptyList() else bundle.clarificationQuestions
+        val questions = bundle.clarificationQuestions
         require(requirement.objective.isNotBlank() && requirement.steps.isNotEmpty())
         val map = mapper.convertValue(requirement, object : TypeReference<Map<String, Any?>>() {}).toMutableMap()
         map["clarificationQuestions"] = mapper.convertValue(questions, object : TypeReference<List<Map<String, Any?>>>() {})

@@ -14,6 +14,7 @@ type GraphNode = { id: string; nodeType: string; label: string; position: { x: n
 type Graph = { nodes: GraphNode[]; edges: Array<{ id: string; source: string; target: string }> };
 type Snapshot = {
   conversationId: string; workflowId: string; status: string;
+  clarificationQuestions: Array<{ id: string; field: string; question: string }>;
   proposal?: { name: string; summary: string; capabilities: string[]; resourcePlan?: { bindings: Resource[]; uncoveredCapabilities: string[]; simulationReady: boolean; productionReady: boolean }; agentDesign?: { naturalLanguageSummary: string; assumptions: Array<{ key: string; value: string; reason: string }>; simulationScenarios: Array<{ name: string; input: Record<string, unknown>; expectedStages: string[] }>; review: { passed: boolean; issues: Array<{ code: string; message: string }> } } };
   agentDefinitions: Agent[]; graph?: Graph; currentVersionId?: string; validation?: { valid: boolean; graphHash: string };
   sampleInput: Record<string, unknown>;
@@ -166,6 +167,7 @@ export default function AgentDevelopmentPage() {
               <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => { setMessage(example); void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "EXAMPLE_SELECTED" }) }).catch(() => undefined); }} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
             </div>}
             {snapshot?.messages.map(item => <article key={item.id} className={`flex gap-3 ${item.role === "USER" ? "justify-end" : "justify-start"}`}>{item.role !== "USER" && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span>}<div className={`max-w-[82%] rounded-md px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "bg-[#e9e9e4] text-ink" : "border border-hairline bg-white"}`}>{item.content}</div></article>)}
+            {snapshot?.status === "NEEDS_CLARIFICATION" && snapshot.clarificationQuestions.map(question => <article key={question.id} className="ml-11 rounded-md border border-amber-200 bg-amber-50 p-4"><p className="text-[11px] font-semibold text-amber-800">설계에 꼭 필요한 기준</p><p className="mt-2 text-sm leading-6 text-amber-950">{question.question}</p></article>)}
             {pending && <article className="flex gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span><div className="min-w-64 rounded-md border border-hairline p-4"><div className="flex items-center justify-between gap-4"><p className="text-sm font-medium">에이전트를 구성하고 있습니다</p><span className="text-[11px] text-mute">{job.data ? `${stageLabel(job.data.stage)} · ${job.data.elapsedSeconds}초` : "요청 준비"}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cloud"><div className="h-full w-2/3 animate-pulse rounded-full bg-coral" /></div><button onClick={() => cancel.mutate()} disabled={!jobId} className="mt-3 flex items-center gap-1 text-xs text-mute hover:text-sale"><CircleStop className="h-3.5 w-3.5" />중지</button></div></article>}
             {error && <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error.message}</div>}
           </div>
@@ -230,6 +232,7 @@ function NextAction({ status, hasVersion, run, open }: { status?: string; hasVer
   let text = "1. 만들 업무를 적고 요청문을 보내세요.";
   let action: { label: string; panel: "team" | "graph" | "output" } | undefined;
   if (status === "WAITING_DESIGN_APPROVAL") { text = "2. 팀과 실행 구조를 확인한 뒤 설계를 승인하세요."; action = { label: "팀 확인", panel: "team" }; }
+  else if (status === "NEEDS_CLARIFICATION") { text = "판정 기준처럼 임의로 정할 수 없는 정보에 답해 주세요."; }
   else if (hasVersion && run?.status !== "SUCCEEDED") { text = "3. 자동 생성된 유효 샘플로 실제 실행을 시험하세요."; action = { label: "테스트 열기", panel: "output" }; }
   else if (run?.status === "SUCCEEDED" && run.requirementMatched === true) { text = "4. 검증 완료. 팀 탭에서 패키지를 내려받아 사용할 수 있습니다."; action = { label: "패키지 받기", panel: "team" }; }
   return <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline bg-amber-50 px-4 py-2.5 text-xs"><p><b className="mr-2">지금 할 일</b>{text}</p>{action && <button type="button" onClick={() => open(action.panel)} className="shrink-0 rounded-md bg-white px-3 py-1.5 font-semibold shadow-sm">{action.label}</button>}</div>;

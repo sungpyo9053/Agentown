@@ -29,6 +29,63 @@ class WorkflowGraphValidatorTest {
         assertThat(validator.validate(graph).issues.map { it.code }).contains("NODE_TYPE_NOT_ALLOWED")
     }
 
+    @Test fun `numeric accept reject workflow cannot invent an omitted decision threshold`() {
+        val proposal = AutomationProposal(
+            name = "판정", summary = "측정값 판정", capabilities = listOf("판정"), integrations = emptyList(),
+            approvalPoints = emptyList(), failurePolicy = "실패 시 중단",
+            inputSchema = listOf(FieldDefinition("score", "number", true, "score", minimum = 0.0, maximum = 100.0)),
+            outputSchema = listOf(FieldDefinition("decision", "string", true, "decision", enumValues = listOf("ACCEPTED", "REJECTED"))),
+        )
+        val requirement = AutomationRequirement(
+            "측정값을 보고 승인 여부를 판정한다.", "수동 실행", listOf("score"), listOf("decision"),
+            listOf("판정"), listOf("승인 여부"), emptyList(), false,
+        )
+        val minimal = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(WorkflowNode("start", NodeType.MANUAL_TRIGGER.wireName, "Start", NodePosition(0.0, 0.0))),
+            edges = emptyList(),
+        )
+
+        assertThat(validator.validate(minimal, requirement, proposal, emptyList(), "score를 보고 승인 또는 거절해줘").issues.map { it.code })
+            .contains("MEANING_DECISION_POLICY_UNSPECIFIED")
+        assertThat(validator.validate(minimal, requirement, proposal, emptyList(), "score가 80 이상이면 승인하고 미만이면 거절해줘").issues.map { it.code })
+            .doesNotContain("MEANING_DECISION_POLICY_UNSPECIFIED")
+    }
+
+    @Test fun `parallel agents may receive distinct items from one declared object array`() {
+        val itemFields = listOf(FieldDefinition("id", "string", true, "id", minLength = 1))
+        val workflowInput = FieldDefinition("records", "array", true, "records", minItems = 2, maxItems = 2, itemType = "object", itemSchema = itemFields)
+        val agentInput = FieldDefinition("record", "object", true, "record", objectSchema = itemFields)
+        val worker = AgentDefinition(
+            "worker", "Worker", "Review one record", listOf(agentInput),
+            listOf(FieldDefinition("result", "string", true, "result")),
+            listOf("review"), listOf("do not invent"), listOf("record"),
+        )
+        val proposal = AutomationProposal(
+            "Parallel review", "Review records", listOf("review"), emptyList(), emptyList(), "fail closed",
+            inputSchema = listOf(workflowInput),
+        )
+        val requirement = AutomationRequirement(
+            "Review two records independently", "manual", listOf("records"), listOf("results"),
+            listOf("review"), emptyList(), listOf("failure"), false,
+        )
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(
+                WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)),
+                WorkflowNode("one", "ai.generate", "One", NodePosition(1.0, 0.0), mapOf("agentKey" to "worker")),
+                WorkflowNode("two", "ai.generate", "Two", NodePosition(1.0, 1.0), mapOf("agentKey" to "worker")),
+            ),
+            edges = listOf(
+                WorkflowEdge("e1", "start", "one", bindings = mapOf("record" to "records")),
+                WorkflowEdge("e2", "start", "two", bindings = mapOf("record" to "records")),
+            ),
+        )
+
+        assertThat(validator.validate(graph, requirement, proposal, listOf(worker), "Review two records independently").issues)
+            .noneMatch { it.code == "MEANING_BINDING_TYPE_MISMATCH" }
+    }
+
     @Test fun `edge to missing node is rejected`() {
         val graph = graph().let { it.copy(edges = it.edges + WorkflowEdge("bad", "reply", "missing")) }
         assertThat(validator.validate(graph).issues.map { it.code }).contains("INVALID_EDGE")
