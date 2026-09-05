@@ -88,7 +88,7 @@ class StructuredParallelPattern(BasePattern):
                 aggregation_mode = binding.get("aggregationMode")
                 if aggregation_mode not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
                     raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
-                extracted = _resolve_path(value, source_field)
+                extracted = value if source_field == "$output" else _resolve_path(value, source_field)
                 if extracted is _MISSING:
                     failures.append(f"Parallel task '{task_name}' output is missing bound field '{source_field}'")
                     continue
@@ -465,7 +465,7 @@ class AgentownTFrameXAdapter:
                                 raise DefinitionError("Parallel task result binding must be an object")
                             source = str(binding.get("sourceField") or "")
                             target = str(binding.get("targetField") or "")
-                            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", source) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", target):
+                            if (source != "$output" and not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", source)) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", target):
                                 raise DefinitionError("Parallel task result bindings support top-level fields only")
                             if binding.get("aggregationMode") not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
                                 raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
@@ -476,6 +476,10 @@ class AgentownTFrameXAdapter:
                         for binding in task_bindings:
                             source = binding["sourceField"]
                             source_contract = next((field for field in fields if isinstance(field, Mapping) and field.get("name") == source), None)
+                            if source == "$output":
+                                if binding.get("aggregationMode") != "APPEND_ITEM":
+                                    raise DefinitionError("Whole task output requires APPEND_ITEM")
+                                continue
                             if source_contract is None:
                                 raise DefinitionError("Parallel binding source must be a declared output")
                             source_type = str(source_contract.get("type") or "").lower()

@@ -429,6 +429,90 @@ class TFrameXDefinitionCompilerTest {
     }
 
     @Test
+    fun `parallel result alias joins the whole structured task output`(@TempDir directory: Path) {
+        val resultFields = listOf(
+            FieldDefinition("warehouseId", "string", true, "warehouse"),
+            FieldDefinition("auditedAt", "string", true, "audit date"),
+            FieldDefinition("evidenceUrls", "array", true, "evidence", itemType = "string", minItems = 1),
+            FieldDefinition("status", "string", true, "status"),
+        )
+        val worker = AgentDefinition(
+            key = "auditor", name = "Auditor", role = "audit one warehouse", inputSchema = emptyList(),
+            outputSchema = resultFields, behaviorRules = listOf("audit"), forbiddenRules = emptyList(), evidenceRequirements = listOf("urls"),
+        )
+        val aggregator = AgentDefinition(
+            key = "aggregator", name = "Aggregator", role = "aggregate audits",
+            inputSchema = listOf(FieldDefinition(
+                "auditResults", "array", true, "all audits", minItems = 2, maxItems = 2,
+                itemType = "object", itemSchema = resultFields,
+            )),
+            outputSchema = listOf(FieldDefinition("report", "array", true, "report")),
+            behaviorRules = listOf("aggregate"), forbiddenRules = emptyList(), evidenceRequirements = listOf("urls"),
+        )
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(
+                WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)),
+                WorkflowNode("left", "ai.generate", "Left", NodePosition(0.0, 0.0), mapOf("agentKey" to "auditor")),
+                WorkflowNode("right", "ai.generate", "Right", NodePosition(0.0, 0.0), mapOf("agentKey" to "auditor")),
+                WorkflowNode("quality", "quality.check", "Quality", NodePosition(0.0, 0.0)),
+                WorkflowNode("aggregate", "ai.generate", "Aggregate", NodePosition(0.0, 0.0), mapOf("agentKey" to "aggregator")),
+            ),
+            edges = listOf(
+                WorkflowEdge("start-left", "start", "left"), WorkflowEdge("start-right", "start", "right"),
+                WorkflowEdge("left-quality", "left", "quality", bindings = mapOf("auditResults" to "result")),
+                WorkflowEdge("right-quality", "right", "quality", bindings = mapOf("auditResults" to "result")),
+                WorkflowEdge("quality-aggregate", "quality", "aggregate", bindings = mapOf("auditResults" to "auditResults")),
+            ),
+        )
+
+        val definition = compiler.compile("whole-output-fan-in", graph, listOf(worker, aggregator), emptyMap())
+        val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        assertThat((parallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> })
+            .allMatch { it["sourceField"] == "${'$'}output" && it["targetField"] == "auditResults" && it["aggregationMode"] == "APPEND_ITEM" }
+        val quality = (definition["agents"] as List<Map<String, Any?>>).single { it["toolName"] == "quality.check" }
+        val qualityResult = (quality["inputSchema"] as List<FieldDefinition>).single { it.name == "auditResults" }
+        assertThat(qualityResult.itemSchema).containsExactlyElementsOf(resultFields)
+
+        val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
+        val definitionFile = directory.resolve("definition.json")
+        mapper.writeValue(definitionFile.toFile(), definition)
+        val script = directory.resolve("execute.py")
+        Files.writeString(script, """
+            import asyncio, json, sys
+            from tframex.models.primitives import Message
+            from tframex.util.llms import BaseLLMWrapper
+            from agentown_tframex_adapter import AgentownTFrameXAdapter
+            from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
+
+            class FixtureLLM(BaseLLMWrapper):
+                def __init__(self): super().__init__("fixture")
+                async def chat_completion(self, messages, stream=False, **kwargs):
+                    value = json.loads(messages[-1].content)
+                    if "auditResults" in value:
+                        return Message(role="assistant", content=json.dumps({"report": value["auditResults"]}))
+                    index = value["_agentownParallelIndex"]
+                    return Message(role="assistant", content=json.dumps({
+                        "warehouseId": f"warehouse-{index}", "auditedAt": "2026-09-05",
+                        "evidenceUrls": [f"https://example.com/{index}"], "status": "SUCCEEDED"
+                    }))
+
+            definition = json.load(open(sys.argv[1]))
+            result = asyncio.run(AgentownTFrameXAdapter(llm=FixtureLLM(), tools=BUILTIN_TOOLS).run(definition))
+            print(json.dumps(result, ensure_ascii=False))
+        """.trimIndent())
+        val process = ProcessBuilder(python, script.toString(), definitionFile.toString())
+            .directory(directory.toFile()).redirectErrorStream(true)
+            .also { it.environment()["PYTHONPATH"] = Path.of("core-runtime").toAbsolutePath().normalize().toString() }
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertThat(process.waitFor()).describedAs(output).isZero()
+        val result = mapper.readTree(output.substring(output.indexOf('{')))
+        assertThat(mapper.readTree(result["final"].asText())["report"].map { it["warehouseId"].asText() })
+            .containsExactly("warehouse-1", "warehouse-2")
+    }
+
+    @Test
     fun `parallel join rejects incompatible array item contracts`() {
         val worker = AgentDefinition(
             key = "worker", name = "Worker", role = "work", inputSchema = emptyList(),

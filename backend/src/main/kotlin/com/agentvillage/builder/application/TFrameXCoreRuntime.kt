@@ -114,11 +114,11 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         }
         fun isTerminalExecutable(node: WorkflowNode): Boolean = descendants(node.id, outgoing)
             .none { descendant -> nodesById[descendant]?.nodeType in (aiTypes + toolTypes) }
-        fun nearestDownstreamAgentArrayField(nodeId: String): String? {
+        fun nearestDownstreamAgentArrayContract(nodeId: String): FieldDefinition? {
             val pending = ArrayDeque<Pair<String, Int>>()
             outgoing[nodeId].orEmpty().forEach { pending.add(it.target to 1) }
             val visited = mutableSetOf<String>()
-            val fields = linkedSetOf<String>()
+            val fields = linkedMapOf<String, FieldDefinition>()
             var foundDepth: Int? = null
             while (pending.isNotEmpty()) {
                 val (currentId, currentDepth) = pending.removeFirst()
@@ -128,27 +128,29 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 if (current.nodeType in aiTypes) {
                     definitions[current.config["agentKey"]?.toString()]
                         ?.inputSchema?.firstOrNull { it.type.equals("array", true) }
-                        ?.name?.let(fields::add)
+                        ?.let { fields.putIfAbsent(it.name, it) }
                     foundDepth = currentDepth
                     continue
                 }
                 outgoing[currentId].orEmpty().forEach { pending.add(it.target to currentDepth + 1) }
             }
-            return fields.singleOrNull()
+            return fields.values.singleOrNull()
         }
         fun parallelResultFieldFor(node: WorkflowNode): String = if (node.nodeType in aiTypes) {
             definitions[node.config["agentKey"]?.toString()]?.inputSchema
                 ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
         } else {
-            nearestDownstreamAgentArrayField(node.id) ?: "results"
+            nearestDownstreamAgentArrayContract(node.id)?.name ?: "results"
         }
         lateinit var outputSchemaFor: (WorkflowNode) -> List<FieldDefinition>
         fun upstreamMessageSchema(node: WorkflowNode): List<FieldDefinition> {
             val ancestors = nearestExecutableAncestors(node.id)
             if (ancestors.size > 1) {
                 val resultField = parallelResultFieldFor(node)
+                val resultContract = nearestDownstreamAgentArrayContract(node.id)
+                    ?: FieldDefinition(resultField, "array", true, "parallel task results")
                 return (workflowInputSchema + listOf(
-                    FieldDefinition(resultField, "array", true, "parallel task results"),
+                    resultContract,
                     FieldDefinition("failures", "array", true, "parallel task failures"),
                 )).distinctBy { it.name }
             }
@@ -264,10 +266,6 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             if (sourceField.contains('.') || sourceField.contains('[') || targetField.contains('.') || targetField.contains('[')) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
                             }
-                            val sourceContract = outputSchemaFor(node).firstOrNull { it.name == sourceField }
-                            if (sourceContract == null) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'이 Task 출력 계약에 없습니다.")
-                            }
                             val effectiveTargetField = if (nextAgent == null) resultField else targetField
                             val targetContract = if (nextAgent == null) {
                                 nextNode?.let(::upstreamMessageSchema)?.firstOrNull { it.name == effectiveTargetField }
@@ -277,16 +275,32 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             if (targetContract == null || !targetContract.type.equals("array", true)) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$effectiveTargetField'은 array 입력이어야 합니다.")
                             }
-                            val aggregationMode = if (sourceContract.type.equals("array", true)) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM"
-                            val compatible = if (aggregationMode == "APPEND_ARRAY_ITEMS") {
-                                bindingFieldsCompatible(sourceContract, targetContract)
-                            } else scalarItemCompatible(sourceContract, targetContract)
+                            val sourceContract = outputSchemaFor(node).firstOrNull { it.name == sourceField }
+                            val effectiveSourceField: String
+                            val aggregationMode: String
+                            val compatible: Boolean
+                            if (sourceContract == null && sourceField == "result" &&
+                                objectItemCompatible(outputSchemaFor(node), targetContract)
+                            ) {
+                                effectiveSourceField = "${'$'}output"
+                                aggregationMode = "APPEND_ITEM"
+                                compatible = true
+                            } else {
+                                if (sourceContract == null) {
+                                    throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'이 Task 출력 계약에 없습니다.")
+                                }
+                                effectiveSourceField = sourceField
+                                aggregationMode = if (sourceContract.type.equals("array", true)) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM"
+                                compatible = if (aggregationMode == "APPEND_ARRAY_ITEMS") {
+                                    bindingFieldsCompatible(sourceContract, targetContract)
+                                } else scalarItemCompatible(sourceContract, targetContract)
+                            }
                             if (!compatible) throw BadRequestException(
                                 "EXECUTION_NOT_CONFIGURED",
                                 "병렬 Join '$sourceField'과 '$targetField'의 array item 계약이 일치하지 않습니다.",
                             )
                             mapOf(
-                                "sourceField" to sourceField,
+                                "sourceField" to effectiveSourceField,
                                 "targetField" to effectiveTargetField,
                                 "aggregationMode" to aggregationMode,
                             )
@@ -389,6 +403,17 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         val targetItemType = target.itemType ?: return true
         return source.type.equals(targetItemType, true) ||
             (source.type.equals("integer", true) && targetItemType.equals("number", true))
+    }
+
+    private fun objectItemCompatible(source: List<FieldDefinition>, target: FieldDefinition): Boolean {
+        val targetItemType = target.itemType ?: return true
+        if (!targetItemType.equals("object", true)) return false
+        val targetItems = target.itemSchema ?: return source.isNotEmpty()
+        val sourceItems = source.associateBy { it.name }
+        return source.all { sourceField ->
+            targetItems.firstOrNull { it.name == sourceField.name }
+                ?.let { targetField -> bindingFieldsCompatible(sourceField, targetField) } == true
+        } && targetItems.filter { it.required }.all { it.name in sourceItems }
     }
 
     fun compilePlan(
