@@ -28,7 +28,8 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
         if executable is None:
             raise ExecutionNotConfigured(f"Codex CLI '{self.command}' is unavailable")
         codex_home = os.environ.get("CODEX_HOME")
-        if not codex_home or not os.path.isfile(os.path.join(codex_home, "auth.json")):
+        auth_file = os.path.join(codex_home, "auth.json") if codex_home else ""
+        if not auth_file or not os.path.isfile(auth_file) or not os.access(auth_file, os.R_OK):
             raise ExecutionNotConfigured("Codex CLI authentication is unavailable")
         prompt = "\n\n".join(
             f"<{message.role}>\n{message.content or ''}\n</{message.role}>" for message in messages

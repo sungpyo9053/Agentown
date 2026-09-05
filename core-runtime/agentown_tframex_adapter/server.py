@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from typing import Any, Dict
 
 from fastapi import FastAPI
@@ -27,6 +28,18 @@ def health():
         "runtime": "TFrameX",
         "tframexCommit": "23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603",
     }
+
+
+@app.get("/ready")
+def readiness():
+    command = os.environ.get("AGENTOWN_CODEX_COMMAND", "codex")
+    codex_home = os.environ.get("CODEX_HOME", "")
+    auth_file = os.path.join(codex_home, "auth.json") if codex_home else ""
+    if shutil.which(command) is None:
+        return JSONResponse(status_code=503, content={"status": "NOT_READY", "code": "CODEX_CLI_UNAVAILABLE"})
+    if not auth_file or not os.path.isfile(auth_file) or not os.access(auth_file, os.R_OK):
+        return JSONResponse(status_code=503, content={"status": "NOT_READY", "code": "CODEX_AUTH_UNAVAILABLE"})
+    return {"status": "READY", "runtime": "TFrameX"}
 
 
 @app.post("/execute")

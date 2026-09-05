@@ -1,4 +1,19 @@
 services:
+  codex-auth-init:
+    image: alpine:3.20
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - ./deploy/codex-auth:/source:ro
+      - codex_auth:/target
+    command: >
+      sh -ec 'test -r /source/auth.json;
+      rm -rf /target/*;
+      cp -a /source/. /target/;
+      chown -R 10001:10001 /target;
+      find /target -type d -exec chmod 700 {} +;
+      find /target -type f -exec chmod 600 {} +'
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -72,8 +87,10 @@ services:
       NOTION_TEMPLATE_DATA_SOURCE_ID: ${NOTION_TEMPLATE_DATA_SOURCE_ID:-}
       NOTION_API_VERSION: ${NOTION_API_VERSION:-2026-03-11}
     volumes:
-      - ./deploy/codex-auth:/home/app/.codex
+      - codex_auth:/home/app/.codex
     depends_on:
+      codex-auth-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       core-runtime:
@@ -95,9 +112,12 @@ services:
       AGENTOWN_CODEX_MODEL: ${BUILDER_CODEX_MODEL:-gpt-5.6-luna}
       AGENTOWN_CODEX_TIMEOUT_SECONDS: ${BUILDER_CODEX_TIMEOUT_SECONDS:-120}
     volumes:
-      - ./deploy/codex-auth:/home/app/.codex:ro
+      - codex_auth:/home/app/.codex:ro
+    depends_on:
+      codex-auth-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/ready')"]
       interval: 10s
       timeout: 3s
       retries: 20
@@ -140,5 +160,6 @@ services:
 
 volumes:
   postgres_data:
+  codex_auth:
   caddy_data:
   caddy_config:

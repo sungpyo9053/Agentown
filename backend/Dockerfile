@@ -24,7 +24,7 @@ RUN apk add --no-cache curl \
     && /codex --version
 
 FROM eclipse-temurin:17-jre-alpine
-RUN addgroup -S app && adduser -S app -G app
+RUN addgroup -S -g 10001 app && adduser -S -D -u 10001 -G app app
 USER app
 WORKDIR /app
 COPY --from=codex /codex /usr/local/bin/codex
