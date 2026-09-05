@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell, Panel } from "@/components/AppShell";
@@ -12,6 +13,9 @@ type Usage = { plan: "FREE_BETA" | "UNLIMITED"; designLimit?: number; designUsed
 export default function SubscriptionPage() {
   const usage = useQuery({ queryKey: ["agent-development-usage"], queryFn: () => api<Usage>("/agent-development/usage") });
   const quota = usage.data;
+  useEffect(() => {
+    void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "UPGRADE_VIEWED" }) }).catch(() => undefined);
+  }, []);
   return <AppShell kicker="SETTING" title="구독 관리">
     <Panel>
       <div className="grid gap-2 md:grid-cols-2">

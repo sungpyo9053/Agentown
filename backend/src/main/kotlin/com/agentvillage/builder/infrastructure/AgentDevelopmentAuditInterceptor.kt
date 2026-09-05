@@ -19,6 +19,15 @@ class AgentDevelopmentActivityRecorder(
     private val workspaces: BuilderWorkspaceRepository,
     private val events: BuilderActivityEventRepository,
 ) {
+    private val engagementEvents = setOf("DEVELOP_VIEWED", "GUIDED_REQUEST_COMPOSED", "EXAMPLE_SELECTED", "UPGRADE_VIEWED")
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    fun recordEngagement(user: AuthenticatedUser, eventType: String) {
+        require(eventType in engagementEvents) { "Unsupported engagement event" }
+        val workspace = workspaces.findByOwnerId(user.userId) ?: return
+        events.save(BuilderActivityEvent(workspaceId = workspace.id, eventType = eventType, outcome = "SUCCEEDED", httpStatus = 202, durationMs = 0))
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     fun record(user: AuthenticatedUser, request: HttpServletRequest, response: HttpServletResponse) {
         val workspace = workspaces.findByOwnerId(user.userId) ?: return
@@ -82,7 +91,8 @@ class AgentDevelopmentAuditInterceptor(
     }
 
     private fun shouldRecord(request: HttpServletRequest) =
-        request.method in setOf("POST", "PUT", "PATCH", "DELETE") || request.requestURI.endsWith("/package")
+        !request.requestURI.endsWith("/events") &&
+            (request.method in setOf("POST", "PUT", "PATCH", "DELETE") || request.requestURI.endsWith("/package"))
 }
 
 @Component

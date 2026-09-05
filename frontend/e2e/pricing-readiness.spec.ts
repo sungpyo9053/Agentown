@@ -6,6 +6,7 @@ test.beforeEach(async ({ page }) => {
     contentType: "application/json",
     body: JSON.stringify({ message: "Unauthenticated" }),
   }));
+  await page.route("**/api/agent-development/events", route => route.fulfill({ status: 202, body: "" }));
 });
 
 test("가격 페이지가 무료 범위와 아직 열리지 않은 결제를 정직하게 구분한다", async ({ page }) => {

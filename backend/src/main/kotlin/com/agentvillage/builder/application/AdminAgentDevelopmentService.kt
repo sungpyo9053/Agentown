@@ -23,6 +23,7 @@ data class AgentDevelopmentMetrics(
     val connectorEvents: List<ConnectorMetrics>,
     val tokens: TokenMetrics,
     val estimatedCost: BigDecimal?,
+    val funnel: FunnelMetrics,
     val recentInputs: List<NaturalLanguageInputView>,
     val privacy: PrivacySummary = PrivacySummary(),
 )
@@ -31,6 +32,17 @@ data class StatusMetrics(val total: Long, val succeeded: Long, val failed: Long,
 data class RunMetrics(val total: Long, val succeeded: Long, val failed: Long, val pending: Long, val reused: Long, val reuseRate: Double?, val successRate: Double?)
 data class ConnectorMetrics(val connector: String, val attempts: Long, val succeeded: Long, val failed: Long, val mode: String)
 data class TokenMetrics(val input: Long, val output: Long, val total: Long)
+data class FunnelMetrics(
+    val developViews: Long,
+    val guidedRequests: Long,
+    val examplesSelected: Long,
+    val sessionsCreated: Long,
+    val generationRequests: Long,
+    val successfulRuns: Long,
+    val packageDownloads: Long,
+    val upgradeViews: Long,
+    val activeWorkspaces: Long,
+)
 data class NaturalLanguageInputView(val workspaceAlias: String, val instruction: String, val status: String, val createdAt: Instant)
 data class PrivacySummary(
     val rawNaturalLanguageStored: Boolean = true,
@@ -138,6 +150,22 @@ class AdminAgentDevelopmentService(
             ) },
             fromTimestamp,
         )
+        fun eventCount(type: String) = jdbc.queryForObject(
+            "select count(*) from builder_activity_events where event_type = ? and outcome = 'SUCCEEDED' and created_at >= ?",
+            Long::class.java, type, fromTimestamp,
+        ) ?: 0
+        val packageDownloads = eventCount("PACKAGE_DOWNLOADED")
+        val funnel = FunnelMetrics(
+            developViews = eventCount("DEVELOP_VIEWED"),
+            guidedRequests = eventCount("GUIDED_REQUEST_COMPOSED"),
+            examplesSelected = eventCount("EXAMPLE_SELECTED"),
+            sessionsCreated = eventCount("SESSION_CREATED"),
+            generationRequests = eventCount("GENERATION_REQUESTED"),
+            successfulRuns = runSucceeded,
+            packageDownloads = packageDownloads,
+            upgradeViews = eventCount("UPGRADE_VIEWED"),
+            activeWorkspaces = jdbc.queryForObject("select count(distinct workspace_id) from builder_activity_events where created_at >= ?", Long::class.java, fromTimestamp) ?: 0,
+        )
         return AgentDevelopmentMetrics(
             windowDays = days,
             from = from,
@@ -146,10 +174,11 @@ class AdminAgentDevelopmentService(
             generations = StatusMetrics(generationTotal, generationSucceeded, generationFailed, generationCancelled, rate(generationSucceeded, generationSucceeded + generationFailed)),
             runs = RunMetrics(runTotal, runSucceeded, runFailed, runPending, reused, rate(reused, runTotal), rate(runSucceeded, runSucceeded + runFailed)),
             versionsCreated = count("""select count(*) from builder_workflow_versions version join builder_workflows workflow on workflow.id = version.workflow_id join builder_conversations conversation on conversation.id = workflow.conversation_id where conversation.purpose = 'AGENT_DEVELOPMENT' and version.created_at >= ?""", fromTimestamp),
-            packageDownloads = count("select count(*) from builder_activity_events where event_type = 'PACKAGE_DOWNLOADED' and outcome = 'SUCCEEDED' and created_at >= ?", fromTimestamp),
+            packageDownloads = packageDownloads,
             connectorEvents = connectors,
             tokens = TokenMetrics(inputTokens, outputTokens, inputTokens + outputTokens),
             estimatedCost = null,
+            funnel = funnel,
             recentInputs = recentInputs,
         )
     }

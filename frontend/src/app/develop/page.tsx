@@ -67,6 +67,12 @@ export default function AgentDevelopmentPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setSessionId(window.localStorage.getItem(storageKey) ?? undefined), []);
+  useEffect(() => {
+    const viewedKey = "agentown.agent-development.viewed.v1";
+    if (window.sessionStorage.getItem(viewedKey)) return;
+    window.sessionStorage.setItem(viewedKey, "true");
+    void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "DEVELOP_VIEWED" }) }).catch(() => undefined);
+  }, []);
   const sessions = useQuery({ queryKey: ["agent-development-sessions"], queryFn: () => api<Session[]>("/agent-development/sessions") });
   const snapshotQuery = useQuery({ queryKey: ["agent-development", sessionId], queryFn: () => api<Snapshot>(`/agent-development/sessions/${sessionId}`), enabled: Boolean(sessionId) });
   const snapshot = snapshotQuery.data;
@@ -124,6 +130,7 @@ export default function AgentDevelopmentPage() {
       guidedDraft.failure.trim() ? `실패 처리: ${guidedDraft.failure.trim()}` : "실패 처리: 필요한 정보가 없거나 실행할 수 없으면 성공으로 꾸미지 말고 이유를 알려줘.",
     ];
     setMessage(lines.join("\n"));
+    void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "GUIDED_REQUEST_COMPOSED" }) }).catch(() => undefined);
   }
   function newSession() { window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
 
@@ -156,7 +163,7 @@ export default function AgentDevelopmentPage() {
                 </div>
                 <button type="button" disabled={!guidedDraft.input.trim() || !guidedDraft.work.trim() || !guidedDraft.output.trim()} onClick={applyGuide} className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">요청문 자동 완성 <ChevronRight className="h-4 w-4" /></button>
               </section>
-              <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => setMessage(example)} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
+              <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => { setMessage(example); void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "EXAMPLE_SELECTED" }) }).catch(() => undefined); }} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
             </div>}
             {snapshot?.messages.map(item => <article key={item.id} className={`flex gap-3 ${item.role === "USER" ? "justify-end" : "justify-start"}`}>{item.role !== "USER" && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span>}<div className={`max-w-[82%] rounded-md px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "bg-[#e9e9e4] text-ink" : "border border-hairline bg-white"}`}>{item.content}</div></article>)}
             {pending && <article className="flex gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span><div className="min-w-64 rounded-md border border-hairline p-4"><div className="flex items-center justify-between gap-4"><p className="text-sm font-medium">에이전트를 구성하고 있습니다</p><span className="text-[11px] text-mute">{job.data ? `${stageLabel(job.data.stage)} · ${job.data.elapsedSeconds}초` : "요청 준비"}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cloud"><div className="h-full w-2/3 animate-pulse rounded-full bg-coral" /></div><button onClick={() => cancel.mutate()} disabled={!jobId} className="mt-3 flex items-center gap-1 text-xs text-mute hover:text-sale"><CircleStop className="h-3.5 w-3.5" />중지</button></div></article>}

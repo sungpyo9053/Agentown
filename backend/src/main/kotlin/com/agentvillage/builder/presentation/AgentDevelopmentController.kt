@@ -5,6 +5,7 @@ import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.application.BuilderUsageLimiter
 import com.agentvillage.builder.application.AgentDefinitionUpdate
 import com.agentvillage.builder.application.TFrameXFlowImport
+import com.agentvillage.builder.infrastructure.AgentDevelopmentActivityRecorder
 import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.validation.Valid
@@ -22,7 +23,9 @@ class AgentDevelopmentController(
     private val service: BuilderService,
     private val generation: BuilderGenerationService,
     private val usage: BuilderUsageLimiter,
+    private val activities: AgentDevelopmentActivityRecorder,
 ) {
+    data class EngagementEventRequest(val eventType: String)
     data class AgentDefinitionUpdateRequest(
         val name: String,
         val role: String,
@@ -43,6 +46,12 @@ class AgentDevelopmentController(
 
     @GetMapping("/usage")
     fun usage(@AuthenticationPrincipal user: AuthenticatedUser) = usage.summary(user.userId)
+
+    @PostMapping("/events")
+    @ResponseStatus(org.springframework.http.HttpStatus.ACCEPTED)
+    fun event(@AuthenticationPrincipal user: AuthenticatedUser, @RequestBody request: EngagementEventRequest) =
+        runCatching { activities.recordEngagement(user, request.eventType) }
+            .getOrElse { throw org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Unsupported engagement event") }
 
     @PostMapping("/sessions")
     fun create(@AuthenticationPrincipal user: AuthenticatedUser, @RequestHeader("Idempotency-Key") key: String) =

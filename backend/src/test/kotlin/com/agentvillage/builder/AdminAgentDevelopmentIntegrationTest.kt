@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.http.MediaType
 import java.util.UUID
 
 @AutoConfigureMockMvc
@@ -32,6 +33,41 @@ class AdminAgentDevelopmentIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var builder: BuilderService
     @Autowired lateinit var jobs: BuilderGenerationJobRepository
     @Autowired lateinit var activities: BuilderActivityEventRepository
+
+    @Test
+    fun `engagement events are allowlisted and included in admin funnel`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("funnel-owner-$suffix@example.com", "password123", "funnel_owner_$suffix", "전환 기록 사용자"))
+        val ownerPrincipal = AuthenticatedUser(owner.id, owner.email, "unused", true)
+        mvc.perform(
+            post("/api/agent-development/sessions")
+                .with(user(ownerPrincipal)).with(csrf())
+                .header("Idempotency-Key", "funnel-session-$suffix"),
+        ).andExpect(status().isOk)
+        val workspaceId = builder.snapshot(owner.id, builder.listConversations(owner.id, BuilderConversationPurpose.AGENT_DEVELOPMENT).first().conversationId).workspaceId
+
+        mvc.perform(
+            post("/api/agent-development/events")
+                .with(user(ownerPrincipal)).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"eventType":"GUIDED_REQUEST_COMPOSED"}"""),
+        ).andExpect(status().isAccepted)
+        mvc.perform(
+            post("/api/agent-development/events")
+                .with(user(ownerPrincipal)).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"eventType":"ARBITRARY_PRIVATE_PAYLOAD"}"""),
+        ).andExpect(status().isBadRequest)
+
+        assertThat(activities.findTop200ByOrderByCreatedAtDesc().count { it.workspaceId == workspaceId && it.eventType == "GUIDED_REQUEST_COMPOSED" }).isEqualTo(1)
+        assertThat(activities.findTop200ByOrderByCreatedAtDesc().none { it.eventType == "POST_AGENT_DEVELOPMENT" }).isTrue()
+
+        val admin = AuthenticatedUser(UUID.randomUUID(), "admin-funnel-$suffix@example.com", "unused", true, UserRole.ADMIN)
+        mvc.perform(get("/api/admin/agent-development/metrics?days=30").with(user(admin)))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.funnel.guidedRequests").isNumber)
+            .andExpect(jsonPath("$.funnel.activeWorkspaces").isNumber)
+    }
 
     @Test
     fun `admin sees retained natural language with pseudonymous identity and audit events`() {
