@@ -212,10 +212,24 @@ class BuilderService(
             if (revision) usageLimiter.claimRevision(pipelineContext, idempotencyKey)
             else usageLimiter.claim(pipelineContext, idempotencyKey)
         }
-        val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
         val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
         generationDrafts.start(pipelineContext, instruction, mode)
-        var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, userInstruction = instruction)
+        val refinement = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) {
+            pipeline.refineAgentRequirement(pipelineContext, instruction)
+        } else null
+        if (refinement != null && !refinement.ready) {
+            saveAgentRequirementClarification(context, refinement, instruction)
+            return
+        }
+        val clarifiedBrief = refinement?.clarifiedBrief ?: instruction
+        val designInstruction = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) agentDevelopmentInstruction(clarifiedBrief) else instruction
+        var bundle = pipeline.generateDesign(
+            pipelineContext,
+            designInstruction,
+            mode,
+            userInstruction = instruction,
+            clarifiedBrief = refinement?.clarifiedBrief,
+        )
         generationDrafts.checkpoint(context.conversation.id, bundle)
         bundle = generationDrafts.reloadBundle(context.conversation.id)
         if (bundle.clarificationQuestions.isEmpty()) {
@@ -231,7 +245,15 @@ class BuilderService(
                 for (repairAttempt in 1..2) {
                     if (validation.valid) break
                     generationDrafts.validationFailed(context.conversation.id, validation.issues)
-                    bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, validation.issues, bundle, userInstruction = instruction)
+                    bundle = pipeline.generateDesign(
+                        pipelineContext,
+                        designInstruction,
+                        mode,
+                        validation.issues,
+                        bundle,
+                        userInstruction = instruction,
+                        clarifiedBrief = refinement?.clarifiedBrief,
+                    )
                     generationDrafts.checkpoint(context.conversation.id, bundle)
                     bundle = generationDrafts.reloadBundle(context.conversation.id)
                     validation = validateGeneratedDesign(context.workflow.id, bundle, instruction)
@@ -260,6 +282,43 @@ class BuilderService(
             requireCompletePackage(packageRenderer.render(bundle))
             generationDrafts.complete(context.conversation.id)
         }
+    }
+
+    private fun saveAgentRequirementClarification(
+        context: OwnedContext,
+        refinement: AgentRequirementRefinement,
+        sourceInstruction: String,
+    ) {
+        val questions = refinement.clarificationQuestions
+        val existing = requirements.findByConversationId(context.conversation.id)
+        val map = if (existing != null && context.workflow.currentVersionId != null) {
+            existing.structuredJson.toMutableMap()
+        } else {
+            mapper.convertValue(
+                AutomationRequirement(
+                    objective = refinement.clarifiedBrief.ifBlank { sourceInstruction },
+                    trigger = "사용자가 채팅에서 요청할 때",
+                    inputs = listOf("현재 대화와 사용자 메시지"),
+                    outputs = listOf("대화 화면의 에이전트 응답"),
+                    steps = listOf("요구사항 정제"),
+                    decisions = listOf("사용자 답변으로 설계 준비 여부 확인"),
+                    exceptions = listOf("의미가 여러 가지이면 추측하지 않고 질문"),
+                    humanApprovalRequired = false,
+                ),
+                object : TypeReference<Map<String, Any?>>() {},
+            ).toMutableMap()
+        }
+        map["clarificationQuestions"] = mapper.convertValue(questions, object : TypeReference<List<Map<String, Any?>>>() {})
+        if (existing != null) existing.structuredJson = map
+        else requirements.save(BuilderRequirementEntity(conversationId = context.conversation.id, structuredJson = map))
+        if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
+        messages.save(
+            BuilderMessage(
+                conversationId = context.conversation.id,
+                role = "ASSISTANT",
+                content = "요청의 의미를 임의로 추측하지 않도록 아래 ${questions.size}가지 정보를 먼저 확인할게요. 질문별 답변을 한 번에 작성해 주세요.",
+            ),
+        )
     }
 
     private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =
@@ -1296,6 +1355,8 @@ class BuilderService(
 
 internal fun agentDevelopmentPrompt(instruction: String) = """
     다음 요청은 업무 자동화 배치가 아니라 사용자가 대화로 사용할 AI 에이전트 개발 요청입니다.
+    이 요청은 앞 단계의 요구사항 정제 Agent가 원문과 추가 답변을 합쳐 만든 clarifiedBrief입니다. 원문의 의미를
+    확대하거나 다른 제품으로 바꾸지 말고, 목적·입력·기대 결과·성공 기준·제약을 그대로 설계 계약에 반영하세요.
     사용자가 별도로 지정하지 않았다면 실행 트리거는 '사용자가 채팅에서 요청할 때', 입력은 '현재 대화와 사용자 메시지',
     출력은 '대화 화면의 에이전트 응답', 외부 서비스 연동은 '없음'으로 가정하세요.
     완성된 에이전트 설계는 사용자가 검토하고 승인한 뒤 테스트하며, 승인 전 외부 작업은 수행하지 않습니다.

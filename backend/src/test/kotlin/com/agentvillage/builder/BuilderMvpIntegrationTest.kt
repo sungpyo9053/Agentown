@@ -297,6 +297,39 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `ambiguous agent idea is clarified and rewritten from the conversation before design`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("agent-intake-$suffix@example.com", "password123", "agent_intake_$suffix", "에이전트 요구 정제 검증"))
+        var snapshot = service.createConversation(owner.id, "agent-intake-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "시바 마우스 만들고 싶어",
+            "agent-intake-vague-$suffix",
+        )
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
+        assertThat(snapshot.clarificationQuestions.map { it.field })
+            .containsExactly("desiredOutcome", "interactionContract", "successConstraints")
+        assertThat(snapshot.graph).isNull()
+        assertThat(snapshot.agentDefinitions).isEmpty()
+
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "AI 에이전트가 마우스 신제품 아이디어를 기획하게 해줘. 사용자가 대상 고객과 가격대를 입력하면 기능 제안과 근거를 표로 주고, 확인되지 않은 시장 수치는 만들면 안 돼.",
+            "agent-intake-answer-$suffix",
+        )
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.clarificationQuestions).isEmpty()
+        assertThat(snapshot.requirement?.objective).contains("마우스 신제품", "대상 고객", "가격대")
+        assertThat(snapshot.proposal?.graphPlan).isNotNull()
+        assertThat(snapshot.agentDefinitions).isNotEmpty()
+    }
+
+    @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))

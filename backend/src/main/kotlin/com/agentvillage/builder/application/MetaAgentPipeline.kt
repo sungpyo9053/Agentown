@@ -13,7 +13,70 @@ interface MetaAgentModel {
     val executorName: String
     val modelName: String
     fun preflight(context: PipelineContext) = Unit
+    fun refineAgentRequirement(context: PipelineContext, input: Map<String, Any?>): AgentRequirementRefinement? = null
     fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String
+}
+
+data class AgentRequirementRefinement(
+    val ready: Boolean,
+    val clarifiedBrief: String,
+    val clarificationQuestions: List<ClarificationQuestion>,
+    val assumptions: List<String> = emptyList(),
+)
+
+internal object AgentRequirementIntakePolicy {
+    private val behaviorTerms = listOf(
+        "분석", "요약", "분류", "답변", "추천", "조사", "검색", "비교", "검토", "작성",
+        "변환", "추출", "정리", "모니터", "수집", "계산", "예측", "번역", "처리", "안내",
+        "대응", "감지", "평가", "보고", "기획", "검수", "교정",
+    )
+    private val roleTerms = listOf("에이전트", "agent", "봇", "bot", "도우미", "assistant", "코치", "상담")
+    private val fillerTerms = setOf(
+        "시바", "씨발", "ㅅㅂ", "존나", "ㅈㄴ", "그냥", "좀", "하나", "뭔가", "거", "것",
+        "만들고", "만들어", "만들어줘", "만들어주세요", "싶어", "싶어요", "해줘", "해주세요", "줘",
+    )
+
+    fun enforce(proposed: AgentRequirementRefinement, conversation: String): AgentRequirementRefinement {
+        val candidate = proposed.copy(
+            clarifiedBrief = proposed.clarifiedBrief.trim().ifBlank { conversation.trim() },
+            clarificationQuestions = proposed.clarificationQuestions.distinctBy { it.field }.take(3),
+            assumptions = proposed.assumptions.map(String::trim).filter(String::isNotBlank).distinct().take(8),
+        )
+        if (!candidate.ready || candidate.clarificationQuestions.isNotEmpty()) return candidate.copy(ready = false)
+        return fallback(conversation) ?: candidate.copy(ready = true, clarificationQuestions = emptyList())
+    }
+
+    private fun fallback(conversation: String): AgentRequirementRefinement? {
+        if (conversation.contains("\n추가 답변:")) return null
+        val lower = conversation.lowercase()
+        val hasBehavior = behaviorTerms.any(lower::contains)
+        val tokens = lower.split(Regex("[^가-힣a-z0-9]+"))
+            .filter { it.length > 1 && it !in fillerTerms }
+        val hasIdentifiableRole = roleTerms.any(lower::contains) && tokens.count { token -> roleTerms.none(token::contains) } >= 2
+        if (hasBehavior || hasIdentifiableRole) return null
+        return AgentRequirementRefinement(
+            ready = false,
+            clarifiedBrief = conversation.trim(),
+            clarificationQuestions = listOf(
+                ClarificationQuestion(
+                    "desired-outcome",
+                    "desiredOutcome",
+                    "만들고 싶은 것이 AI 에이전트인지, 소프트웨어·콘텐츠·제품인지와 해결하려는 문제를 알려주세요.",
+                ),
+                ClarificationQuestion(
+                    "interaction-contract",
+                    "interactionContract",
+                    "사용자가 무엇을 입력하거나 요청하고, 에이전트가 어떤 결과를 돌려줘야 하는지 예시를 하나씩 알려주세요.",
+                ),
+                ClarificationQuestion(
+                    "success-constraints",
+                    "successConstraints",
+                    "좋은 결과의 기준과 반드시 지킬 조건 또는 하면 안 되는 일을 알려주세요.",
+                ),
+            ),
+            assumptions = emptyList(),
+        )
+    }
 }
 
 /** Transport DTO kept separate from the trusted domain model. */
@@ -39,8 +102,14 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
     override val executorName = "deterministic-test-mock"
     override val modelName = "mock"
 
+    override fun refineAgentRequirement(context: PipelineContext, input: Map<String, Any?>): AgentRequirementRefinement =
+        AgentRequirementIntakePolicy.enforce(
+            AgentRequirementRefinement(true, input["conversation"]?.toString().orEmpty(), emptyList()),
+            input["conversation"]?.toString().orEmpty(),
+        )
+
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
-        val instruction = input["userInstruction"]?.toString() ?: input["instruction"]?.toString().orEmpty()
+        val instruction = input["clarifiedBrief"]?.toString() ?: input["userInstruction"]?.toString() ?: input["instruction"]?.toString().orEmpty()
         val slack = instruction.contains("Slack", true) || instruction.contains("슬랙")
         val faq = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)
         val bundle = if (slack && faq) faqBundle(instruction) else genericBundle(instruction)
@@ -199,6 +268,47 @@ class StructuredMetaAgentPipeline(
         "design_guides",
     )
 
+    fun refineAgentRequirement(context: PipelineContext, conversation: String): AgentRequirementRefinement {
+        val input = mapOf(
+            "conversation" to conversation,
+            "defaults" to mapOf(
+                "trigger" to "사용자가 채팅에서 요청할 때",
+                "input" to "현재 대화와 사용자 메시지",
+                "output" to "대화 화면의 에이전트 응답",
+                "externalIntegrations" to "없음",
+            ),
+        )
+        audit.record(context, "refine_agent_requirement", "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
+        progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
+        return try {
+            val proposed = model.refineAgentRequirement(context, input)
+                ?: AgentRequirementRefinement(true, conversation, emptyList())
+            val refined = AgentRequirementIntakePolicy.enforce(proposed, conversation)
+            requireValidRefinement(refined)
+            audit.record(
+                context,
+                "refine_agent_requirement",
+                "SUCCEEDED",
+                summary(input),
+                mapOf(
+                    "ready" to refined.ready,
+                    "questionCount" to refined.clarificationQuestions.size,
+                    "executor" to model.executorName,
+                    "model" to model.modelName,
+                ),
+            )
+            refined
+        } catch (exception: Exception) {
+            val failure = failure(exception, 0)
+            audit.record(context, "refine_agent_requirement", "FAILED", summary(input), failure = failure)
+            when (exception) {
+                is ApiException -> throw exception
+                is MetaAgentExecutionException -> throw BadRequestException(exception.errorCode, exception.message ?: "요구사항 정제 Agent 실행에 실패했습니다.")
+                else -> throw BadRequestException("INVALID_REQUIREMENT_REFINEMENT", "요구사항 정제 결과가 승인된 스키마와 일치하지 않습니다.")
+            }
+        }
+    }
+
     fun generateDesign(
         context: PipelineContext,
         instruction: String,
@@ -206,11 +316,13 @@ class StructuredMetaAgentPipeline(
         validationFeedback: List<ValidationIssue> = emptyList(),
         previousBundle: MetaAgentDesignBundle? = null,
         userInstruction: String? = null,
+        clarifiedBrief: String? = null,
     ): MetaAgentDesignBundle {
         val input = buildMap<String, Any?> {
             put("instruction", instruction)
             put("designMode", mode.name)
             userInstruction?.let { put("userInstruction", it) }
+            clarifiedBrief?.let { put("clarifiedBrief", it) }
             if (validationFeedback.isNotEmpty()) {
                 put("generationAction", "REPAIR_INVALID_DESIGN")
                 put("validationFeedback", validationFeedback)
@@ -263,6 +375,14 @@ class StructuredMetaAgentPipeline(
         if (bundle.agentDefinitions.any { it.behaviorRules.isEmpty() || it.forbiddenRules.isEmpty() || it.evidenceRequirements.isEmpty() }) invalid()
         val plan = bundle.proposal.graphPlan ?: invalid()
         if (plan.nodes.isEmpty() || plan.nodes.map { it.id }.distinct().size != plan.nodes.size || plan.edges.map { it.id }.distinct().size != plan.edges.size) invalid()
+    }
+
+    private fun requireValidRefinement(refinement: AgentRequirementRefinement) {
+        if (refinement.clarifiedBrief.isBlank() || refinement.clarifiedBrief.length > 4_000) invalid()
+        if (refinement.clarificationQuestions.size > 3) invalid()
+        if (refinement.clarificationQuestions.map { it.field }.distinct().size != refinement.clarificationQuestions.size) invalid()
+        if (refinement.ready == refinement.clarificationQuestions.isNotEmpty()) invalid()
+        if (refinement.clarificationQuestions.any { it.id.isBlank() || it.field.isBlank() || it.question.isBlank() }) invalid()
     }
 
     private fun normalize(bundle: MetaAgentDesignBundle, instruction: String, mode: DesignMode): MetaAgentDesignBundle {
