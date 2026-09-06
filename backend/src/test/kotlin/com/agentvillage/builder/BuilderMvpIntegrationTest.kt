@@ -267,6 +267,42 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `agent development defines a vague problem before sending it to the design engine`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("vague-problem-$suffix@example.com", "password123", "vague_$suffix", "문제 정의 검증"))
+        var snapshot = service.createConversation(owner.id, "vague-agent-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "나 컵 만들고 싶다.", "vague-first-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.NEEDS_CLARIFICATION)
+        assertThat(snapshot.clarificationQuestions.map { it.field }).containsExactly("problemOutcome")
+        assertThat(snapshot.proposal).isNull()
+        assertThat(snapshot.agentDefinitions).isEmpty()
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "텀블러 제품을 기획하려는 사람에게 용도와 사용 환경을 물어보고 제품 요구사항을 정리해줘.", "vague-answer-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.clarificationQuestions).isEmpty()
+        assertThat(snapshot.agentDefinitions).isNotEmpty()
+        assertThat(snapshot.requirement?.objective).contains("컵", "텀블러")
+    }
+
+    @Test
+    fun `agent development recommends one prompt when an agent team adds no value`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("prompt-only-$suffix@example.com", "password123", "prompt_$suffix", "프롬프트 추천 검증"))
+        var snapshot = service.createConversation(owner.id, "prompt-only-agent-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "내 문장 다듬어주는 걸 원해.", "prompt-only-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.DRAFT)
+        assertThat(snapshot.clarificationQuestions).isEmpty()
+        assertThat(snapshot.proposal).isNull()
+        assertThat(snapshot.agentDefinitions).isEmpty()
+        assertThat(snapshot.messages.last().content).contains("에이전트 팀 없이", "이 프롬프트를 그대로 넣어보세요", "자연스럽고 간결한 한국어")
+    }
+
+    @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))

@@ -201,8 +201,19 @@ class BuilderService(
             if (revision) usageLimiter.claimRevision(pipelineContext, idempotencyKey)
             else usageLimiter.claim(pipelineContext, idempotencyKey)
         }
-        val designInstruction = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) agentDevelopmentInstruction(instruction) else instruction
         val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
+        val designInstruction = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) {
+            val problem = pipeline.defineAgentDevelopmentProblem(pipelineContext, instruction)
+            if (!problem.readyForDesign) {
+                saveProblemClarification(context, instruction, problem)
+                return
+            }
+            if (problem.recommendedApproach == AgentDevelopmentApproach.PROMPT_ONLY) {
+                savePromptOnlyRecommendation(context, instruction, problem)
+                return
+            }
+            agentDevelopmentInstruction(problem.designBrief(instruction))
+        } else instruction
         generationDrafts.start(pipelineContext, instruction, mode)
         var bundle = pipeline.generateDesign(pipelineContext, designInstruction, mode, userInstruction = instruction)
         generationDrafts.checkpoint(context.conversation.id, bundle)
@@ -215,6 +226,9 @@ class BuilderService(
                     field = "decisionPolicy",
                     question = "합격·승인과 거절을 나누는 정확한 수치 또는 조건을 알려주세요.",
                 )))
+                generationDrafts.checkpoint(context.conversation.id, bundle)
+            } else if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT && AgentDevelopmentProblemPolicy.semanticFallback(validation.issues).isNotEmpty()) {
+                bundle = bundle.copy(clarificationQuestions = AgentDevelopmentProblemPolicy.semanticFallback(validation.issues))
                 generationDrafts.checkpoint(context.conversation.id, bundle)
             } else {
                 for (repairAttempt in 1..2) {
@@ -249,6 +263,62 @@ class BuilderService(
             requireCompletePackage(packageRenderer.render(bundle))
             generationDrafts.complete(context.conversation.id)
         }
+    }
+
+    private fun saveProblemClarification(
+        context: OwnedContext,
+        instruction: String,
+        problem: AgentDevelopmentProblemDefinition,
+    ) {
+        val requirement = AutomationRequirement(
+            objective = problem.problemStatement.ifBlank { instruction.trim() },
+            trigger = "사용자가 채팅에서 요청할 때",
+            inputs = listOf("현재 대화와 사용자 메시지"),
+            outputs = listOf(problem.desiredOutcome.ifBlank { "역질문 답변 후 확정" }),
+            steps = listOf("문제 정의", "에이전트 역할 분해"),
+            decisions = emptyList(),
+            exceptions = listOf("핵심 문제가 모호하면 설계 전에 사용자에게 확인"),
+            humanApprovalRequired = false,
+        )
+        val map = mapper.convertValue(requirement, object : TypeReference<Map<String, Any?>>() {}).toMutableMap()
+        map["clarificationQuestions"] = mapper.convertValue(problem.clarificationQuestions, object : TypeReference<List<Map<String, Any?>>>() {})
+        requirements.findByConversationId(context.conversation.id)?.let { it.structuredJson = map }
+            ?: requirements.save(BuilderRequirementEntity(conversationId = context.conversation.id, structuredJson = map))
+        if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
+        messages.save(BuilderMessage(
+            conversationId = context.conversation.id,
+            role = "ASSISTANT",
+            content = "에이전트로 나누기 전에 문제를 정확히 정의하려면 아래 ${problem.clarificationQuestions.size}가지가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요.",
+            workflowVersionId = context.workflow.currentVersionId,
+        ))
+    }
+
+    private fun savePromptOnlyRecommendation(
+        context: OwnedContext,
+        instruction: String,
+        problem: AgentDevelopmentProblemDefinition,
+    ) {
+        val requirement = AutomationRequirement(
+            objective = problem.problemStatement.ifBlank { instruction.trim() },
+            trigger = "사용자가 Codex 또는 GPT에 직접 입력",
+            inputs = listOf("사용자 문제와 필요한 자료"),
+            outputs = listOf(problem.desiredOutcome.ifBlank { "요청한 결과" }),
+            steps = listOf("추천 프롬프트 입력", "결과 확인"),
+            decisions = listOf("현재 문제에는 에이전트 팀이 필요한지 판단"),
+            exceptions = listOf("도구·반복·독립 검증이 필요해지면 에이전트 팀으로 재설계"),
+            humanApprovalRequired = false,
+        )
+        val map = mapper.convertValue(requirement, object : TypeReference<Map<String, Any?>>() {}).toMutableMap()
+        map["clarificationQuestions"] = emptyList<Map<String, Any?>>()
+        requirements.findByConversationId(context.conversation.id)?.let { it.structuredJson = map }
+            ?: requirements.save(BuilderRequirementEntity(conversationId = context.conversation.id, structuredJson = map))
+        if (context.workflow.status == WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.DRAFT)
+        messages.save(BuilderMessage(
+            conversationId = context.conversation.id,
+            role = "ASSISTANT",
+            content = "이 문제는 에이전트 팀 없이 Codex나 GPT에 한 번 요청하는 것으로 충분합니다.\n\n이 프롬프트를 그대로 넣어보세요:\n\n${problem.suggestedPrompt}\n\n판단 이유: ${problem.rationale}",
+            workflowVersionId = context.workflow.currentVersionId,
+        ))
     }
 
     private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =
@@ -1296,6 +1366,7 @@ internal fun agentDevelopmentPrompt(instruction: String) = """
     완성된 에이전트 설계는 사용자가 검토하고 승인한 뒤 테스트하며, 승인 전 외부 작업은 수행하지 않습니다.
     이 기본값들은 차단 질문으로 되묻지 말고 assumptions에 기록하세요. 요청 의미에 필요한 에이전트, 역할, 도구, 스킬,
     메모리, 협업 순서와 검증 시나리오를 설계하되 고정 예시 흐름이나 사용자가 말하지 않은 외부 커넥터를 추가하지 마세요.
+    앞단 문제정의 결과에서 해결할 문제와 완료 결과를 기준으로 필요한 책임을 에이전트 단위로 분해하세요. 업무 자동화 형식에 억지로 맞추지 마세요.
 
     사용자 요청:
     ${instruction.trim()}

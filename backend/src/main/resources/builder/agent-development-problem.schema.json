@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "readyForDesign": { "type": "boolean" },
+    "recommendedApproach": { "type": "string", "enum": ["CLARIFY", "PROMPT_ONLY", "AGENT_TEAM"] },
+    "problemStatement": { "type": "string", "minLength": 1, "maxLength": 1200 },
+    "targetUser": { "type": "string", "maxLength": 300 },
+    "desiredOutcome": { "type": "string", "maxLength": 600 },
+    "scope": { "type": "string", "maxLength": 600 },
+    "constraints": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
+    "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
+    "rationale": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "suggestedPrompt": { "type": "string", "maxLength": 4000 },
+    "clarificationQuestions": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]{1,60}$" },
+          "field": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
+          "question": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "required": { "type": "boolean" }
+        },
+        "required": ["id", "field", "question", "required"]
+      }
+    }
+  },
+  "required": ["readyForDesign", "recommendedApproach", "problemStatement", "targetUser", "desiredOutcome", "scope", "constraints", "assumptions", "rationale", "suggestedPrompt", "clarificationQuestions"]
+}

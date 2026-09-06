@@ -16,6 +16,30 @@ interface MetaAgentModel {
     fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String
 }
 
+data class AgentDevelopmentProblemDefinition(
+    val readyForDesign: Boolean,
+    val recommendedApproach: AgentDevelopmentApproach,
+    val problemStatement: String,
+    val targetUser: String,
+    val desiredOutcome: String,
+    val scope: String,
+    val constraints: List<String>,
+    val assumptions: List<String>,
+    val rationale: String,
+    val suggestedPrompt: String,
+    val clarificationQuestions: List<ClarificationQuestion>,
+) {
+    fun designBrief(originalInstruction: String): String = """
+        원문: ${originalInstruction.trim()}
+        해결할 문제: $problemStatement
+        대상 사용자: $targetUser
+        원하는 결과: $desiredOutcome
+        해결 범위: $scope
+        제약: ${constraints.joinToString("; ").ifBlank { "명시되지 않음" }}
+        안전한 가정: ${assumptions.joinToString("; ").ifBlank { "없음" }}
+    """.trimIndent()
+}
+
 /** Transport DTO kept separate from the trusted domain model. */
 private data class LlmMetaAgentDesignDto(
     val requirement: JsonNode,
@@ -41,10 +65,41 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
 
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
         val instruction = input["userInstruction"]?.toString() ?: input["instruction"]?.toString().orEmpty()
+        if (stage == "define_agent_development_problem") {
+            return mapper.writeValueAsString(mockProblemDefinition(instruction))
+        }
         val slack = instruction.contains("Slack", true) || instruction.contains("슬랙")
         val faq = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)
         val bundle = if (slack && faq) faqBundle(instruction) else genericBundle(instruction)
         return mapper.writeValueAsString(bundle)
+    }
+
+    private fun mockProblemDefinition(instruction: String): AgentDevelopmentProblemDefinition {
+        val vague = instruction.contains("컵") && listOf("기획", "디자인", "제작", "판매", "용도").none(instruction::contains)
+        val promptOnly = listOf("문장 다듬", "맞춤법", "요약해줘", "번역해줘").any(instruction::contains)
+        return AgentDevelopmentProblemDefinition(
+            readyForDesign = !vague,
+            recommendedApproach = when {
+                vague -> AgentDevelopmentApproach.CLARIFY
+                promptOnly -> AgentDevelopmentApproach.PROMPT_ONLY
+                else -> AgentDevelopmentApproach.AGENT_TEAM
+            },
+            problemStatement = instruction,
+            targetUser = if (vague) "" else "요청한 사용자",
+            desiredOutcome = if (vague) "" else instruction,
+            scope = if (vague) "" else "대화형 AI 에이전트가 처리할 범위",
+            constraints = emptyList(),
+            assumptions = emptyList(),
+            rationale = when {
+                vague -> "해결하려는 문제와 결과가 아직 정해지지 않았습니다."
+                promptOnly -> "한 번의 언어 처리 요청으로 해결할 수 있습니다."
+                else -> "여러 단계의 대화형 처리가 필요합니다."
+            },
+            suggestedPrompt = if (promptOnly) "아래 문장을 의미는 유지하면서 자연스럽고 간결한 한국어로 다듬어 주세요. 결과 문장만 출력하세요.\n\n[문장]" else "",
+            clarificationQuestions = if (vague) listOf(
+                ClarificationQuestion("problem-outcome", "problemOutcome", "컵과 관련해 어떤 문제를 해결하고 싶으신가요? 예: 제품 기획, 디자인, 제작 방법 검토, 판매 준비 중 원하는 결과를 알려주세요."),
+            ) else emptyList(),
+        )
     }
 
     private fun faqBundle(instruction: String) = MetaAgentDesignBundle(
@@ -191,6 +246,31 @@ class StructuredMetaAgentPipeline(
     private val capabilityResolver = BuilderCapabilityResolver()
     private val designAssembler = AgentDesignAssembler()
     fun preflight(context: PipelineContext) = model.preflight(context)
+
+    fun defineAgentDevelopmentProblem(context: PipelineContext, instruction: String): AgentDevelopmentProblemDefinition {
+        val input = mapOf("instruction" to instruction, "designMode" to DesignMode.AGENT_DEVELOPMENT.name)
+        val stage = "define_agent_development_problem"
+        audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
+        progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
+        return try {
+            val result = mapper.readValue(model.generate(context, stage, input), AgentDevelopmentProblemDefinition::class.java)
+            AgentDevelopmentProblemPolicy.requireValid(result)
+            audit.record(context, stage, "SUCCEEDED", summary(input), mapOf(
+                "readyForDesign" to result.readyForDesign,
+                "questionCount" to result.clarificationQuestions.size,
+                "executor" to model.executorName,
+                "model" to model.modelName,
+            ))
+            result
+        } catch (exception: Exception) {
+            audit.record(context, stage, "FAILED", summary(input), failure = failure(exception, 0))
+            when (exception) {
+                is ApiException -> throw exception
+                is MetaAgentExecutionException -> throw BadRequestException(exception.errorCode, exception.message ?: "문제 정의 에이전트 실행에 실패했습니다.")
+                else -> throw BadRequestException("INVALID_PROBLEM_DEFINITION", "문제 정의 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
+            }
+        }
+    }
     private val designStages = listOf(
         "analyze_business_process",
         "clarify_requirements",
