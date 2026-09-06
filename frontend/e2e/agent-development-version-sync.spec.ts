@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("develop patch refreshes the server version before changing the canvas", async ({ page }) => {
+test("develop follow-up starts a stateful revision job and applies the new version", async ({ page }) => {
   let reads = 0;
-  let patchBody: Record<string, unknown> | undefined;
+  let messageBody: Record<string, unknown> | undefined;
   const snapshot = (version: number) => ({
     conversationId: "conversation-1",
     workflowId: "workflow-1",
@@ -24,9 +24,12 @@ test("develop patch refreshes the server version before changing the canvas", as
     if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
     if (path === "/api/agent-development/sessions") return json([{ conversationId: "conversation-1", workflowId: "workflow-1", title: "FAQ 에이전트", status: "READY_TO_SIMULATE", currentVersionNo: 1, updatedAt: "2026-09-02T00:00:00Z" }]);
     if (path === "/api/agent-development/sessions/conversation-1" && request.method() === "GET") return json(snapshot(++reads === 1 ? 1 : 2));
-    if (path === "/api/agent-development/sessions/conversation-1/patches") {
-      patchBody = request.postDataJSON();
-      return json(snapshot(3));
+    if (path === "/api/agent-development/sessions/conversation-1/messages" && request.method() === "POST") {
+      messageBody = request.postDataJSON();
+      return json({ id: "revision-job", conversationId: "conversation-1", status: "QUEUED", stage: "REQUEST_ACCEPTED", elapsedSeconds: 0, remainingSeconds: 90 });
+    }
+    if (path === "/api/agent-development/jobs/revision-job") {
+      return json({ id: "revision-job", conversationId: "conversation-1", status: "SUCCEEDED", stage: "COMPLETED", elapsedSeconds: 2, remainingSeconds: 0 });
     }
     return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
   });
@@ -35,10 +38,10 @@ test("develop patch refreshes the server version before changing the canvas", as
   await page.getByLabel("에이전트 개발 요청").fill("근거가 없으면 담당자 확인으로 바꿔줘");
   await page.getByRole("button", { name: "보내기" }).click();
 
-  await expect.poll(() => patchBody).toMatchObject({ baseVersionId: "version-2", expectedGraphHash: "stored-hash-2" });
+  await expect.poll(() => messageBody).toEqual({ content: "근거가 없으면 담당자 확인으로 바꿔줘" });
   await expect(page.getByRole("link", { name: "에이전트 패키지" })).toBeVisible();
   await page.getByRole("button", { name: "버전" }).click();
-  await expect(page.getByText("Version 3")).toBeVisible();
+  await expect(page.getByText("Version 2")).toBeVisible();
 });
 
 test("deterministic agent design without AI team members can be approved", async ({ page }) => {
@@ -122,7 +125,7 @@ test("develop CSV test sends structured sample input without exposing compiler i
   });
 
   await page.goto("/develop");
-  await page.getByRole("button", { name: "테스트" }).click();
+  await page.getByRole("button", { name: "테스트", exact: true }).click();
   const input = page.getByLabel("테스트 입력");
   await expect(input).toHaveAttribute("placeholder", /csvA/);
   await expect(input).not.toHaveAttribute("placeholder", /업무 자동화 배치가 아니라/);

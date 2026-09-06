@@ -148,6 +148,17 @@ class BuilderService(
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
+        if (workflow.currentVersionId != null && context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) {
+            beginAgentDevelopmentRevision(workflow)
+            analyzeAndDesign(
+                context,
+                cumulativeInstruction(conversationId),
+                idempotencyKey,
+                jobId,
+                revision = true,
+            )
+            return snapshot(ownerId, conversationId)
+        }
         if (workflow.currentVersionId != null && (
                 isOutputTemplatePatch(instruction) ||
                     isSlackToEmailPatch(instruction) ||
@@ -1198,6 +1209,12 @@ class BuilderService(
         return messages.findAllByConversationIdOrderByCreatedAt(context.conversation.id)
             .lastOrNull { it.role == "ASSISTANT" }
             ?.content == DESIGN_REJECTED_MESSAGE
+    }
+    private fun beginAgentDevelopmentRevision(workflow: BuilderWorkflow) {
+        if (workflow.status in setOf(WorkflowStatus.SIMULATING, WorkflowStatus.ACTIVE, WorkflowStatus.STOPPED)) {
+            throw ConflictException("AGENT_REVISION_NOT_AVAILABLE", "현재 실행 상태에서는 에이전트 설계를 수정할 수 없습니다. 진행 중인 실행을 마친 뒤 다시 요청해 주세요.")
+        }
+        workflow.status = WorkflowStatus.DRAFT
     }
     private fun isSlackToEmailPatch(value: String) =
         listOf("이메일", "메일").any(value::contains) &&

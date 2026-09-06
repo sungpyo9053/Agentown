@@ -263,6 +263,40 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `approved agent development accepts a general natural language revision and preserves versions`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("agent-revision-$suffix@example.com", "password123", "agent_revision_$suffix", "에이전트 수정 검증"))
+        var snapshot = service.createConversation(owner.id, "agent-revision-conversation-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "여러 시장 정보 소스를 수집해 출처와 함께 정리하는 에이전트를 만들어줘.",
+            "agent-revision-initial-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "agent-revision-approve-v1-$suffix")
+        val versionOne = snapshot.currentVersionId
+
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "소스별 수집 주기를 비교하고 중복 자료를 정제하는 역할도 추가해줘.",
+            "agent-revision-follow-up-$suffix",
+        )
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(snapshot.currentVersionId).isEqualTo(versionOne)
+        assertThat(snapshot.messages.filter { it.role == "USER" }.map { it.content }).containsExactly(
+            "여러 시장 정보 소스를 수집해 출처와 함께 정리하는 에이전트를 만들어줘.",
+            "소스별 수집 주기를 비교하고 중복 자료를 정제하는 역할도 추가해줘.",
+        )
+
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "agent-revision-approve-v2-$suffix")
+        assertThat(snapshot.versions.map { it.versionNo }).containsExactlyInAnyOrder(1, 2)
+        assertThat(snapshot.currentVersionId).isNotEqualTo(versionOne)
+    }
+
+    @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))

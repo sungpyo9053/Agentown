@@ -101,28 +101,13 @@ export default function AgentDevelopmentPage() {
     },
     onSuccess: next => { setJobId(next.id); },
   });
-  const patch = useMutation({
-    mutationFn: async (content: string) => {
-      const latest = await api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}`);
-      if (!latest.currentVersionId || !latest.validation) throw new Error("최신 캔버스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
-      const currentVersion = latest.versions.find(version => version.id === latest.currentVersionId);
-      if (!currentVersion) throw new Error("최신 버전 기록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
-      return api<Snapshot>(`/agent-development/sessions/${latest.conversationId}/patches`, {
-        method: "POST",
-        headers: { "Idempotency-Key": key("agent-patch") },
-        body: JSON.stringify({ instruction: content, baseVersionId: latest.currentVersionId, expectedGraphHash: currentVersion.graphHash }),
-      });
-    },
-    onSuccess: next => { store(next); setMessage(""); setPanel("team"); },
-    onError: () => snapshotQuery.refetch(),
-  });
   const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-design") }, body: JSON.stringify({ approve }) }), onSuccess: next => { store(next); if (next.graph) setPanel("graph"); } });
   const updateAgent = useMutation({ mutationFn: ({ agentKey, value }: { agentKey: string; value: Agent }) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/agents/${agentKey}`, { method: "PUT", headers: { "Idempotency-Key": key("agent-config") }, body: JSON.stringify(value) }), onSuccess: next => store(next) });
   const simulate = useMutation({ mutationFn: () => api<Run>(`/agent-development/sessions/${snapshot!.conversationId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("agent-test") }, body: JSON.stringify({ input: parseTestInput(testInput, snapshot) }) }), onSuccess: next => { setRun(next); setPanel("output"); } });
   const decideRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/agent-development/runs/${run!.id}/decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-run-decision") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
   const restoreVersion = useMutation({ mutationFn: (versionId: string) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/versions/${versionId}/restore`, { method: "POST", headers: { "Idempotency-Key": key("agent-version") }, body: "{}" }), onSuccess: store });
   const cancel = useMutation({ mutationFn: () => api<Job>(`/agent-development/jobs/${jobId}/cancel`, { method: "POST", headers: { "Idempotency-Key": key("agent-cancel") }, body: "{}" }), onSuccess: next => queryClient.setQueryData(["agent-development-job", next.id], next) });
-  function submit(event: FormEvent) { event.preventDefault(); if (!message.trim() || pending) return; if (snapshot?.status !== "DRAFT" && snapshot?.graph && snapshot.currentVersionId && snapshot.validation) patch.mutate(message.trim()); else send.mutate(message.trim()); }
+  function submit(event: FormEvent) { event.preventDefault(); if (!message.trim() || pending) return; send.mutate(message.trim()); }
   function applyGuide() {
     const lines = [
       `입력: ${guidedDraft.input.trim()}`,
@@ -135,8 +120,8 @@ export default function AgentDevelopmentPage() {
   }
   function newSession() { window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
 
-  const pending = create.isPending || send.isPending || patch.isPending || decideDesign.isPending || updateAgent.isPending || simulate.isPending || decideRun.isPending || restoreVersion.isPending || Boolean(jobId && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.data?.status ?? ""));
-  const error = create.error || send.error || patch.error || decideDesign.error || updateAgent.error || simulate.error || decideRun.error || restoreVersion.error || snapshotQuery.error || (job.data?.status === "FAILED" ? new Error(job.data.errorMessage ?? "에이전트 생성에 실패했습니다.") : null);
+  const pending = create.isPending || send.isPending || decideDesign.isPending || updateAgent.isPending || simulate.isPending || decideRun.isPending || restoreVersion.isPending || Boolean(jobId && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.data?.status ?? ""));
+  const error = create.error || send.error || decideDesign.error || updateAgent.error || simulate.error || decideRun.error || restoreVersion.error || snapshotQuery.error || (job.data?.status === "FAILED" ? new Error(job.data.errorMessage ?? "에이전트 생성에 실패했습니다.") : null);
   const flowNodes = useMemo<Node[]>(() => snapshot?.graph?.nodes.map(node => ({ id: node.id, position: node.position, data: { label: node.label }, style: { width: 180, borderRadius: 6, border: "1px solid #d4d4d0", fontSize: 12, padding: 12, background: "white" } })) ?? [], [snapshot?.graph]);
   const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map(edge => ({ ...edge, animated: true })) ?? [], [snapshot?.graph]);
 
