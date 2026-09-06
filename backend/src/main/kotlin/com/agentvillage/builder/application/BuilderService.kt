@@ -1075,8 +1075,20 @@ class BuilderService(
     fun activeAutomationTeams(ownerId: UUID): List<AutomationTeamView> {
         val workspace = workspaces.findByOwnerId(ownerId) ?: return emptyList()
         val active = workflows.findAllByWorkspaceIdAndStatusOrderByUpdatedAtDesc(workspace.id, WorkflowStatus.ACTIVE)
-        val versionNumbers = active.flatMap { versions.findAllByWorkflowIdOrderByVersionNoDesc(it.id) }.associate { it.id to it.versionNo }
-        return teamDeployments.list(ownerId, workspace.id, versionNumbers, active.associate { it.id to it.name })
+        val currentVersionIds = active.mapNotNull { workflow ->
+            workflow.currentVersionId?.let { versionId -> workflow.id to versionId }
+        }.toMap()
+        val versionNumbers = currentVersionIds.values.mapNotNull { versionId ->
+            versions.findById(versionId).orElse(null)?.let { version -> version.id to version.versionNo }
+        }.toMap()
+        return teamDeployments.list(
+            ownerId,
+            workspace.id,
+            currentVersionIds,
+            active.associate { it.id to it.conversationId },
+            versionNumbers,
+            active.associate { it.id to it.name },
+        )
     }
 
     private fun compileGraph(workflowId: UUID, proposal: AutomationProposal): WorkflowGraph {

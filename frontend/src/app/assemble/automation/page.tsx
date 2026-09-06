@@ -1,7 +1,7 @@
 "use client";
-/* eslint-disable react-hooks/set-state-in-effect -- hydrate the server-owned Builder conversation id from browser storage once */
+/* eslint-disable react-hooks/set-state-in-effect -- resolve the initial server-owned Builder conversation from URL or browser fallback once */
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ReactFlow, Background, Controls, MiniMap, type Edge, type Node, type NodeMouseHandler } from "@xyflow/react";
 import { AlertTriangle, Bot, Check, ChevronRight, CirclePlay, FileText, GitBranch, MessageSquare, Pause, Play, Rocket, Send, ShieldCheck, Sparkles, Square, Workflow } from "lucide-react";
@@ -63,6 +63,7 @@ function key(prefix: string) { return `${prefix}-${crypto.randomUUID()}`; }
 
 export default function AutomationBuilderPage() {
   const queryClient = useQueryClient();
+  const initialConversationResolved = useRef(false);
   const [conversationId, setConversationId] = useState<string>();
   const [tab, setTab] = useState<Tab>("design");
   const [message, setMessage] = useState("");
@@ -78,10 +79,22 @@ export default function AutomationBuilderPage() {
   const [notionParentPageId, setNotionParentPageId] = useState("");
   const [notionTargets, setNotionTargets] = useState<NotionVerification["accessibleItems"]>([]);
 
-  useEffect(() => { setConversationId(window.localStorage.getItem(storageKey) ?? undefined); }, []);
   const snapshotQuery = useQuery({ queryKey: ["builder", conversationId], queryFn: () => api<Snapshot>(`/builder/conversations/${conversationId}`), enabled: Boolean(conversationId) });
   const snapshot = snapshotQuery.data;
   const history = useQuery({ queryKey: ["builder-conversations"], queryFn: () => api<ConversationSummary[]>("/builder/conversations") });
+  useEffect(() => {
+    if (initialConversationResolved.current) return;
+    const requestedConversationId = new URLSearchParams(window.location.search).get("conversationId");
+    const resolvedConversationId = requestedConversationId
+      ?? window.localStorage.getItem(storageKey)
+      ?? undefined;
+    initialConversationResolved.current = true;
+    setConversationId(resolvedConversationId);
+  }, []);
+  useEffect(() => {
+    const loadedConversationId = snapshot?.conversationId;
+    if (loadedConversationId && loadedConversationId === conversationId) window.localStorage.setItem(storageKey, loadedConversationId);
+  }, [conversationId, snapshot?.conversationId]);
   const productionHistory = useQuery({
     queryKey: ["builder-production-history", snapshot?.workflowId],
     queryFn: () => api<ProductionRunHistoryEntry[]>(`/builder/workflows/${snapshot!.workflowId}/production-runs`),
@@ -242,7 +255,7 @@ export default function AutomationBuilderPage() {
     </div>
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border border-hairline bg-white px-5 py-4">
       <div><p className="text-xs font-semibold tracking-[.14em] text-coral">ACTUAL CODEX DESIGN · APPROVED NOTION EXECUTION</p><p className="mt-1 text-sm text-mute">설계와 시뮬레이션은 안전하게 검증하고, 배치된 Workflow는 승인 후 실제 Notion 결과를 발행합니다.</p></div>
-      <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setGenerationJobId(undefined); setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); setProductionRun(undefined); setProductionNotionConnectionId(""); setTab("design"); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" disabled={createConversation.isPending} onClick={() => createConversation.mutate()} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium disabled:opacity-50">새 자동화</button></div>
+      <div className="flex flex-wrap items-center gap-2"><select aria-label="저장된 업무 자동화" value={conversationId ?? ""} onChange={event => { const id = event.target.value || undefined; setGenerationJobId(undefined); setConversationId(id); if (id) window.localStorage.setItem(storageKey, id); setRun(undefined); setProductionRun(undefined); setProductionNotionConnectionId(""); setTab("design"); }} className="max-w-56 border border-hairline bg-white px-3 py-2 text-xs"><option value="">저장된 자동화</option>{snapshot && !history.data?.some(item => item.conversationId === snapshot.conversationId) && <option value={snapshot.conversationId}>{snapshot.requirement?.objective ?? "현재 선택한 업무"} · {snapshot.status}</option>}{history.data?.map(item => <option key={item.conversationId} value={item.conversationId}>{item.title}{item.currentVersionNo ? ` · Version ${item.currentVersionNo}` : ""} · {item.status}</option>)}</select><StatusBadge status={snapshot?.status ?? "NEW"} />{snapshot && snapshot.status !== "STOPPED" && !generationPending && <button type="button" onClick={() => { if (window.confirm("이 자동화를 중지할까요? Version과 로그는 보존됩니다.")) stopWorkflow.mutate(); }} className="rounded-pill border border-red-200 px-4 py-2 text-xs font-medium text-red-700">자동화 중지</button>}<button type="button" disabled={createConversation.isPending} onClick={() => createConversation.mutate()} className="rounded-pill border border-hairline px-4 py-2 text-xs font-medium disabled:opacity-50">새 자동화</button></div>
     </div>
 
     {generation.data && generation.data.status !== "SUCCEEDED" && (

@@ -24,7 +24,7 @@ data class AutomationEmployeeView(
 )
 
 data class AutomationTeamView(
-    val teamId: UUID, val workflowId: UUID, val workflowVersionId: UUID, val versionNo: Int,
+    val teamId: UUID, val workflowId: UUID, val conversationId: UUID, val workflowVersionId: UUID, val versionNo: Int,
     val category: String, val teamName: String, val workflowName: String,
     val employees: List<AutomationEmployeeView>,
 )
@@ -77,20 +77,30 @@ class AutomationTeamDeploymentService(
     }
 
     @Transactional(readOnly = true)
-    fun list(ownerId: UUID, workspaceId: UUID, versionNumbers: Map<UUID, Int>, workflowNames: Map<UUID, String>): List<AutomationTeamView> =
-        teams.findAllByWorkspaceIdOrderByCreatedAtDesc(workspaceId).map { team ->
-            val employees = members.findAllByTeamIdOrderBySequenceNo(team.id).map { member ->
-                val agent = agentService.getOwned(member.agentId, ownerId)
-                AutomationEmployeeView(
-                    agent.id, member.agentKey, agent.name, agent.role, agent.department ?: team.name,
-                    member.sequenceNo, member.agentMarkdown, member.guideMarkdown,
+    fun list(
+        ownerId: UUID,
+        workspaceId: UUID,
+        currentVersionIds: Map<UUID, UUID>,
+        conversationIds: Map<UUID, UUID>,
+        versionNumbers: Map<UUID, Int>,
+        workflowNames: Map<UUID, String>,
+    ): List<AutomationTeamView> =
+        teams.findAllByWorkspaceIdOrderByCreatedAtDesc(workspaceId)
+            .filter { team -> currentVersionIds[team.workflowId] == team.workflowVersionId }
+            .map { team ->
+                val employees = members.findAllByTeamIdOrderBySequenceNo(team.id).map { member ->
+                    val agent = agentService.getOwned(member.agentId, ownerId)
+                    AutomationEmployeeView(
+                        agent.id, member.agentKey, agent.name, agent.role, agent.department ?: team.name,
+                        member.sequenceNo, member.agentMarkdown, member.guideMarkdown,
+                    )
+                }
+                AutomationTeamView(
+                    team.id, team.workflowId, conversationIds.getValue(team.workflowId),
+                    team.workflowVersionId, versionNumbers[team.workflowVersionId] ?: 0,
+                    team.category, team.name, workflowNames[team.workflowId].orEmpty(), employees,
                 )
             }
-            AutomationTeamView(
-                team.id, team.workflowId, team.workflowVersionId, versionNumbers[team.workflowVersionId] ?: 0,
-                team.category, team.name, workflowNames[team.workflowId].orEmpty(), employees,
-            )
-        }
 
     private fun teamName(workflowName: String, objective: String): String {
         val source = "$workflowName $objective".lowercase()

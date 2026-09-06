@@ -17,7 +17,7 @@ type Execution = { id: string; status: string; currentStepKey?: string; createdA
 type Harness = { id: string; name: string; description?: string; status: string; visibility: string };
 type Runner = { id: string; provider: "CODEX" | "CLAUDE"; deviceName: string; status: string; lastSeenAt?: string };
 type AutomationTeam = {
-  teamId: string; workflowId: string; workflowVersionId: string; versionNo: number;
+  teamId: string; workflowId: string; conversationId: string; workflowVersionId: string; versionNo: number;
   category: string; teamName: string; workflowName: string;
   employees: Array<{ agentId: string; agentKey: string; name: string; role: string; department: string; sequenceNo: number }>;
 };
@@ -62,7 +62,7 @@ export default function DashboardPage() {
       <Link href="/assemble/automation" className="mt-6 inline-flex shrink-0 rounded-pill bg-coral px-8 py-4 text-sm font-medium text-white transition active:scale-95 md:mt-0">내 업무 설명하기</Link>
     </section>}
 
-    {automationTeams.data?.map(team => <section key={team.teamId} className="mt-2 border border-hairline bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-[.14em] text-coral">{team.category} · VERSION {team.versionNo}</p><h2 className="mt-2 text-2xl font-semibold">{team.teamName}</h2><p className="mt-1 text-sm text-mute">{team.workflowName} · 실제 직원 {team.employees.length}명</p></div><Link href="/assemble/automation" className="rounded-pill bg-cloud px-5 py-3 text-sm font-medium">Workflow 보기</Link></div><div className="mt-5 grid gap-3 md:grid-cols-2">{team.employees.map(member => <Link key={member.agentId} href={`/agents/${member.agentId}/edit`} className="border border-hairline bg-cloud p-4 transition hover:border-coral"><p className="text-xs font-semibold text-coral">{member.department} · 팀원 {member.sequenceNo}</p><h3 className="mt-2 font-medium">{member.name}</h3><p className="mt-1 text-sm leading-6 text-mute">{member.role}</p></Link>)}</div></section>)}
+    {automationTeams.data?.map(team => <section key={team.teamId} className="mt-2 border border-hairline bg-white p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-[.14em] text-coral">{team.category} · VERSION {team.versionNo}</p><h2 className="mt-2 text-2xl font-semibold">{team.teamName}</h2><p className="mt-1 text-sm text-mute">{team.workflowName} · 실제 직원 {team.employees.length}명</p></div><Link href={`/assemble/automation?conversationId=${encodeURIComponent(team.conversationId)}&workflowId=${encodeURIComponent(team.workflowId)}`} className="rounded-pill bg-cloud px-5 py-3 text-sm font-medium">Workflow 보기</Link></div><div className="mt-5 grid gap-3 md:grid-cols-2">{team.employees.map(member => <Link key={member.agentId} href={`/agents/${member.agentId}/edit`} className="border border-hairline bg-cloud p-4 transition hover:border-coral"><p className="text-xs font-semibold text-coral">{member.department} · 팀원 {member.sequenceNo}</p><h3 className="mt-2 font-medium">{member.name}</h3><p className="mt-1 text-sm leading-6 text-mute">{member.role}</p></Link>)}</div></section>)}
 
     <div className="mt-2 border border-hairline bg-white">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline px-6 py-4">

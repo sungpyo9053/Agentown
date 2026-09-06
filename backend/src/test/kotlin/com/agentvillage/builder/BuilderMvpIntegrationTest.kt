@@ -15,6 +15,8 @@ import com.agentvillage.builder.domain.DesignNodeKind
 import com.agentvillage.builder.domain.WorkflowStatus
 import com.agentvillage.builder.infrastructure.BuilderGenerationJobRepository
 import com.agentvillage.builder.infrastructure.BuilderApprovalRepository
+import com.agentvillage.builder.infrastructure.BuilderAutomationTeamMemberRepository
+import com.agentvillage.builder.infrastructure.BuilderAutomationTeamRepository
 import com.agentvillage.builder.infrastructure.BuilderRequirementRepository
 import com.agentvillage.builder.infrastructure.BuilderWorkflowRepository
 import com.agentvillage.builder.infrastructure.BuilderRunRepository
@@ -64,6 +66,8 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var usageRecords: BuilderUsageRecordRepository
     @Autowired lateinit var generationJobs: BuilderGenerationJobRepository
     @Autowired lateinit var builderApprovals: BuilderApprovalRepository
+    @Autowired lateinit var automationTeams: BuilderAutomationTeamRepository
+    @Autowired lateinit var automationTeamMembers: BuilderAutomationTeamMemberRepository
     @Autowired lateinit var outputTemplates: HarnessTemplateRepository
     @Autowired lateinit var outputTemplateVersions: HarnessTemplateVersionRepository
     @Autowired lateinit var jdbc: JdbcTemplate
@@ -297,6 +301,97 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(team.employees.map { it.agentKey }).containsExactly("content-writer")
         assertThat(team.employees.map { it.name }).containsExactly("콘텐츠 작성자")
         assertThat(agents.list(owner.id).filter { it.department == "글쓰기 자동화 팀" }).hasSize(1)
+    }
+
+    @Test
+    fun `active automation teams expose only the current version of active workflows`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("active-team-owner-$suffix@example.com", "password123", "active_team_owner_$suffix", "활성 팀 소유자"))
+        val stranger = identities.register(RegisterUserCommand("active-team-stranger-$suffix@example.com", "password123", "active_team_stranger_$suffix", "다른 워크스페이스"))
+        service.createConversation(stranger.id, "active-team-stranger-conversation-$suffix")
+
+        var snapshot = service.createConversation(owner.id, "active-team-conversation-$suffix")
+        snapshot = service.sendMessage(
+            owner.id,
+            snapshot.conversationId,
+            "Slack 문의를 Notion FAQ에서 찾아 답변 초안을 만들고 담당자 승인 후 Slack 스레드로 전송한다.",
+            "active-team-message-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "active-team-design-v1-$suffix")
+        val versionV1 = snapshot.currentVersionId!!
+        var run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "첫 버전 검증"), "active-team-run-v1-$suffix")
+        run = service.decideExecution(owner.id, run.id, true, "active-team-run-approve-v1-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
+        snapshot = service.activate(owner.id, snapshot.workflowId, "active-team-activate-v1-$suffix")
+
+        val teamV1 = service.activeAutomationTeams(owner.id).single()
+        assertThat(teamV1.conversationId).isEqualTo(snapshot.conversationId)
+        assertThat(teamV1.workflowVersionId).isEqualTo(versionV1)
+        assertThat(teamV1.versionNo).isEqualTo(1)
+        assertThat(teamV1.employees).isNotEmpty
+        assertThat(service.activeAutomationTeams(stranger.id)).isEmpty()
+
+        snapshot = service.applyPatch(
+            owner.id,
+            snapshot.workflowId,
+            "답변을 짧게 보여줘.",
+            versionV1,
+            snapshot.validation!!.graphHash,
+            "active-team-patch-v2-$suffix",
+        )
+        snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "active-team-design-v2-$suffix")
+        val versionV2 = snapshot.currentVersionId!!
+        assertThat(versionV2).isNotEqualTo(versionV1)
+        run = service.startSimulation(owner.id, snapshot.workflowId, mapOf("message" to "두 번째 버전 검증"), "active-team-run-v2-$suffix")
+        run = service.decideExecution(owner.id, run.id, true, "active-team-run-approve-v2-$suffix")
+        assertThat(run.status).isEqualTo(BuilderRunStatus.SUCCEEDED)
+        snapshot = service.activate(owner.id, snapshot.workflowId, "active-team-activate-v2-$suffix")
+
+        repeat(20) { index ->
+            service.createConversation(owner.id, "active-team-newer-conversation-$index-$suffix")
+        }
+        assertThat(service.listConversations(owner.id).map { it.conversationId })
+            .doesNotContain(snapshot.conversationId)
+
+        val activeTeams = service.activeAutomationTeams(owner.id)
+        assertThat(activeTeams.single().conversationId).isEqualTo(snapshot.conversationId)
+        assertThat(activeTeams.map { it.workflowVersionId }).containsExactly(versionV2)
+        assertThat(activeTeams.single().versionNo).isEqualTo(2)
+        assertThat(activeTeams.single().employees).isNotEmpty
+        assertThat(activeTeams.single().employees).allSatisfy { employee ->
+            assertThat(employee.department).isEqualTo(activeTeams.single().teamName)
+            assertThat(employee.agentMarkdown).contains("## Role")
+            assertThat(employee.guideMarkdown).isNotBlank()
+        }
+        assertThat(service.snapshot(owner.id, activeTeams.single().conversationId).workflowId)
+            .isEqualTo(snapshot.workflowId)
+        assertThatThrownBy { service.snapshot(stranger.id, activeTeams.single().conversationId) }
+            .isInstanceOf(NotFoundException::class.java)
+        mvc.perform(get("/api/builder/active-automation-teams").with(user(principal(owner.id, owner.email))))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$[0].workflowId").value(snapshot.workflowId.toString()))
+            .andExpect(jsonPath("$[0].conversationId").value(snapshot.conversationId.toString()))
+        mvc.perform(get("/api/builder/conversations/${snapshot.conversationId}").with(user(principal(owner.id, owner.email))))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.workflowId").value(snapshot.workflowId.toString()))
+        mvc.perform(get("/api/builder/conversations/${snapshot.conversationId}").with(user(principal(stranger.id, stranger.email))))
+            .andExpect(status().isNotFound)
+
+        val persistedTeamsBeforeStop = automationTeams.findAllByWorkspaceIdOrderByCreatedAtDesc(snapshot.workspaceId)
+        assertThat(persistedTeamsBeforeStop.map { it.workflowVersionId }).containsExactlyInAnyOrder(versionV1, versionV2)
+        val persistedMembersBeforeStop = persistedTeamsBeforeStop
+            .flatMap { automationTeamMembers.findAllByTeamIdOrderBySequenceNo(it.id) }
+        assertThat(persistedMembersBeforeStop).hasSize(teamV1.employees.size + activeTeams.single().employees.size)
+
+        snapshot = service.stop(owner.id, snapshot.workflowId, "active-team-stop-$suffix")
+
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.STOPPED)
+        assertThat(service.activeAutomationTeams(owner.id)).isEmpty()
+        assertThat(automationTeams.findAllByWorkspaceIdOrderByCreatedAtDesc(snapshot.workspaceId).map { it.id })
+            .containsExactlyInAnyOrderElementsOf(persistedTeamsBeforeStop.map { it.id })
+        assertThat(persistedTeamsBeforeStop.flatMap { automationTeamMembers.findAllByTeamIdOrderBySequenceNo(it.id) }.map { it.id })
+            .containsExactlyInAnyOrderElementsOf(persistedMembersBeforeStop.map { it.id })
+        assertThat(agents.list(owner.id).map { it.id }).containsAll(persistedMembersBeforeStop.map { it.agentId })
     }
 
     @Test
