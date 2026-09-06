@@ -1,8 +1,51 @@
 import { expect, test } from "@playwright/test";
 
-test("develop patch refreshes the server version before changing the canvas", async ({ page }) => {
+test("ambiguous idea shows requirement-refiner questions before agent design", async ({ page }) => {
+  let answerBody: Record<string, unknown> | undefined;
+  const snapshot = {
+    conversationId: "intake-conversation",
+    workflowId: "intake-workflow",
+    status: "NEEDS_CLARIFICATION",
+    clarificationQuestions: [
+      { id: "desired-outcome", field: "desiredOutcome", question: "만들고 싶은 것이 AI 에이전트인지와 해결하려는 문제를 알려주세요." },
+      { id: "interaction-contract", field: "interactionContract", question: "사용자 입력과 에이전트 결과의 예시를 알려주세요." },
+      { id: "success-constraints", field: "successConstraints", question: "좋은 결과의 기준과 하면 안 되는 일을 알려주세요." },
+    ],
+    messages: [
+      { id: "message-1", role: "USER", content: "시바 마우스 만들고 싶어", createdAt: "2026-09-06T00:00:00Z" },
+      { id: "message-2", role: "ASSISTANT", content: "요청의 의미를 임의로 추측하지 않도록 먼저 확인할게요.", createdAt: "2026-09-06T00:00:01Z" },
+    ],
+    versions: [],
+    agentDefinitions: [],
+  };
+  await page.addInitScript(() => localStorage.setItem("agentown.agent-development.session.v1", "intake-conversation"));
+  await page.route("**/api/**", async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+    if (path === "/api/auth/me") return json({ displayName: "검증 사용자", role: "USER" });
+    if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
+    if (path === "/api/agent-development/sessions") return json([]);
+    if (path === "/api/agent-development/sessions/intake-conversation" && request.method() === "GET") return json(snapshot);
+    if (path === "/api/agent-development/sessions/intake-conversation/messages" && request.method() === "POST") {
+      answerBody = request.postDataJSON();
+      return json({ id: "intake-job", conversationId: "intake-conversation", status: "QUEUED", stage: "REQUEST_ACCEPTED", elapsedSeconds: 0, remainingSeconds: 90 });
+    }
+    if (path === "/api/agent-development/jobs/intake-job") return json({ id: "intake-job", conversationId: "intake-conversation", status: "RUNNING", stage: "CODEX_ANALYZING", elapsedSeconds: 1, remainingSeconds: 89 });
+    return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+  });
+
+  await page.goto("/develop");
+  await expect(page.getByText("만들고 싶은 것이 AI 에이전트인지와 해결하려는 문제를 알려주세요.")).toBeVisible();
+  await expect(page.getByText("사용자 입력과 에이전트 결과의 예시를 알려주세요.")).toBeVisible();
+  await page.getByLabel("에이전트 개발 요청").fill("마우스 신제품을 기획하고 기능 제안과 근거를 표로 줘.");
+  await page.getByRole("button", { name: "보내기" }).click();
+  await expect.poll(() => answerBody).toEqual({ content: "마우스 신제품을 기획하고 기능 제안과 근거를 표로 줘." });
+});
+
+test("develop follow-up starts a stateful revision job and applies the new version", async ({ page }) => {
   let reads = 0;
-  let patchBody: Record<string, unknown> | undefined;
+  let messageBody: Record<string, unknown> | undefined;
   const snapshot = (version: number) => ({
     conversationId: "conversation-1",
     workflowId: "workflow-1",
@@ -24,9 +67,12 @@ test("develop patch refreshes the server version before changing the canvas", as
     if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
     if (path === "/api/agent-development/sessions") return json([{ conversationId: "conversation-1", workflowId: "workflow-1", title: "FAQ 에이전트", status: "READY_TO_SIMULATE", currentVersionNo: 1, updatedAt: "2026-09-02T00:00:00Z" }]);
     if (path === "/api/agent-development/sessions/conversation-1" && request.method() === "GET") return json(snapshot(++reads === 1 ? 1 : 2));
-    if (path === "/api/agent-development/sessions/conversation-1/patches") {
-      patchBody = request.postDataJSON();
-      return json(snapshot(3));
+    if (path === "/api/agent-development/sessions/conversation-1/messages" && request.method() === "POST") {
+      messageBody = request.postDataJSON();
+      return json({ id: "revision-job", conversationId: "conversation-1", status: "QUEUED", stage: "REQUEST_ACCEPTED", elapsedSeconds: 0, remainingSeconds: 90 });
+    }
+    if (path === "/api/agent-development/jobs/revision-job") {
+      return json({ id: "revision-job", conversationId: "conversation-1", status: "SUCCEEDED", stage: "COMPLETED", elapsedSeconds: 2, remainingSeconds: 0 });
     }
     return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
   });
@@ -35,10 +81,10 @@ test("develop patch refreshes the server version before changing the canvas", as
   await page.getByLabel("에이전트 개발 요청").fill("근거가 없으면 담당자 확인으로 바꿔줘");
   await page.getByRole("button", { name: "보내기" }).click();
 
-  await expect.poll(() => patchBody).toMatchObject({ baseVersionId: "version-2", expectedGraphHash: "stored-hash-2" });
+  await expect.poll(() => messageBody).toEqual({ content: "근거가 없으면 담당자 확인으로 바꿔줘" });
   await expect(page.getByRole("link", { name: "에이전트 패키지" })).toBeVisible();
   await page.getByRole("button", { name: "버전" }).click();
-  await expect(page.getByText("Version 3")).toBeVisible();
+  await expect(page.getByText("Version 2")).toBeVisible();
 });
 
 test("deterministic agent design without AI team members can be approved", async ({ page }) => {
@@ -122,7 +168,7 @@ test("develop CSV test sends structured sample input without exposing compiler i
   });
 
   await page.goto("/develop");
-  await page.getByRole("button", { name: "테스트" }).click();
+  await page.getByRole("button", { name: "테스트", exact: true }).click();
   const input = page.getByLabel("테스트 입력");
   await expect(input).toHaveAttribute("placeholder", /csvA/);
   await expect(input).not.toHaveAttribute("placeholder", /업무 자동화 배치가 아니라/);

@@ -6,7 +6,7 @@ import com.agentvillage.builder.application.PipelineContext
 import com.agentvillage.common.exception.BadRequestException
 import com.agentvillage.llmcredential.application.CredentialDirectory
 import com.agentvillage.llmcredential.domain.LlmProvider
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertDoesNotThrow
@@ -23,7 +23,7 @@ import java.nio.file.Path
 class CodexCliMetaAgentModelTest {
     private val credentials = mock<CredentialDirectory>()
     private val runner = mock<CodexCliRunner>()
-    private val model = CodexCliMetaAgentModel(credentials, runner, ObjectMapper(), "gpt-test")
+    private val model = CodexCliMetaAgentModel(credentials, runner, jacksonObjectMapper(), "gpt-test")
     private val context = PipelineContext(
         traceId = UUID.randomUUID(),
         ownerId = UUID.randomUUID(),
@@ -63,6 +63,32 @@ class CodexCliMetaAgentModelTest {
             "구조화 객체이면 itemType=object",
             "itemSchema에 객체의 모든 필드",
             "반복 순번이나 슬롯을 위한 임의 필드를 만들지 않는다",
+        )
+    }
+
+    @Test
+    fun `requirement refiner asks before design and uses its own strict schema`() {
+        whenever(runner.hasSharedAuth()).thenReturn(true)
+        whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn(
+            """{"ready":false,"clarifiedBrief":"마우스 만들기","clarificationQuestions":[{"id":"desired-outcome","field":"desiredOutcome","question":"어떤 문제를 해결할 AI 에이전트인가요?","required":true}],"assumptions":[]}""",
+        )
+
+        val result = model.refineAgentRequirement(context, mapOf("conversation" to "시바 마우스 만들고 싶어"))
+
+        val prompt = argumentCaptor<String>()
+        verify(runner).executeWithSharedAuth(
+            eq("gpt-test"),
+            prompt.capture(),
+            eq(context.jobId),
+            eq("/builder/agent-requirement-refinement.schema.json"),
+        )
+        assertThat(result.ready).isFalse()
+        assertThat(result.clarificationQuestions.single().field).isEqualTo("desiredOutcome")
+        assertThat(prompt.firstValue).contains(
+            "요구사항 정제 Agent",
+            "그래프나 실행 코드를 설계하지 말고",
+            "비속어, 오타, 짧은 표현 때문에 요청을 거절하지 않는다",
+            "시바 마우스 만들고 싶어",
         )
     }
 
