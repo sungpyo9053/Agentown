@@ -66,6 +66,7 @@ class CodexCliMetaAgentModel(
             다음 원칙을 지킨다.
             - 문제의 대상 사용자, 실제 불편 또는 목적, 원하는 최종 결과, 해결 범위가 역할 분해를 바꿀 만큼 빠졌으면 readyForDesign=false로 둔다.
             - 한 번에 답하기 쉬운 핵심 질문만 1~3개 묻는다. 서로 밀접한 항목은 한 질문으로 묶는다.
+            - remainingQuestions보다 많은 질문을 만들지 않는다. remainingQuestions=0이면 CLARIFY를 반환하지 말고 지금까지의 답변과 명시한 안전한 가정으로 PROMPT_ONLY 또는 AGENT_TEAM을 결정한다.
             - 구현 기술, 트리거, Slack/Notion 같은 연동, 승인 방식은 문제 정의에 꼭 필요하지 않으면 묻지 않는다.
             - 사용자가 말하지 않은 문제, 결과, 사업 규칙을 만들지 않는다. 무해한 대화 기본값만 assumptions에 둔다.
             ${AgentDevelopmentProblemPolicy.promptInstructions()}
@@ -162,6 +163,8 @@ class CodexCliMetaAgentModel(
         - 반복 작업의 고정값은 응답에서 해당 노드 config.inputDefaults=[{"field":"필드명","value":"고정값"}] 형식으로 둔다. field는 반드시 해당 Agent inputSchema에 선언돼야 하며 반복 순번이나 슬롯용 임의 필드는 제거한다. previousBundle의 map 형식 inputDefaults는 서버가 정규화한 값이다.
         - 정확한 배열 크기는 minItems와 maxItems로 보존한다. 원시 배열은 itemType, 객체 배열은 itemType=object와 재귀 itemSchema를 선언한다.
         - object 필드는 재귀 objectSchema를 선언하고 날짜·URL·상태 enum·숫자 범위·문자열 최소 길이·배열 중복 및 객체 식별자 고유성 제약을 format, enumValues, minimum/maximum, minLength, uniqueItems, uniqueBy에 보존한다.
+        - inputSchema와 outputSchema를 재귀적으로 모두 검사한다. type=object인 모든 필드는 예외 없이 비어 있지 않은 objectSchema를 가져야 한다. 구체적인 하위 필드를 알 수 없는 자유 형식 텍스트라면 object를 쓰지 말고 string으로 고친다.
+        - MEANING_BINDING_TYPE_MISMATCH가 있으면 해당 edge의 sourceField와 targetField 선언 타입을 동일하게 맞춘다. 단, 하나의 배열을 병렬 Agent에 항목별 배분하는 edge의 하류 입력은 배열 itemType과 동일하게 둔다.
         - 모든 FieldDefinition의 제약 필드를 빠짐없이 포함하고 적용되지 않는 값은 null로 둔다.
         - 사용자가 배열 항목 타입을 문자열, 정수, 숫자, 불리언 또는 객체로 명시했다면 해당 itemType을 그대로 보존한다.
         - 각 Agent의 입력·출력 스키마와 proposal 최종 출력 스키마를 보존하며 누락 필드, 타입, 필수 여부를 검증 피드백에 맞춰 고친다.
@@ -180,7 +183,7 @@ class CodexCliMetaAgentModel(
         val proposal = previous.path("proposal")
         val projectedProposal = projectObject(
             proposal,
-            listOf("name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy", "inputSchema", "graphPlan"),
+            listOf("name", "summary", "capabilities", "integrations", "approvalPoints", "failurePolicy", "inputSchema", "outputSchema", "graphPlan"),
         )
         val projectedAgents = previous.path("agentDefinitions").map { agent ->
             projectObject(

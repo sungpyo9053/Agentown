@@ -6,6 +6,9 @@ import com.agentvillage.builder.application.BuilderJobProgressService
 import com.agentvillage.builder.application.PipelineContext
 import com.agentvillage.builder.application.StructuredMetaAgentPipeline
 import com.agentvillage.builder.application.DeterministicMockMetaAgentModel
+import com.agentvillage.builder.application.AgentDevelopmentApproach
+import com.agentvillage.builder.application.AgentDevelopmentProblemDefinition
+import com.agentvillage.builder.application.AgentDevelopmentProblemPolicy
 import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.agentvillage.common.exception.BadRequestException
@@ -19,6 +22,192 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    @Test
+    fun `problem definition canonicalizes redundant UI flags without changing routing`() {
+        val raw = AgentDevelopmentProblemDefinition(
+            readyForDesign = false,
+            recommendedApproach = AgentDevelopmentApproach.AGENT_TEAM,
+            problemStatement = "반복 콘텐츠 제작",
+            targetUser = "팀",
+            desiredOutcome = "검수된 콘텐츠",
+            scope = "분석부터 검수까지",
+            constraints = emptyList(),
+            assumptions = emptyList(),
+            rationale = "분리된 전문 역할이 필요함",
+            suggestedPrompt = "",
+            clarificationQuestions = listOf(ClarificationQuestion("extra", "extra", "불필요한 질문")),
+        )
+
+        val canonical = AgentDevelopmentProblemPolicy.canonicalize(raw, 9)
+
+        assertThat(canonical.readyForDesign).isTrue()
+        assertThat(canonical.clarificationQuestions).isEmpty()
+        assertThat(canonical.recommendedApproach).isEqualTo(AgentDevelopmentApproach.AGENT_TEAM)
+    }
+
+    @Test
+    fun `user provided input does not become an unresolved connector`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val material = FieldDefinition("materials", "array", true, "materials", itemType = "string")
+        val analyses = FieldDefinition("materialAnalyses", "array", true, "analyses", itemType = "string")
+        val plan = WorkflowGraphPlan(
+            "input",
+            listOf(
+                WorkflowNodePlan("input", NodeType.TEXT_INPUT.wireName, "Input"),
+                WorkflowNodePlan("analysis", NodeType.UNRESOLVED_TOOL.wireName, "자료 분석", mapOf("source" to "사용자 입력 자료")),
+                WorkflowNodePlan("review", NodeType.AI_GENERATE.wireName, "Review", mapOf("agentKey" to "reviewer")),
+            ),
+            listOf(
+                WorkflowEdgePlan("in", "input", "analysis", bindings = listOf(WorkflowFieldBinding("materials", "materials"))),
+                WorkflowEdgePlan("out", "analysis", "review", bindings = listOf(WorkflowFieldBinding("materialAnalyses", "materialAnalyses"))),
+            ),
+        )
+        val reviewer = AgentDefinition(
+            "reviewer", "Reviewer", "Review", listOf(analyses), listOf(FieldDefinition("result", "string", true, "result")),
+            listOf("review"), listOf("do not invent"), listOf("evidence"),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("materials"), listOf("result"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(material)),
+            listOf(reviewer), emptyList(),
+        )
+
+        val normalized = pipeline.replaceDirectInputUnresolvedTools(bundle)
+
+        assertThat(normalized.proposal.graphPlan!!.nodes.single { it.id == "analysis" }.nodeType).isEqualTo(NodeType.AI_GENERATE.wireName)
+        assertThat(normalized.agentDefinitions).hasSize(2)
+        assertThat(normalized.agentDefinitions.last().outputSchema).containsExactly(analyses)
+    }
+
+    @Test
+    fun `unresolved tool config gets generic required metadata`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val plan = WorkflowGraphPlan(
+            entryNodeId = "lookup",
+            nodes = listOf(WorkflowNodePlan(
+                "lookup", NodeType.UNRESOLVED_TOOL.wireName, "자료 조사 Connector", mapOf("source" to "provided"),
+            )),
+            edges = emptyList(),
+        )
+
+        val normalized = pipeline.normalizeUnresolvedToolConfig(plan).nodes.single().config
+
+        assertThat(normalized["toolName"]).isEqualTo("자료 조사 Connector")
+        assertThat(normalized["connectionStatus"]).isEqualTo("UNRESOLVED")
+        assertThat(normalized["reason"]).isEqualTo("현재 서버에 실행 가능한 Connector가 설정되지 않았습니다.")
+    }
+
+    @Test
+    fun `open object contracts fall back to bounded strings without scenario rules`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+
+        val fields = pipeline.closeOpenFields(listOf(
+            FieldDefinition("summary", "object", true, "free form summary"),
+            FieldDefinition("items", "array", true, "free form items", itemType = "object"),
+        ))
+
+        assertThat(fields[0].type).isEqualTo("string")
+        assertThat(fields[1].itemType).isEqualTo("string")
+    }
+
+    @Test
+    fun `agent binding copies the complete upstream object contract through pass-through outputs`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { it.arguments[0] }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        val item = FieldDefinition("content", "string", true, "content")
+        val complete = FieldDefinition("extraction", "object", true, "complete", objectSchema = listOf(
+            FieldDefinition("decisions", "array", true, "decisions", itemType = "object", itemSchema = listOf(item)),
+        ))
+        fun agent(key: String, inputs: List<FieldDefinition>, outputs: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, inputs, outputs, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val incomplete = FieldDefinition("extraction", "object", true, "incomplete")
+        val plan = WorkflowGraphPlan(
+            "source-node",
+            listOf(
+                WorkflowNodePlan("source-node", "ai.generate", "Source", mapOf("agentKey" to "source")),
+                WorkflowNodePlan("middle-node", "ai.generate", "Middle", mapOf("agentKey" to "middle")),
+                WorkflowNodePlan("target-node", "ai.generate", "Target", mapOf("agentKey" to "target")),
+            ),
+            listOf(
+                WorkflowEdgePlan("first", "source-node", "middle-node", bindings = listOf(WorkflowFieldBinding("extraction", "extraction"))),
+                WorkflowEdgePlan("second", "middle-node", "target-node", bindings = listOf(WorkflowFieldBinding("extraction", "extraction"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), emptyList(), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan),
+            listOf(agent("source", emptyList(), listOf(complete)), agent("middle", listOf(incomplete), listOf(incomplete)), agent("target", listOf(incomplete), emptyList())),
+            emptyList(),
+        )
+
+        val normalized = pipeline.normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.agentDefinitions[1].inputSchema.single().objectSchema).isNotEmpty
+        assertThat(normalized.agentDefinitions[1].outputSchema.single().objectSchema).isNotEmpty
+        assertThat(normalized.agentDefinitions[2].inputSchema.single().objectSchema).isNotEmpty
+    }
+
+    @Test
+    fun `multiple bound producers preserve the union of nested enum values`() {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
+        val pipeline = StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+        fun result(value: String) = FieldDefinition("results", "array", true, "results", itemType = "object", itemSchema = listOf(
+            FieldDefinition("reviewType", "string", true, "type", enumValues = listOf(value)),
+        ))
+        fun agent(key: String, input: List<FieldDefinition>, output: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, input, output, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val combined = result("first").copy(itemSchema = listOf(
+            FieldDefinition("reviewType", "string", true, "type", enumValues = listOf("first", "second")),
+        ))
+        val plan = WorkflowGraphPlan(
+            "first-node",
+            listOf(
+                WorkflowNodePlan("first-node", "ai.generate", "First", mapOf("agentKey" to "first")),
+                WorkflowNodePlan("second-node", "ai.generate", "Second", mapOf("agentKey" to "second")),
+                WorkflowNodePlan("collect-node", "ai.generate", "Collect", mapOf("agentKey" to "collector")),
+            ),
+            listOf(
+                WorkflowEdgePlan("first-collect", "first-node", "collect-node", bindings = listOf(WorkflowFieldBinding("results", "results"))),
+                WorkflowEdgePlan("second-collect", "second-node", "collect-node", bindings = listOf(WorkflowFieldBinding("results", "results"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), emptyList(), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan),
+            listOf(agent("first", emptyList(), listOf(result("first"))), agent("second", emptyList(), listOf(result("second"))), agent("collector", listOf(combined), emptyList())),
+            emptyList(),
+        )
+
+        val normalized = pipeline.normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.agentDefinitions.last().inputSchema.single().itemSchema!!.single().enumValues)
+            .containsExactlyInAnyOrder("first", "second")
+    }
+
     @Test
     fun `single workflow input replaces an invented entry binding`() {
         val mapper = jacksonObjectMapper()

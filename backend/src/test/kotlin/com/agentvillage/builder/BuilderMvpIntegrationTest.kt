@@ -303,6 +303,27 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
+    fun `agent development never asks more than ten clarification questions`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("question-cap-$suffix@example.com", "password123", "cap_$suffix", "질문 한도 검증"))
+        var snapshot = service.createConversation(owner.id, "question-cap-agent-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        snapshot = service.sendMessage(owner.id, snapshot.conversationId, "나 컵 만들고 싶다.", "question-cap-first-$suffix")
+
+        repeat(10) { index ->
+            snapshot = service.sendMessage(owner.id, snapshot.conversationId, "아직 잘 모르겠어.", "question-cap-answer-$index-$suffix")
+        }
+
+        val asked = snapshot.messages
+            .filter { it.role == "ASSISTANT" && it.content.startsWith("에이전트로 나누기 전에") }
+            .sumOf { Regex("아래 (\\d+)가지").find(it.content)!!.groupValues[1].toInt() }
+        assertThat(asked).isEqualTo(10)
+        assertThat(snapshot.status).isEqualTo(WorkflowStatus.DRAFT)
+        assertThat(snapshot.clarificationQuestions).isEmpty()
+        assertThat(snapshot.agentDefinitions).isEmpty()
+        assertThat(snapshot.messages.last().content).contains("이 프롬프트를 그대로 넣어보세요")
+    }
+
+    @Test
     fun `approved writing harness imports the minimum persisted employee into writing automation team`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("writing-team-$suffix@example.com", "password123", "writing_team_$suffix", "글쓰기 팀 검증"))

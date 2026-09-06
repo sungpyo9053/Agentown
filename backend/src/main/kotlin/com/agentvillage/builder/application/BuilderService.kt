@@ -203,7 +203,7 @@ class BuilderService(
         }
         val mode = if (context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT else StructuredMetaAgentPipeline.DesignMode.AUTOMATION
         val designInstruction = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) {
-            val problem = pipeline.defineAgentDevelopmentProblem(pipelineContext, instruction)
+            val problem = pipeline.defineAgentDevelopmentProblem(pipelineContext, instruction, remainingAgentDevelopmentQuestions(context.conversation.id))
             if (!problem.readyForDesign) {
                 saveProblemClarification(context, instruction, problem)
                 return
@@ -241,10 +241,18 @@ class BuilderService(
                 }
                 if (!validation.valid) {
                     generationDrafts.validationFailed(context.conversation.id, validation.issues)
-                    throw BadRequestException(
-                        if (validation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
-                        validation.issues.joinToString(" ") { it.message },
-                    )
+                    val fallback = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) {
+                        AgentDevelopmentProblemPolicy.semanticFallback(validation.issues)
+                    } else emptyList()
+                    if (fallback.isNotEmpty()) {
+                        bundle = bundle.copy(clarificationQuestions = fallback)
+                        generationDrafts.checkpoint(context.conversation.id, bundle)
+                    } else {
+                        throw BadRequestException(
+                            if (validation.issues.any { it.code.startsWith("MEANING_") }) "WORKFLOW_REQUIREMENT_MISMATCH" else "WORKFLOW_VALIDATION_FAILED",
+                            validation.issues.joinToString(" ") { it.message },
+                        )
+                    }
                 }
             }
         }
@@ -319,6 +327,15 @@ class BuilderService(
             content = "이 문제는 에이전트 팀 없이 Codex나 GPT에 한 번 요청하는 것으로 충분합니다.\n\n이 프롬프트를 그대로 넣어보세요:\n\n${problem.suggestedPrompt}\n\n판단 이유: ${problem.rationale}",
             workflowVersionId = context.workflow.currentVersionId,
         ))
+    }
+
+    private fun remainingAgentDevelopmentQuestions(conversationId: UUID): Int {
+        val asked = messages.findAllByConversationIdOrderByCreatedAt(conversationId)
+            .asSequence()
+            .filter { it.role == "ASSISTANT" }
+            .mapNotNull { CLARIFICATION_COUNT.find(it.content)?.groupValues?.get(1)?.toIntOrNull() }
+            .sum()
+        return (AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_QUESTIONS - asked).coerceAtLeast(0)
     }
 
     private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =
@@ -1340,10 +1357,11 @@ class BuilderService(
 
     companion object {
         private const val DESIGN_REJECTED_MESSAGE = "설계가 반려되었습니다. 수정할 내용을 자연어로 알려 주세요."
+        private val CLARIFICATION_COUNT = Regex("아래 (\\d+)가지")
         private const val UNSUPPORTED_GRAPH_PATCH_MESSAGE = "요청한 변경은 아직 지원하지 않습니다. 현재 가능한 수정은 출력 템플릿 조정, Slack 전송을 이메일로 변경, Slack 답변 전 담당자 승인 추가입니다. 기존 자동화는 변경되지 않았습니다."
         private val transitions = mapOf(
             WorkflowStatus.DRAFT to setOf(WorkflowStatus.NEEDS_CLARIFICATION, WorkflowStatus.PROPOSAL_READY),
-            WorkflowStatus.NEEDS_CLARIFICATION to setOf(WorkflowStatus.PROPOSAL_READY),
+            WorkflowStatus.NEEDS_CLARIFICATION to setOf(WorkflowStatus.DRAFT, WorkflowStatus.PROPOSAL_READY),
             WorkflowStatus.PROPOSAL_READY to setOf(WorkflowStatus.WAITING_DESIGN_APPROVAL),
             WorkflowStatus.WAITING_DESIGN_APPROVAL to setOf(WorkflowStatus.APPROVED, WorkflowStatus.DRAFT),
             WorkflowStatus.APPROVED to setOf(WorkflowStatus.COMPILING),

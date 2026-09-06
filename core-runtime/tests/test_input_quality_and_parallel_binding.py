@@ -1,8 +1,9 @@
 import json
 import unittest
 
-from agentown_tframex_adapter.adapter import _apply_input_bindings
-from agentown_tframex_adapter.capabilities import quality_check
+from agentown_tframex_adapter.adapter import DefinitionError, _apply_input_bindings, _assert_semantic_success, _output_correction_message, _set_parallel_field
+from agentown_tframex_adapter.capabilities import data_deduplicate, data_normalize, quality_check, template_plain_text
+from agentown_tframex_adapter.codex_llm import _json_schema
 
 
 RECORDS_CONTRACT = [
@@ -19,6 +20,27 @@ RECORDS_CONTRACT = [
         ],
     }
 ]
+
+
+def test_codex_output_schema_preserves_nested_runtime_contract():
+    schema = _json_schema(RECORDS_CONTRACT)
+
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["records"]
+    assert schema["properties"]["records"]["minItems"] == 3
+    item = schema["properties"]["records"]["items"]
+    assert item["type"] == "object"
+    assert item["additionalProperties"] is False
+    assert item["required"] == ["recordId", "score"]
+    assert "uniqueItems" not in _json_schema([
+        {"name": "items", "type": "array", "required": True, "itemType": "string", "uniqueItems": True},
+    ])["properties"]["items"]
+    uri_schema = _json_schema([
+        {"name": "source", "type": "string", "required": True, "format": "uri"},
+        {"name": "sources", "type": "array", "required": True, "itemType": "string", "itemFormat": "uri"},
+    ])
+    assert "format" not in uri_schema["properties"]["source"]
+    assert "format" not in uri_schema["properties"]["sources"]["items"]
 
 
 def test_input_quality_validates_and_preserves_declared_workflow_input():
@@ -134,6 +156,93 @@ def test_quality_contract_enforces_nested_operational_constraints():
     assert result["qualityPassed"] is False
 
 
+def test_plain_text_renderer_accepts_structured_bound_fields():
+    result = template_plain_text(analysis={"items": ["a"]}, review={"status": "ok"})
+
+    assert json.loads(result["renderedResponse"]) == {"analysis": {"items": ["a"]}, "review": {"status": "ok"}}
+
+
+def test_plain_text_renderer_serializes_structured_named_content():
+    result = template_plain_text(
+        content={"items": ["a"]},
+        agentownOutputContract=[{"name": "content", "type": "string", "required": True}],
+    )
+
+    assert json.loads(result["content"]) == {"items": ["a"]}
+
+
+def test_plain_text_renderer_preserves_structured_field_when_contract_requires_object():
+    content = {"items": ["a"]}
+    result = template_plain_text(
+        report=content,
+        agentownOutputContract=[
+            {"name": "report", "type": "object", "required": True,
+             "objectSchema": [{"name": "items", "type": "array", "required": True, "itemType": "string"}]},
+            {"name": "renderedResponse", "type": "string", "required": True},
+        ],
+    )
+
+    assert result["report"] == content
+    assert json.loads(result["renderedResponse"]) == content
+
+
+def test_plain_text_renderer_maps_generic_content_back_to_required_structured_alias():
+    content = {"items": ["a"]}
+    result = template_plain_text(
+        content=content,
+        agentownOutputContract=[
+            {"name": "report", "type": "object", "required": True,
+             "objectSchema": [{"name": "items", "type": "array", "required": True, "itemType": "string"}]},
+            {"name": "renderedResponse", "type": "string", "required": True},
+        ],
+    )
+
+    assert result["report"] == content
+    assert json.loads(result["renderedResponse"]) == content
+
+
+def test_empty_negative_evidence_list_is_a_valid_success_result():
+    _assert_semantic_success(
+        {"reviewResults": [{"evidenceErrors": []}]},
+        [{"name": "reviewResults", "type": "array", "required": True, "itemType": "object", "itemSchema": [
+            {"name": "evidenceErrors", "type": "array", "required": True, "itemType": "string"},
+        ]}],
+        "Agent output",
+    )
+
+
+def test_parallel_set_field_accepts_same_pass_through_value_and_rejects_conflicts():
+    joined = {}
+    _set_parallel_field(joined, "incidentRecord", "same input")
+    _set_parallel_field(joined, "incidentRecord", "same input")
+    assert joined == {"incidentRecord": "same input"}
+    try:
+        _set_parallel_field(joined, "incidentRecord", "different input")
+    except DefinitionError as exc:
+        assert "conflicting values" in str(exc)
+    else:
+        raise AssertionError("conflicting parallel values were silently overwritten")
+
+
+def test_output_retry_contains_original_input_invalid_output_and_exact_error():
+    message = _output_correction_message(
+        '{"record":"source"}', '{"result":{"unexpected":true}}', ValueError("unexpected field"),
+    )
+    value = json.loads(message.content)
+    assert value["originalInput"] == {"record": "source"}
+    assert value["previousInvalidOutput"] == '{"result":{"unexpected":true}}'
+    assert value["validationError"] == "unexpected field"
+
+
+def test_normalize_and_deduplicate_are_deterministic_and_preserve_input_fields():
+    assert data_normalize(records=[{"id": " a ", "note": " ok "}]) == {
+        "records": [{"id": "a", "note": "ok"}],
+    }
+    assert data_deduplicate(key="id", records=[{"id": "a"}, {"id": "a"}, {"id": "b"}]) == {
+        "records": [{"id": "a"}, {"id": "b"}],
+    }
+
+
 class InputQualityAndParallelBindingTest(unittest.TestCase):
     def test_input_quality_validates_and_preserves_declared_workflow_input(self):
         test_input_quality_validates_and_preserves_declared_workflow_input()
@@ -152,6 +261,21 @@ class InputQualityAndParallelBindingTest(unittest.TestCase):
 
     def test_quality_contract_enforces_nested_operational_constraints(self):
         test_quality_contract_enforces_nested_operational_constraints()
+
+    def test_plain_text_renderer_accepts_structured_bound_fields(self):
+        test_plain_text_renderer_accepts_structured_bound_fields()
+
+    def test_empty_negative_evidence_list_is_a_valid_success_result(self):
+        test_empty_negative_evidence_list_is_a_valid_success_result()
+
+    def test_parallel_set_field_accepts_same_pass_through_value_and_rejects_conflicts(self):
+        test_parallel_set_field_accepts_same_pass_through_value_and_rejects_conflicts()
+
+    def test_output_retry_contains_original_input_invalid_output_and_exact_error(self):
+        test_output_retry_contains_original_input_invalid_output_and_exact_error()
+
+    def test_normalize_and_deduplicate_are_deterministic_and_preserve_input_fields(self):
+        test_normalize_and_deduplicate_are_deterministic_and_preserve_input_fields()
 
 
 if __name__ == "__main__":

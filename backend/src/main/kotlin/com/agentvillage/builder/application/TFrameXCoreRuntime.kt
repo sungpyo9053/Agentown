@@ -36,7 +36,10 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         NodeType.WORKFLOW_END.wireName,
     )
     private val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
-    private val toolTypes = setOf(NodeType.DATA_CSV_COMPARE.wireName, NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName)
+    private val toolTypes = setOf(
+        NodeType.DATA_CSV_COMPARE.wireName, NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName,
+        NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName,
+    )
     private val patternTypes = setOf(NodeType.CONDITION_BRANCH.wireName)
 
     fun compile(
@@ -86,8 +89,38 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         }
         val incomingEdges = graph.edges.groupBy { it.target }
         val nodesById = graph.nodes.associateBy { it.id }
+        fun repeatedObjectFanInFields(node: WorkflowNode): Set<String> {
+            if (node.nodeType !in aiTypes) return emptySet()
+            val source = definitions[node.config["agentKey"]?.toString()] ?: return emptySet()
+            val repeatedTargets = incomingEdges[node.id].orEmpty()
+                .flatMap { edge -> edge.bindings.map { (target, sourceField) ->
+                    indexedArrayRoot(target).substringBefore('.') to sourceField.substringBefore('.')
+                } }
+                .groupBy({ it.first }, { it.second })
+                .filterValues { sources -> sources.groupingBy { it }.eachCount().values.any { it > 1 } }
+                .keys
+            return source.inputSchema.filter { field ->
+                field.type.equals("object", true) && field.name in repeatedTargets
+            }.map { it.name }.toSet()
+        }
+        fun runtimeAgentDefinition(node: WorkflowNode): AgentDefinition {
+            val source = definitions.getValue(node.config.getValue("agentKey").toString())
+            val repeated = repeatedObjectFanInFields(node)
+            if (repeated.isEmpty()) return source
+            return source.copy(inputSchema = source.inputSchema.map { field ->
+                if (field.name !in repeated) field else field.copy(
+                    type = "array",
+                    minItems = 1,
+                    itemType = "object",
+                    itemSchema = field.objectSchema,
+                    objectSchema = null,
+                )
+            })
+        }
         fun toolName(node: WorkflowNode): String = when (node.nodeType) {
             NodeType.DATA_CSV_COMPARE.wireName -> "data.csv.compare"
+            NodeType.DATA_NORMALIZE.wireName -> "data.normalize"
+            NodeType.DATA_DEDUPLICATE.wireName -> "data.deduplicate"
             NodeType.QUALITY_CHECK.wireName -> "quality.check"
             NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
                 "table.markdown.v1" -> "template.markdown.table"
@@ -110,7 +143,8 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     incomingEdges[current.id].orEmpty().forEach { pending.add(it.source) }
                 }
             }
-            return found.values.toList()
+            val nearestDepth = found.values.maxOfOrNull { depth[it.id] ?: 0 } ?: return emptyList()
+            return found.values.filter { (depth[it.id] ?: 0) == nearestDepth }
         }
         fun isTerminalExecutable(node: WorkflowNode): Boolean = descendants(node.id, outgoing)
             .none { descendant -> nodesById[descendant]?.nodeType in (aiTypes + toolTypes) }
@@ -137,7 +171,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             return fields.values.singleOrNull()
         }
         fun parallelResultFieldFor(node: WorkflowNode): String = if (node.nodeType in aiTypes) {
-            definitions[node.config["agentKey"]?.toString()]?.inputSchema
+            runtimeAgentDefinition(node).inputSchema
                 ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
         } else {
             nearestDownstreamAgentArrayContract(node.id)?.name ?: "results"
@@ -168,6 +202,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 node.nodeType == NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                     FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
                 )
+                node.nodeType in setOf(NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName) -> upstreamMessageSchema(node)
                 node.nodeType == NodeType.QUALITY_CHECK.wireName -> upstreamMessageSchema(node) +
                     FieldDefinition("qualityPassed", "boolean", true, "quality gate result")
                 toolName(node) == "template.markdown.table" -> listOf(
@@ -181,22 +216,43 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     FieldDefinition("renderedResponse", "string", true, "rendered plain text")
             }.distinctBy { it.name }
         }
-        val executableLayers = executable.groupBy { depth[it.id] ?: 0 }.values
-        val parallelScopeByNode = executableLayers.flatMap { layer ->
-            if (layer.size < 2) emptyList() else layer.sortedBy { it.id }.mapIndexed { index, node ->
+        val executableLayers = executable.groupBy { depth[it.id] ?: 0 }.toSortedMap().values.toList()
+        fun isStructuredParallelLayer(index: Int, layer: List<WorkflowNode>): Boolean {
+            if (layer.size < 2) return false
+            val join = executableLayers.getOrNull(index + 1)?.singleOrNull() ?: return false
+            return layer.all { node -> outgoing[node.id].orEmpty().any { it.target == join.id } }
+        }
+        val parallelScopeByNode = executableLayers.flatMapIndexed { layerIndex, layer ->
+            if (!isStructuredParallelLayer(layerIndex, layer)) emptyList() else layer.sortedBy { it.id }.mapIndexed { index, node ->
                 node.id to (index + 1 to layer.size)
             }
         }.toMap()
+        fun boundWorkflowInputDefaults(node: WorkflowNode): Map<String, Any?> = incomingEdges[node.id].orEmpty()
+            .filter { edge -> nodesById[edge.source]?.nodeType in passThroughTypes }
+            .flatMap { edge -> edge.bindings.entries }
+            .mapNotNull { (targetField, sourceField) ->
+                val sourceRoot = sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                val targetRoot = indexedArrayRoot(targetField).substringBefore('.')
+                input[sourceRoot]?.let { targetRoot to it }
+            }.toMap()
         val runtimeAgents = executable.map { node ->
             val inputBindings = incomingEdges[node.id].orEmpty().flatMap { edge ->
                 edge.bindings.map { (targetField, sourceField) ->
-                    mapOf("sourceField" to sourceField, "targetField" to indexedArrayRoot(targetField))
+                    val targetRoot = indexedArrayRoot(targetField)
+                    val runtimeSourceField = if (parallelScopeByNode[edge.source] != null) targetRoot else sourceField
+                    mapOf("sourceField" to runtimeSourceField, "targetField" to targetRoot)
                 }
             }.distinct()
             if (node.nodeType in aiTypes) {
-                val source = definitions.getValue(node.config.getValue("agentKey").toString())
+                val source = runtimeAgentDefinition(node)
+                val runtimeSource = if (parallelScopeByNode[node.id] == null) source else source.copy(
+                    outputSchema = source.outputSchema.map { field ->
+                        if (field.type.equals("array", true)) field.copy(minItems = 1, maxItems = 1) else field
+                    },
+                )
                 val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
+                inputDefaults.putAll(boundWorkflowInputDefaults(node))
                 parallelScopeByNode[node.id]?.let { (index, size) ->
                     inputDefaults["_agentownParallelIndex"] = index
                     inputDefaults["_agentownParallelSize"] = size
@@ -204,10 +260,11 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "description" to source.role,
                     "systemPrompt" to systemPrompt(
-                        source, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
+                        runtimeSource, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
                     ),
-                    "tools" to source.toolKeys, "inputSchema" to source.inputSchema, "outputSchema" to source.outputSchema,
+                    "tools" to source.toolKeys, "inputSchema" to source.inputSchema, "outputSchema" to runtimeSource.outputSchema,
                     "inputBindings" to inputBindings, "inputDefaults" to inputDefaults,
+                    "preserveInput" to !isTerminalExecutable(node),
                 )
             } else {
                 val toolName = toolName(node)
@@ -218,6 +275,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                         FieldDefinition("csvB", "string", true, "comparison target CSV"),
                         FieldDefinition("keyColumns", "array", false, "optional key columns"),
                     )
+                    NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName -> upstreamSchema
                     NodeType.QUALITY_CHECK.wireName -> upstreamSchema
                     NodeType.TEMPLATE_RENDER.wireName -> when (toolName) {
                         "template.markdown.table" -> (upstreamSchema + listOf(
@@ -235,6 +293,10 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 val outputSchema = outputSchemaFor(node)
                 val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
+                inputDefaults.putAll(boundWorkflowInputDefaults(node))
+                if (node.nodeType == NodeType.DATA_DEDUPLICATE.wireName) {
+                    node.config["key"]?.let { inputDefaults["key"] = it }
+                }
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName || toolName == "template.plain-text") {
                     inputDefaults["agentownOutputContract"] = outputSchema
                 }
@@ -266,9 +328,15 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         val steps = layers.mapIndexed { index, layer ->
             val names = layer.sortedBy { it.id }.map { effectiveByNode.getValue(it.id) }
             val nextNode = layers.getOrNull(index + 1)?.singleOrNull()
-            val nextAgent = nextNode?.takeIf { it.nodeType in aiTypes }?.config?.get("agentKey")?.toString()?.let(definitions::get)
+            val nextAgent = nextNode?.takeIf { it.nodeType in aiTypes }?.let(::runtimeAgentDefinition)
             val resultField = nextNode?.let(::parallelResultFieldFor) ?: "results"
-            if (names.size == 1) names.single() else {
+            if (names.size == 1) names.single() else if (!isStructuredParallelLayer(index, layer)) {
+                mapOf(
+                    "type" to "SequentialPattern",
+                    "name" to "sequential-layer-$index",
+                    "steps" to names,
+                )
+            } else {
                 val successFields = layer.flatMap { node -> outgoing[node.id].orEmpty() }
                     .mapNotNull { edge -> branchNodes.firstOrNull { it.id == edge.target } }
                     .flatMap { branch -> outgoing[branch.id].orEmpty() }
@@ -293,9 +361,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             } else {
                                 nextAgent.inputSchema.firstOrNull { it.name == effectiveTargetField }
                             }
-                            if (targetContract == null || !targetContract.type.equals("array", true)) {
-                                throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join target '$effectiveTargetField'은 array 입력이어야 합니다.")
-                            }
+                            if (targetContract == null) throw BadRequestException(
+                                "EXECUTION_NOT_CONFIGURED", "병렬 Join target '$effectiveTargetField'이 다음 Agent 입력 계약에 없습니다.",
+                            )
                             val sourceContract = outputSchemaFor(node).firstOrNull { it.name == sourceField }
                             val effectiveSourceField: String
                             val aggregationMode: String
@@ -311,10 +379,19 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                                     throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join source '$sourceField'이 Task 출력 계약에 없습니다.")
                                 }
                                 effectiveSourceField = sourceField
-                                aggregationMode = if (sourceContract.type.equals("array", true)) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM"
+                                aggregationMode = when {
+                                    targetContract.type.equals("array", true) && sourceContract.type.equals("array", true) -> "APPEND_ARRAY_ITEMS"
+                                    targetContract.type.equals("array", true) -> "APPEND_ITEM"
+                                    targetContract.type.equals("object", true) && layer.sumOf { candidate ->
+                                        outgoing[candidate.id].orEmpty().filter { it.target == nextNode?.id }
+                                            .sumOf { it.bindings.count { (target, _) -> indexedArrayRoot(target) == effectiveTargetField } }
+                                    } > 1 -> "MERGE_OBJECT"
+                                    else -> "SET_FIELD"
+                                }
                                 compatible = if (aggregationMode == "APPEND_ARRAY_ITEMS") {
                                     bindingFieldsCompatible(sourceContract, targetContract)
-                                } else scalarItemCompatible(sourceContract, targetContract)
+                                } else if (aggregationMode == "APPEND_ITEM") scalarItemCompatible(sourceContract, targetContract)
+                                else bindingFieldsCompatible(sourceContract, targetContract)
                             }
                             if (!compatible) throw BadRequestException(
                                 "EXECUTION_NOT_CONFIGURED",
@@ -346,7 +423,15 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 "successFields" to successFields,
             )
             }
-        }.toMutableList<Any>()
+        }.flatMap { step ->
+            val sequential = step as? Map<*, *>
+            if (sequential?.get("type") == "SequentialPattern" && sequential["name"]?.toString()?.startsWith("sequential-layer-") == true) {
+                @Suppress("UNCHECKED_CAST")
+                sequential["steps"] as List<Any>
+            } else {
+                listOf(step)
+            }
+        }.toMutableList()
         val terminalRouteAgents = linkedMapOf<String, Map<String, Any?>>()
         val routerAgents = branchNodes.map { branch ->
             val routes = outgoing[branch.id].orEmpty().associate { edge ->

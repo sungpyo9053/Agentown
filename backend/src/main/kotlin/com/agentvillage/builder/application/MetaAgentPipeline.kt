@@ -66,7 +66,7 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
     override fun generate(context: PipelineContext, stage: String, input: Map<String, Any?>): String {
         val instruction = input["userInstruction"]?.toString() ?: input["instruction"]?.toString().orEmpty()
         if (stage == "define_agent_development_problem") {
-            return mapper.writeValueAsString(mockProblemDefinition(instruction))
+            return mapper.writeValueAsString(mockProblemDefinition(instruction, (input["remainingQuestions"] as? Number)?.toInt() ?: 10))
         }
         val slack = instruction.contains("Slack", true) || instruction.contains("슬랙")
         val faq = instruction.contains("Notion", true) || instruction.contains("노션") || instruction.contains("FAQ", true)
@@ -74,14 +74,16 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
         return mapper.writeValueAsString(bundle)
     }
 
-    private fun mockProblemDefinition(instruction: String): AgentDevelopmentProblemDefinition {
-        val vague = instruction.contains("컵") && listOf("기획", "디자인", "제작", "판매", "용도").none(instruction::contains)
+    private fun mockProblemDefinition(instruction: String, remainingQuestions: Int): AgentDevelopmentProblemDefinition {
+        val unresolvedVague = instruction.contains("컵") && listOf("기획", "디자인", "제작", "판매", "용도").none(instruction::contains)
+        val vague = unresolvedVague && remainingQuestions > 0
         val promptOnly = listOf("문장 다듬", "맞춤법", "요약해줘", "번역해줘").any(instruction::contains)
         return AgentDevelopmentProblemDefinition(
             readyForDesign = !vague,
             recommendedApproach = when {
                 vague -> AgentDevelopmentApproach.CLARIFY
                 promptOnly -> AgentDevelopmentApproach.PROMPT_ONLY
+                unresolvedVague -> AgentDevelopmentApproach.PROMPT_ONLY
                 else -> AgentDevelopmentApproach.AGENT_TEAM
             },
             problemStatement = instruction,
@@ -93,9 +95,14 @@ class DeterministicMockMetaAgentModel(private val mapper: ObjectMapper) : MetaAg
             rationale = when {
                 vague -> "해결하려는 문제와 결과가 아직 정해지지 않았습니다."
                 promptOnly -> "한 번의 언어 처리 요청으로 해결할 수 있습니다."
+                unresolvedVague -> "질문 한도 안에 범위가 확정되지 않아 안전한 단일 프롬프트를 제안합니다."
                 else -> "여러 단계의 대화형 처리가 필요합니다."
             },
-            suggestedPrompt = if (promptOnly) "아래 문장을 의미는 유지하면서 자연스럽고 간결한 한국어로 다듬어 주세요. 결과 문장만 출력하세요.\n\n[문장]" else "",
+            suggestedPrompt = when {
+                promptOnly -> "아래 문장을 의미는 유지하면서 자연스럽고 간결한 한국어로 다듬어 주세요. 결과 문장만 출력하세요.\n\n[문장]"
+                unresolvedVague -> "내가 만들고 싶은 컵의 사용자, 용도, 사용 환경, 재질, 크기, 예산을 질문한 뒤 제품 요구사항 초안을 작성해 주세요."
+                else -> ""
+            },
             clarificationQuestions = if (vague) listOf(
                 ClarificationQuestion("problem-outcome", "problemOutcome", "컵과 관련해 어떤 문제를 해결하고 싶으신가요? 예: 제품 기획, 디자인, 제작 방법 검토, 판매 준비 중 원하는 결과를 알려주세요."),
             ) else emptyList(),
@@ -247,14 +254,24 @@ class StructuredMetaAgentPipeline(
     private val designAssembler = AgentDesignAssembler()
     fun preflight(context: PipelineContext) = model.preflight(context)
 
-    fun defineAgentDevelopmentProblem(context: PipelineContext, instruction: String): AgentDevelopmentProblemDefinition {
-        val input = mapOf("instruction" to instruction, "designMode" to DesignMode.AGENT_DEVELOPMENT.name)
+    fun defineAgentDevelopmentProblem(context: PipelineContext, instruction: String, remainingQuestions: Int): AgentDevelopmentProblemDefinition {
+        val input = mapOf(
+            "instruction" to instruction,
+            "designMode" to DesignMode.AGENT_DEVELOPMENT.name,
+            "remainingQuestions" to remainingQuestions,
+        )
         val stage = "define_agent_development_problem"
         audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
         progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
         return try {
-            val result = mapper.readValue(model.generate(context, stage, input), AgentDevelopmentProblemDefinition::class.java)
-            AgentDevelopmentProblemPolicy.requireValid(result)
+            val result = structuredGenerationRetry {
+                AgentDevelopmentProblemPolicy.canonicalize(
+                    mapper.readValue(model.generate(context, stage, input), AgentDevelopmentProblemDefinition::class.java),
+                    remainingQuestions,
+                ).also {
+                    AgentDevelopmentProblemPolicy.requireValid(it, remainingQuestions)
+                }
+            }
             audit.record(context, stage, "SUCCEEDED", summary(input), mapOf(
                 "readyForDesign" to result.readyForDesign,
                 "questionCount" to result.clarificationQuestions.size,
@@ -303,13 +320,16 @@ class StructuredMetaAgentPipeline(
         }
         progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
         return try {
-            val raw = model.generate(context, "builder_design_bundle", input)
-            progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
-            val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
             val semanticInstruction = userInstruction ?: instruction
-            val bundle = normalize(transport.toDomain(mapper), semanticInstruction, mode)
-            BuilderMvpSupportPolicy.requireSupported(semanticInstruction, bundle)
-            validate(bundle)
+            val bundle = structuredGenerationRetry {
+                val raw = model.generate(context, "builder_design_bundle", input)
+                progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
+                val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
+                normalize(transport.toDomain(mapper), semanticInstruction, mode).also {
+                    BuilderMvpSupportPolicy.requireSupported(semanticInstruction, it)
+                    validate(it)
+                }
+            }
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000
             val counts = listOf(1, bundle.clarificationQuestions.size, 1, bundle.agentDefinitions.size, bundle.guideDefinitions.size)
             designStages.zip(counts).forEach { (stage, count) ->
@@ -327,6 +347,26 @@ class StructuredMetaAgentPipeline(
                 else -> throw BadRequestException("INVALID_STRUCTURED_OUTPUT", "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.")
             }
         }
+    }
+
+    private fun <T> structuredGenerationRetry(block: () -> T): T {
+        var last: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                return block()
+            } catch (exception: Exception) {
+                val retryable = when (exception) {
+                    is ApiException -> false
+                    is MetaAgentExecutionException -> exception.errorCode in setOf(
+                        "BUILDER_CODEX_TIMEOUT", "BUILDER_CODEX_EMPTY_OUTPUT", "BUILDER_CODEX_EXEC_FAILED", "BUILDER_CODEX_START_FAILED",
+                    )
+                    else -> true
+                }
+                if (attempt == 1 || !retryable) throw exception
+                last = exception
+            }
+        }
+        throw requireNotNull(last)
     }
 
     fun record(context: PipelineContext, stage: String, inputCount: Int, outputCount: Int) {
@@ -355,6 +395,15 @@ class StructuredMetaAgentPipeline(
                 agent.copy(inputSchema = canonicalFields(agent.inputSchema), outputSchema = canonicalFields(agent.outputSchema))
             },
         )
+        val contractSafe = if (mode == DesignMode.AGENT_DEVELOPMENT) canonical.copy(
+            proposal = canonical.proposal.copy(
+                inputSchema = closeOpenFields(canonical.proposal.inputSchema),
+                outputSchema = closeOpenFields(canonical.proposal.outputSchema),
+            ),
+            agentDefinitions = canonical.agentDefinitions.map { agent ->
+                agent.copy(inputSchema = closeOpenFields(agent.inputSchema), outputSchema = closeOpenFields(agent.outputSchema))
+            },
+        ) else canonical
         val instructionLower = instruction.lowercase()
         val deterministicCsv = instructionLower.contains("csv") &&
             listOf("비교", "diff", "달라진", "차이", "변경", "added", "removed", "modified").any(instructionLower::contains)
@@ -395,23 +444,24 @@ class StructuredMetaAgentPipeline(
         }
         val runtimeApprovalExplicit = Regex("(승인|담당자.{0,12}(검토|확인)|관리자.{0,12}(검토|확인)|사람.{0,12}(검토|확인)|사용자.{0,12}(검토|확인))")
             .containsMatchIn(instruction)
-        val generatedGraph = canonical.proposal.graphPlan
+        val generatedGraph = contractSafe.proposal.graphPlan
             ?.let(::normalizeGeneratedInputDefaults)
-            ?.let { removeUndeclaredAgentInputDefaults(it, canonical.agentDefinitions) }
-            ?.let { normalizeEntryBindings(it, canonical.proposal.inputSchema) }
+            ?.let(::normalizeUnresolvedToolConfig)
+            ?.let { removeUndeclaredAgentInputDefaults(it, contractSafe.agentDefinitions) }
+            ?.let { normalizeEntryBindings(it, contractSafe.proposal.inputSchema) }
         val graphWithoutInventedApproval = if (mode == DesignMode.AGENT_DEVELOPMENT && !runtimeApprovalExplicit) {
             generatedGraph?.let(::removeRuntimeApprovalNodes)
         } else generatedGraph
-        val removedInventedApproval = canonical.proposal.graphPlan?.nodes.orEmpty().any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName } &&
+        val removedInventedApproval = contractSafe.proposal.graphPlan?.nodes.orEmpty().any { it.nodeType == NodeType.HUMAN_APPROVAL.wireName } &&
             graphWithoutInventedApproval?.nodes.orEmpty().none { it.nodeType == NodeType.HUMAN_APPROVAL.wireName }
-        val normalized = canonical.copy(
-            requirement = if (removedInventedApproval) canonical.requirement.copy(humanApprovalRequired = false) else canonical.requirement,
+        val normalized = contractSafe.copy(
+            requirement = if (removedInventedApproval) contractSafe.requirement.copy(humanApprovalRequired = false) else contractSafe.requirement,
             clarificationQuestions = questions,
-            proposal = canonical.proposal.copy(
-                approvalPoints = if (removedInventedApproval) emptyList() else canonical.proposal.approvalPoints,
+            proposal = contractSafe.proposal.copy(
+                approvalPoints = if (removedInventedApproval) emptyList() else contractSafe.proposal.approvalPoints,
                 graphPlan = graphWithoutInventedApproval?.let(WorkflowGraphPlanNormalizer::normalize),
             ),
-            agentDefinitions = if (questions.isEmpty()) canonical.agentDefinitions else emptyList(),
+            agentDefinitions = if (questions.isEmpty()) contractSafe.agentDefinitions else emptyList(),
         )
         if (questions.isNotEmpty()) return normalized
         val standardized = when {
@@ -426,7 +476,9 @@ class StructuredMetaAgentPipeline(
             writingAutomation -> standardizeWritingTeam(normalized, instruction)
             else -> normalized
         }
-        val cumulative = if (mode == DesignMode.AGENT_DEVELOPMENT) standardized
+        val executionSafe = if (mode == DesignMode.AGENT_DEVELOPMENT) replaceDirectInputUnresolvedTools(standardized) else standardized
+        val bindingNormalized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalizeBoundAgentSchemas(executionSafe) else executionSafe
+        val cumulative = if (mode == DesignMode.AGENT_DEVELOPMENT) bindingNormalized
         else preserveCumulativeClassificationRevision(standardized, instruction)
         val contractNormalized = cumulative.copy(proposal = cumulative.proposal.copy(graphPlan = cumulative.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
         return withExecutionMetadata(contractNormalized, instruction, mode)
@@ -444,6 +496,69 @@ class StructuredMetaAgentPipeline(
             node.copy(config = node.config + ("inputDefaults" to normalized))
         },
     )
+
+    internal fun normalizeUnresolvedToolConfig(plan: WorkflowGraphPlan): WorkflowGraphPlan = plan.copy(
+        nodes = plan.nodes.map { node ->
+            if (node.nodeType != NodeType.UNRESOLVED_TOOL.wireName) return@map node
+            val toolName = node.config["toolName"]?.toString()?.takeIf(String::isNotBlank) ?: node.label
+            val reason = node.config["reason"]?.toString()?.takeIf(String::isNotBlank)
+                ?: "현재 서버에 실행 가능한 Connector가 설정되지 않았습니다."
+            node.copy(config = node.config + mapOf(
+                "toolName" to toolName,
+                "connectionStatus" to "UNRESOLVED",
+                "reason" to reason,
+            ))
+        },
+    )
+
+    /** Turns a falsely invented Connector into a local Agent only when every input is explicitly user-provided. */
+    internal fun replaceDirectInputUnresolvedTools(bundle: MetaAgentDesignBundle): MetaAgentDesignBundle {
+        val plan = bundle.proposal.graphPlan ?: return bundle
+        val agentsByKey = bundle.agentDefinitions.associateBy { it.key }
+        val nodesById = plan.nodes.associateBy { it.id }
+        val proposalInputs = bundle.proposal.inputSchema.associateBy { it.name }
+        val additions = mutableListOf<AgentDefinition>()
+        val replacements = plan.nodes.associate { node ->
+            if (node.nodeType != NodeType.UNRESOLVED_TOOL.wireName ||
+                node.config.values.joinToString(" ").contains(Regex("사용자.{0,8}(입력|제공)|user.{0,8}(input|provided)", RegexOption.IGNORE_CASE)).not()
+            ) return@associate node.id to node
+            val incoming = plan.edges.filter { it.target == node.id }.flatMap { it.bindings }
+            val inputs = incoming.mapNotNull { binding ->
+                val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                val targetName = binding.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                proposalInputs[sourceName]?.copy(name = targetName)
+            }.distinctBy { it.name }
+            if (inputs.size != incoming.size) return@associate node.id to node
+            val outputs = plan.edges.filter { it.source == node.id }.flatMap { edge ->
+                val targetAgent = nodesById[edge.target]?.config?.get("agentKey")?.toString()?.let(agentsByKey::get)
+                edge.bindings.mapNotNull { binding ->
+                    val sourceName = binding.sourceField.substringBefore('.').substringBefore('[')
+                    val targetName = binding.targetField.substringBefore('.').substringBefore('[')
+                    targetAgent?.inputSchema?.firstOrNull { it.name == targetName }?.copy(name = sourceName)
+                }
+            }.distinctBy { it.name }
+            if (inputs.isEmpty() || outputs.isEmpty() || bundle.agentDefinitions.size + additions.size >= 5) {
+                return@associate node.id to node
+            }
+            val key = "provided-input-${node.id}"
+            additions += AgentDefinition(
+                key, node.label, "사용자가 직접 제공한 입력만 사용해 ${node.label} 작업을 수행한다.",
+                inputs, outputs,
+                listOf("사용자가 제공한 입력 범위 안에서만 처리한다."),
+                listOf("외부 Connector를 호출하거나 입력에 없는 사실을 만들지 않는다."),
+                listOf("결과 항목마다 사용자가 제공한 근거를 유지한다."),
+            )
+            node.id to node.copy(
+                nodeType = NodeType.AI_GENERATE.wireName,
+                config = mapOf("agentKey" to key, "instruction" to "사용자가 제공한 입력만 분석해 선언된 출력 계약으로 반환한다."),
+            )
+        }
+        if (additions.isEmpty()) return bundle
+        return bundle.copy(
+            proposal = bundle.proposal.copy(graphPlan = plan.copy(nodes = plan.nodes.map { replacements.getValue(it.id) })),
+            agentDefinitions = bundle.agentDefinitions + additions,
+        )
+    }
 
     internal fun removeUndeclaredAgentInputDefaults(
         plan: WorkflowGraphPlan,
@@ -479,6 +594,51 @@ class StructuredMetaAgentPipeline(
         })
     }
 
+    /** Keeps a field contract identical while it crosses Agent-to-Agent edges or is passed through. */
+    internal fun normalizeBoundAgentSchemas(bundle: MetaAgentDesignBundle): MetaAgentDesignBundle {
+        val plan = bundle.proposal.graphPlan ?: return bundle
+        val agentKeyByNode = plan.nodes.mapNotNull { node ->
+            node.config["agentKey"]?.toString()?.let { node.id to it }
+        }.toMap()
+        var agents = bundle.agentDefinitions.associateBy { it.key }
+        repeat(bundle.agentDefinitions.size.coerceAtLeast(1)) {
+            plan.edges.forEach { edge ->
+                val sourceKey = agentKeyByNode[edge.source] ?: return@forEach
+                val targetKey = agentKeyByNode[edge.target] ?: return@forEach
+                val sourceAgent = agents[sourceKey] ?: return@forEach
+                val targetAgent = agents[targetKey] ?: return@forEach
+                var inputs = targetAgent.inputSchema
+                var outputs = targetAgent.outputSchema
+                edge.bindings.forEach { binding ->
+                    val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                    val targetName = binding.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                    val sourceField = sourceAgent.outputSchema.firstOrNull { it.name == sourceName } ?: return@forEach
+                    val replacement = sourceField.copy(name = targetName)
+                    inputs = inputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
+                    outputs = outputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
+                }
+                agents = agents + (targetKey to targetAgent.copy(inputSchema = inputs, outputSchema = outputs))
+            }
+        }
+        return bundle.copy(agentDefinitions = bundle.agentDefinitions.map { agents.getValue(it.key) })
+    }
+
+    /** Preserve every allowed enum value when multiple producers share one bound contract. */
+    private fun mergeBoundEnums(existing: FieldDefinition, replacement: FieldDefinition): FieldDefinition {
+        fun mergedValues(first: List<String>?, second: List<String>?): List<String>? =
+            (first.orEmpty() + second.orEmpty()).distinct().takeIf { it.isNotEmpty() }
+        fun mergedChildren(first: List<FieldDefinition>?, second: List<FieldDefinition>?): List<FieldDefinition>? {
+            if (second == null) return null
+            val existingByName = first.orEmpty().associateBy { it.name }
+            return second.map { child -> existingByName[child.name]?.let { mergeBoundEnums(it, child) } ?: child }
+        }
+        return replacement.copy(
+            enumValues = mergedValues(existing.enumValues, replacement.enumValues),
+            objectSchema = mergedChildren(existing.objectSchema, replacement.objectSchema),
+            itemSchema = mergedChildren(existing.itemSchema, replacement.itemSchema),
+        )
+    }
+
     internal fun canonicalFields(fields: List<FieldDefinition>): List<FieldDefinition> = fields.map { field ->
         when {
             field.type.equals("array", true) -> field.copy(
@@ -495,6 +655,19 @@ class StructuredMetaAgentPipeline(
                 minItems = null, maxItems = null, itemType = null, itemSchema = null, itemFormat = null,
                 itemMinLength = null, objectSchema = null, uniqueItems = null, uniqueBy = null,
             )
+        }
+    }
+
+    /** Closes unsafe free-form object contracts without inventing a domain-specific schema. */
+    internal fun closeOpenFields(fields: List<FieldDefinition>): List<FieldDefinition> = fields.map { field ->
+        when {
+            field.type.equals("object", true) && field.objectSchema.isNullOrEmpty() ->
+                FieldDefinition(field.name, "string", field.required, field.description, minLength = field.minLength)
+            field.type.equals("object", true) -> field.copy(objectSchema = closeOpenFields(field.objectSchema.orEmpty()))
+            field.type.equals("array", true) && field.itemType.equals("object", true) && field.itemSchema.isNullOrEmpty() ->
+                field.copy(itemType = "string", itemSchema = null, uniqueBy = null)
+            field.type.equals("array", true) && field.itemSchema != null -> field.copy(itemSchema = closeOpenFields(field.itemSchema))
+            else -> field
         }
     }
 

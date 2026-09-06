@@ -17,6 +17,159 @@ class TFrameXDefinitionCompilerTest {
     private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
+    fun `same depth specialists without one immediate join stay as flat sequential steps`() {
+        fun agent(key: String, inputs: List<FieldDefinition>, outputs: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, inputs, outputs, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val input = FieldDefinition("brief", "string", true, "brief")
+        val research = agent("research", listOf(input), listOf(FieldDefinition("researchResult", "string", true, "research")))
+        val review = agent("review", listOf(input), listOf(FieldDefinition("reviewResult", "string", true, "review")))
+        val requirements = agent("requirements", listOf(input, research.outputSchema.single()), listOf(FieldDefinition("requirementsResult", "string", true, "requirements")))
+        val final = agent("final", listOf(requirements.outputSchema.single(), review.outputSchema.single()), listOf(FieldDefinition("result", "string", true, "result")))
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "input",
+            nodes = listOf(
+                WorkflowNode("input", "text.input", "Input", NodePosition(0.0, 0.0)),
+                WorkflowNode("research-node", "ai.generate", "Research", NodePosition(0.0, 0.0), mapOf("agentKey" to "research")),
+                WorkflowNode("review-node", "ai.generate", "Review", NodePosition(0.0, 0.0), mapOf("agentKey" to "review")),
+                WorkflowNode("requirements-node", "ai.generate", "Requirements", NodePosition(0.0, 0.0), mapOf("agentKey" to "requirements")),
+                WorkflowNode("final-node", "ai.generate", "Final", NodePosition(0.0, 0.0), mapOf("agentKey" to "final")),
+            ),
+            edges = listOf(
+                WorkflowEdge("in-research", "input", "research-node", bindings = mapOf("brief" to "brief")),
+                WorkflowEdge("in-review", "input", "review-node", bindings = mapOf("brief" to "brief")),
+                WorkflowEdge("research-requirements", "research-node", "requirements-node", bindings = mapOf("researchResult" to "researchResult")),
+                WorkflowEdge("requirements-final", "requirements-node", "final-node", bindings = mapOf("requirementsResult" to "requirementsResult")),
+                WorkflowEdge("review-final", "review-node", "final-node", bindings = mapOf("reviewResult" to "reviewResult")),
+            ),
+        )
+
+        val definition = compiler.compile("hybrid", graph, listOf(research, review, requirements, final), mapOf("brief" to "input"))
+        val steps = (definition["pattern"] as Map<*, *>)["steps"] as List<*>
+
+        assertThat(steps.take(2)).isEqualTo(listOf("research__research-node", "review__review-node"))
+    }
+
+    @Test
+    fun `parallel agents can bind distinct scalar objects into one collector`() {
+        val nested = listOf(FieldDefinition("value", "string", true, "value"))
+        fun agent(key: String, input: List<FieldDefinition>, output: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, input, output, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val first = agent("first", emptyList(), listOf(FieldDefinition("analysis", "object", true, "analysis", objectSchema = nested)))
+        val second = agent("second", emptyList(), listOf(FieldDefinition("review", "object", true, "review", objectSchema = nested)))
+        val collector = agent("collector", listOf(
+            FieldDefinition("analysis", "object", true, "analysis", objectSchema = nested),
+            FieldDefinition("review", "object", true, "review", objectSchema = nested),
+        ), listOf(FieldDefinition("result", "string", true, "result")))
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(
+                WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)),
+                WorkflowNode("first-node", "ai.generate", "First", NodePosition(0.0, 0.0), mapOf("agentKey" to "first")),
+                WorkflowNode("second-node", "ai.generate", "Second", NodePosition(0.0, 0.0), mapOf("agentKey" to "second")),
+                WorkflowNode("collect", "ai.generate", "Collect", NodePosition(0.0, 0.0), mapOf("agentKey" to "collector")),
+            ),
+            edges = listOf(
+                WorkflowEdge("start-first", "start", "first-node"), WorkflowEdge("start-second", "start", "second-node"),
+                WorkflowEdge("first-collect", "first-node", "collect", bindings = mapOf("analysis" to "analysis")),
+                WorkflowEdge("second-collect", "second-node", "collect", bindings = mapOf("review" to "review")),
+            ),
+        )
+
+        val definition = compiler.compile("scalar-fan-in", graph, listOf(first, second, collector), emptyMap())
+        val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        val bindings = (parallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> }
+
+        assertThat(bindings).allMatch { it["aggregationMode"] == "SET_FIELD" }
+        assertThat(bindings.map { it["targetField"] }).containsExactlyInAnyOrder("analysis", "review")
+        val collectorBindings = (definition["agents"] as List<Map<String, Any?>>)
+            .single { it["name"] == "collector__collect" }["inputBindings"] as List<Map<String, String>>
+        assertThat(collectorBindings).containsExactlyInAnyOrder(
+            mapOf("sourceField" to "analysis", "targetField" to "analysis"),
+            mapOf("sourceField" to "review", "targetField" to "review"),
+        )
+
+        val mergedGraph = graph.copy(edges = graph.edges.map { edge ->
+            if (edge.id == "second-collect") edge.copy(bindings = mapOf("analysis" to "review")) else edge
+        })
+        val mergedDefinition = compiler.compile("object-merge", mergedGraph, listOf(first, second, collector), emptyMap())
+        val mergedParallel = ((mergedDefinition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        val mergedBindings = (mergedParallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> }
+        assertThat(mergedBindings).allMatch { it["aggregationMode"] == "MERGE_OBJECT" }
+    }
+
+    @Test
+    fun `repeated object fan in becomes an array without overwriting task results`() {
+        val item = listOf(FieldDefinition("notes", "string", true, "notes"))
+        fun agent(key: String, inputs: List<FieldDefinition>, outputs: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, inputs, outputs, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val verifier = agent("verifier", emptyList(), listOf(FieldDefinition("verification", "object", true, "verification", objectSchema = item)))
+        val collector = agent("collector", listOf(FieldDefinition("candidate", "object", true, "candidate", objectSchema = item)), listOf(FieldDefinition("result", "string", true, "result")))
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "start",
+            nodes = listOf(
+                WorkflowNode("start", "manual.trigger", "Start", NodePosition(0.0, 0.0)),
+                WorkflowNode("verify-1", "ai.generate", "Verify 1", NodePosition(0.0, 0.0), mapOf("agentKey" to "verifier")),
+                WorkflowNode("verify-2", "ai.generate", "Verify 2", NodePosition(0.0, 0.0), mapOf("agentKey" to "verifier")),
+                WorkflowNode("collect", "ai.generate", "Collect", NodePosition(0.0, 0.0), mapOf("agentKey" to "collector")),
+            ),
+            edges = listOf(
+                WorkflowEdge("start-1", "start", "verify-1"),
+                WorkflowEdge("start-2", "start", "verify-2"),
+                WorkflowEdge("verify-1-collect", "verify-1", "collect", bindings = mapOf("candidate" to "verification")),
+                WorkflowEdge("verify-2-collect", "verify-2", "collect", bindings = mapOf("candidate" to "verification")),
+            ),
+        )
+
+        val definition = compiler.compile("repeated-object", graph, listOf(verifier, collector), emptyMap())
+        val agents = definition["agents"] as List<Map<String, Any?>>
+        val collectorInput = agents.single { it["name"] == "collector__collect" }["inputSchema"] as List<FieldDefinition>
+        val parallel = ((definition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        val bindings = (parallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> }
+
+        assertThat(collectorInput.single { it.name == "candidate" }.type).isEqualTo("array")
+        assertThat(bindings).allMatch { it["aggregationMode"] == "APPEND_ITEM" }
+    }
+
+    @Test
+    fun `direct workflow input remains available to a later sequential agent`() {
+        fun agent(key: String, inputs: List<FieldDefinition>, outputs: List<FieldDefinition>) = AgentDefinition(
+            key, key, key, inputs, outputs, listOf("work"), listOf("do not invent"), listOf("evidence"),
+        )
+        val source = agent(
+            "source", listOf(FieldDefinition("meetingContent", "string", true, "meeting")),
+            listOf(FieldDefinition("analysisResult", "string", true, "analysis")),
+        )
+        val reviewer = agent(
+            "reviewer", listOf(FieldDefinition("meetingContent", "string", true, "meeting"), FieldDefinition("analysisResult", "string", true, "analysis")),
+            listOf(FieldDefinition("reviewResult", "string", true, "review")),
+        )
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "input",
+            nodes = listOf(
+                WorkflowNode("input", "text.input", "Input", NodePosition(0.0, 0.0)),
+                WorkflowNode("source-node", "ai.generate", "Source", NodePosition(0.0, 0.0), mapOf("agentKey" to "source")),
+                WorkflowNode("review-node", "ai.generate", "Review", NodePosition(0.0, 0.0), mapOf("agentKey" to "reviewer")),
+            ),
+            edges = listOf(
+                WorkflowEdge("input-source", "input", "source-node", bindings = mapOf("meetingContent" to "meetingContent")),
+                WorkflowEdge("input-review", "input", "review-node", bindings = mapOf("meetingContent" to "meetingContent")),
+                WorkflowEdge("source-review", "source-node", "review-node", bindings = mapOf("analysisResult" to "analysisResult")),
+            ),
+        )
+
+        val definition = compiler.compile("meeting", graph, listOf(source, reviewer), mapOf("meetingContent" to "원문"))
+        val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+
+        assertThat(runtimeAgents.single { it["name"] == "reviewer__review-node" }["inputDefaults"])
+            .isEqualTo(mapOf("meetingContent" to "원문"))
+        assertThat(runtimeAgents.single { it["name"] == "source__source-node" }["preserveInput"]).isEqualTo(true)
+        assertThat(runtimeAgents.single { it["name"] == "reviewer__review-node" }["preserveInput"]).isEqualTo(false)
+    }
+
+    @Test
     fun `fan out and fan in graph becomes real structured TFrameX parallel pattern`() {
         val workers = (1..3).map { index ->
             AgentDefinition(
@@ -70,6 +223,9 @@ class TFrameXDefinitionCompilerTest {
         assertThat(parallel["tasks"] as List<*>).hasSize(3)
         assertThat(steps.last()).isEqualTo("collector__collect")
         val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+        val workerOutput = runtimeAgents.first { it["name"] == "worker-1__task-1" }["outputSchema"] as List<FieldDefinition>
+        assertThat(workerOutput.single { it.name == "values" })
+            .extracting("minItems", "maxItems").containsExactly(1, 1)
         assertThat(runtimeAgents.first { it["name"] == "collector__collect" }["systemPrompt"].toString())
             .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다")
         assertThat(definition["workflowInputSchema"]).isEqualTo(workflowInputs)
@@ -85,6 +241,32 @@ class TFrameXDefinitionCompilerTest {
         assertThatThrownBy { compiler.compile("unconfigured", graph, emptyList(), emptyMap()) }
             .isInstanceOf(BadRequestException::class.java)
             .extracting("code").isEqualTo("EXECUTION_NOT_CONFIGURED")
+    }
+
+    @Test
+    fun `normalize and deduplicate compile as deterministic runtime tools`() {
+        val records = FieldDefinition("records", "array", true, "records", itemType = "string")
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "input",
+            nodes = listOf(
+                WorkflowNode("input", "text.input", "Input", NodePosition(0.0, 0.0)),
+                WorkflowNode("normalize", "data.normalize", "Normalize", NodePosition(0.0, 0.0)),
+                WorkflowNode("dedupe", "data.deduplicate", "Dedupe", NodePosition(0.0, 0.0), mapOf("key" to "id")),
+            ),
+            edges = listOf(
+                WorkflowEdge("first", "input", "normalize", bindings = mapOf("records" to "records")),
+                WorkflowEdge("second", "normalize", "dedupe", bindings = mapOf("records" to "records")),
+            ),
+        )
+
+        val definition = compiler.compile(
+            "deterministic", graph, emptyList(), mapOf("records" to listOf("a", "a")), workflowInputSchema = listOf(records),
+        )
+        val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
+
+        assertThat(runtimeAgents.map { it["toolName"] }).contains("data.normalize", "data.deduplicate")
+        assertThat(runtimeAgents.single { it["toolName"] == "data.deduplicate" }["inputDefaults"])
+            .isEqualTo(mapOf("key" to "id"))
     }
 
     @Test

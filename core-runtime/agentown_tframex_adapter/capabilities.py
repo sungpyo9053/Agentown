@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -35,6 +36,36 @@ def data_csv_compare(csvA: Any, csvB: Any, keyColumns: list[str] | None = None, 
         elif left[item_key] != right[item_key]:
             changes.append({"changeType": "MODIFIED", "key": list(item_key), "before": left[item_key], "after": right[item_key]})
     return {"changedRows": changes}
+
+
+def data_normalize(**context: Any):
+    def normalize(value: Any):
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): normalize(item) for key, item in value.items()}
+        return value
+    return {key: normalize(value) for key, value in context.items()}
+
+
+def data_deduplicate(key: str | None = None, **context: Any):
+    result = dict(context)
+    for name, value in context.items():
+        if not isinstance(value, list):
+            continue
+        seen = set()
+        unique = []
+        for item in value:
+            identity = item.get(key) if key and isinstance(item, dict) else item
+            marker = json.dumps(identity, ensure_ascii=False, sort_keys=True)
+            if marker not in seen:
+                seen.add(marker)
+                unique.append(item)
+        result[name] = unique
+        break
+    return result
 
 
 def template_markdown_table(changedRows: list[dict[str, Any]], **context: Any):
@@ -176,25 +207,31 @@ def template_plain_text(
     agentownOutputContract: list[dict[str, Any]] | None = None,
     **context: Any,
 ):
+    selected = "content" if content is not None else "report" if report is not None else "response" if response is not None else None
     rendered = content if content is not None else report if report is not None else response
+    if rendered is None and context:
+        rendered = context
     if rendered is None:
         raise ValueError("Plain-text renderer input is missing")
+    original = rendered
+    if not isinstance(rendered, str):
+        rendered = json.dumps(rendered, ensure_ascii=False, sort_keys=True)
     values = {**context, "rendered": rendered, "renderedResponse": rendered}
-    if content is not None:
-        values["content"] = content
-    if report is not None:
-        values["report"] = report
-    if response is not None:
-        values["response"] = response
+    if selected is not None:
+        selected_contract = next(
+            (field for field in (agentownOutputContract or []) if field.get("name") == selected), None,
+        )
+        values[selected] = rendered if selected_contract and selected_contract.get("type") == "string" else original
+    for field in agentownOutputContract or []:
+        name = field.get("name")
+        if field.get("required") and name not in values and _matches_contract(original, field):
+            values[str(name)] = original
+            break
     if agentownOutputContract:
         return _contract_result(values, agentownOutputContract)
     result = {"renderedResponse": rendered}
-    if content is not None:
-        result["content"] = content
-    elif report is not None:
-        result["report"] = report
-    else:
-        result["response"] = response
+    if selected is not None:
+        result[selected] = rendered
     return result
 
 
@@ -204,6 +241,8 @@ def workflow_end(**context: Any):
 
 BUILTIN_TOOLS = {
     "data.csv.compare": data_csv_compare,
+    "data.normalize": data_normalize,
+    "data.deduplicate": data_deduplicate,
     "template.markdown.table": template_markdown_table,
     "quality.check": quality_check,
     "template.plain-text": template_plain_text,

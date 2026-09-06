@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
+import tempfile
 from typing import Any, AsyncGenerator, List, Union
 
 from tframex.models.primitives import Message, MessageChunk
@@ -34,7 +36,9 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
         prompt = "\n\n".join(
             f"<{message.role}>\n{message.content or ''}\n</{message.role}>" for message in messages
         )
-        process = await asyncio.create_subprocess_exec(
+        output_schema = kwargs.pop("output_schema", None)
+        schema_path = None
+        command_args = [
             executable,
             "exec",
             "-",
@@ -59,6 +63,17 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
             self.model_id,
             "--color",
             "never",
+        ]
+        if output_schema:
+            schema_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8", delete=False)
+            try:
+                json.dump(_json_schema(output_schema), schema_file, ensure_ascii=False)
+                schema_path = schema_file.name
+            finally:
+                schema_file.close()
+            command_args.extend(["--output-schema", schema_path])
+        process = await asyncio.create_subprocess_exec(
+            *command_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -76,6 +91,12 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
             process.kill()
             await process.wait()
             raise RuntimeError("Codex CLI execution timed out") from exc
+        finally:
+            if schema_path:
+                try:
+                    os.unlink(schema_path)
+                except FileNotFoundError:
+                    pass
         if process.returncode != 0:
             safe = stderr.decode("utf-8", errors="replace")[-2000:]
             raise RuntimeError(f"Codex CLI execution failed: {safe}")
@@ -83,3 +104,47 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
         if not output:
             raise RuntimeError("Codex CLI returned an empty result")
         return Message(role="assistant", content=output)
+
+
+def _json_schema(fields: list[dict[str, Any]]) -> dict[str, Any]:
+    properties = {str(field["name"]): _field_schema(field) for field in fields}
+    required = [str(field["name"]) for field in fields if field.get("required")]
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def _field_schema(field: dict[str, Any]) -> dict[str, Any]:
+    field_type = str(field.get("type") or "string").lower()
+    schema: dict[str, Any] = {"type": field_type}
+    if field.get("description"):
+        schema["description"] = str(field["description"])
+    if field_type == "array":
+        item_schema = field.get("itemSchema") or []
+        if item_schema:
+            schema["items"] = _json_schema(item_schema)
+        else:
+            schema["items"] = {"type": str(field.get("itemType") or "string").lower()}
+            if field.get("itemMinLength") is not None:
+                schema["items"]["minLength"] = int(field["itemMinLength"])
+        # Codex structured outputs currently rejects the JSON Schema `uniqueItems`
+        # keyword. Runtime contract validation still enforces it after generation.
+        for source, target in (("minItems", "minItems"), ("maxItems", "maxItems")):
+            if field.get(source) is not None:
+                schema[target] = field[source]
+    elif field_type == "object":
+        nested = field.get("objectSchema") or []
+        schema = _json_schema(nested)
+        if field.get("description"):
+            schema["description"] = str(field["description"])
+    else:
+        # Response-format schemas reject URI and date formats. The adapter's
+        # post-generation validator enforces those runtime constraints.
+        for source, target in (("enumValues", "enum"), ("minimum", "minimum"), ("maximum", "maximum"), ("minLength", "minLength")):
+            if field.get(source) is not None:
+                schema[target] = field[source]
+    return schema

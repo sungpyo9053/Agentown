@@ -251,6 +251,17 @@ class AgentPackageRuntimeTest {
     }
 
     @Test
+    fun `sample input honors a top level string array item format`() {
+        val fields = listOf(
+            FieldDefinition("sourceMaterials", "array", true, "자료 위치", minItems = 2, itemType = "string", itemFormat = "uri"),
+        )
+
+        val sample = SchemaSampleGenerator.generate(fields)
+
+        assertThat(WorkflowInputContract.valueIssue(fields, sample)).isNull()
+    }
+
+    @Test
     fun `downloaded CSV package executes through its embedded pinned TFrameX runtime`(@TempDir directory: Path) {
         val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
         val bundle = pipeline.generateDesign(

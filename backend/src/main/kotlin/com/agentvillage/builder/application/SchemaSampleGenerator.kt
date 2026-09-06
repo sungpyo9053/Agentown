@@ -32,7 +32,14 @@ internal object SchemaSampleGenerator {
         "boolean" -> false
         "number", "integer" -> index + 1
         "array" -> emptyList<Any?>()
-        "string", null -> if (field.name == "keyColumns") "id" else sampleText(field, index)
+        "string", null -> if (field.name == "keyColumns") "id" else sampleItemText(field, index)
+        else -> sampleText(field, index)
+    }
+
+    private fun sampleItemText(field: FieldDefinition, index: Int): String = when (field.itemFormat) {
+        "date" -> "2026-09-05"
+        "date-time" -> "2026-09-05T09:00:00+09:00"
+        "uri" -> "https://example.com/evidence-${index + 1}"
         else -> sampleText(field, index)
     }
 

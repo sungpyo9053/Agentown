@@ -29,6 +29,26 @@ class ExecutionNotConfigured(RuntimeError):
     code = "EXECUTION_NOT_CONFIGURED"
 
 
+def _set_parallel_field(joined: dict[str, Any], target_field: str, extracted: Any) -> None:
+    if target_field not in joined:
+        joined[target_field] = extracted
+    elif joined[target_field] != extracted:
+        raise DefinitionError(f"Parallel SET_FIELD target '{target_field}' has conflicting values")
+
+
+def _output_correction_message(original_input: str, invalid_output: str, error: ValueError) -> Message:
+    try:
+        input_value = json.loads(original_input)
+    except json.JSONDecodeError:
+        input_value = original_input
+    return Message(role="user", content=json.dumps({
+        "originalInput": input_value,
+        "previousInvalidOutput": invalid_output,
+        "validationError": str(error),
+        "correctionInstruction": "원래 입력만 근거로 사용하고, 검증 오류를 고쳐 선언된 출력 JSON 객체만 다시 반환하세요.",
+    }, ensure_ascii=False))
+
+
 @dataclass(frozen=True)
 class RegisteredTool:
     function: Callable[..., Any]
@@ -61,7 +81,7 @@ class StructuredParallelPattern(BasePattern):
         artifacts = result.shared_data.get(f"{self.pattern_name}_results", [])
         failures = []
         values = []
-        joined: dict[str, list[Any]] = {}
+        joined: dict[str, Any] = {}
         for index, artifact in enumerate(artifacts):
             parts = artifact.get("parts") or []
             if parts and parts[0].get("type") == "text":
@@ -88,11 +108,29 @@ class StructuredParallelPattern(BasePattern):
                 source_field = str(binding.get("sourceField") or "")
                 target_field = str(binding.get("targetField") or self.result_field)
                 aggregation_mode = binding.get("aggregationMode")
-                if aggregation_mode not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
-                    raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
+                if aggregation_mode not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM", "SET_FIELD", "MERGE_OBJECT"}:
+                    raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS, APPEND_ITEM, SET_FIELD, or MERGE_OBJECT")
                 extracted = value if source_field == "$output" else _resolve_path(value, source_field)
                 if extracted is _MISSING:
                     failures.append(f"Parallel task '{task_name}' output is missing bound field '{source_field}'")
+                    continue
+                if aggregation_mode == "SET_FIELD":
+                    _set_parallel_field(joined, target_field, extracted)
+                    continue
+                if aggregation_mode == "MERGE_OBJECT":
+                    if not isinstance(extracted, dict):
+                        failures.append(f"Parallel task '{task_name}' bound field '{source_field}' is not an object")
+                        continue
+                    current = joined.setdefault(target_field, {})
+                    if not isinstance(current, dict):
+                        raise DefinitionError(f"Parallel MERGE_OBJECT target '{target_field}' conflicts with another mode")
+                    for key, item in extracted.items():
+                        if key not in current:
+                            current[key] = item
+                        elif isinstance(current[key], list) and isinstance(item, list):
+                            current[key].extend(item)
+                        elif current[key] != item:
+                            failures.append(f"Parallel MERGE_OBJECT target '{target_field}.{key}' has conflicting scalar values")
                     continue
                 bucket = joined.setdefault(target_field, [])
                 if aggregation_mode == "APPEND_ARRAY_ITEMS":
@@ -143,11 +181,33 @@ class TracingLLMAgent(LLMAgent):
                 role=input_message.role if isinstance(input_message, Message) else "user",
                 content=content,
             )
-            result = await super().run(bound_message, **kwargs)
-            self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
-            _assert_semantic_success(
-                _json_value(result.content or ""), self.config.get("output_schema") or [], "Agent output",
-            )
+            output_error = None
+            for attempt in range(2):
+                result = await super().run(
+                    bound_message,
+                    output_schema=self.config.get("output_schema") or [],
+                    **kwargs,
+                )
+                try:
+                    self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
+                    _assert_semantic_success(
+                        _json_value(result.content or ""), self.config.get("output_schema") or [], "Agent output",
+                    )
+                    output_error = None
+                    break
+                except ValueError as exc:
+                    output_error = exc
+                    if attempt == 0:
+                        bound_message = _output_correction_message(content, result.content or "", exc)
+                        if trace is not None:
+                            trace.append({"kind": "agent_retry", "agent": name, "reason": str(exc)})
+            if output_error is not None:
+                raise output_error
+            if self.config.get("preserve_input") is True:
+                input_value = _json_object(content)
+                output_value = _json_object(result.content or "")
+                if input_value is not None and output_value is not None:
+                    result = Message(role=result.role, content=json.dumps({**input_value, **output_value}, ensure_ascii=False))
         except Exception as exc:
             if trace is not None:
                 trace.append({
@@ -473,6 +533,7 @@ class AgentownTFrameXAdapter:
                 tool_name=config.get("toolName"),
                 input_bindings=list(config.get("inputBindings") or []),
                 input_defaults=dict(config.get("inputDefaults") or {}),
+                preserve_input=config.get("preserveInput") is True,
                 route_conditions=list(config.get("routeConditions") or []),
             )(agent_class)
 
@@ -527,8 +588,8 @@ class AgentownTFrameXAdapter:
                             target = str(binding.get("targetField") or "")
                             if (source != "$output" and not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", source)) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,59}", target):
                                 raise DefinitionError("Parallel task result bindings support top-level fields only")
-                            if binding.get("aggregationMode") not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM"}:
-                                raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS or APPEND_ITEM")
+                            if binding.get("aggregationMode") not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM", "SET_FIELD", "MERGE_OBJECT"}:
+                                raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS, APPEND_ITEM, SET_FIELD, or MERGE_OBJECT")
                     for task_name, task_bindings in bindings.items():
                         fields = output_schemas.get(task_name)
                         if not isinstance(fields, list):
@@ -548,6 +609,8 @@ class AgentownTFrameXAdapter:
                                 raise DefinitionError("APPEND_ARRAY_ITEMS source must be a declared array output")
                             if mode == "APPEND_ITEM" and source_type == "array":
                                 raise DefinitionError("APPEND_ITEM source must be a declared scalar output")
+                            if mode == "MERGE_OBJECT" and source_type != "object":
+                                raise DefinitionError("MERGE_OBJECT source must be a declared object output")
                 return StructuredParallelPattern(
                     name,
                     translated,
@@ -621,6 +684,8 @@ def _has_empty_semantic_item(value: Any) -> bool:
 
 def _requires_nonempty_semantic_value(name: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    if any(token in normalized for token in ("error", "failure", "missing", "issue")):
+        return False
     return (
         any(token in normalized for token in ("evidence", "source", "url", "date"))
         or name.endswith("At")
