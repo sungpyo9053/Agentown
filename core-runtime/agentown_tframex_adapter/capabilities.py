@@ -85,6 +85,8 @@ def _contract_result(values: dict[str, Any], contract: list[dict[str, Any]] | No
 
 
 def _matches_contract(value: Any, field: dict[str, Any]) -> bool:
+    if value is None and not field.get("required"):
+        return True
     expected = field.get("type")
     expected_types = {
         "string": str,

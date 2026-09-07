@@ -22,6 +22,305 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    private fun pipeline(): StructuredMetaAgentPipeline {
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
+        return StructuredMetaAgentPipeline(
+            DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock<BuilderJobProgressService>(),
+        )
+    }
+
+    @Test
+    fun `missing generated agents and an entry prefix are repaired from graph bindings`() {
+        val input = FieldDefinition("idea", "string", true, "idea")
+        val plan = WorkflowGraphPlan(
+            "input",
+            listOf(
+                WorkflowNodePlan("trigger", "manual.trigger", "Trigger"),
+                WorkflowNodePlan("input", "text.input", "Input"),
+                WorkflowNodePlan("analysis", "ai.generate", "Analysis", mapOf("agentKey" to "analyst", "instruction" to "Analyze")),
+                WorkflowNodePlan("writer", "ai.generate", "Writer", mapOf("agentKey" to "writer", "instruction" to "Write")),
+                WorkflowNodePlan("end", "workflow.end", "End"),
+            ),
+            listOf(
+                WorkflowEdgePlan("pre", "trigger", "input", bindings = listOf(WorkflowFieldBinding("idea", "idea"))),
+                WorkflowEdgePlan("a", "input", "analysis", bindings = listOf(WorkflowFieldBinding("idea", "idea"))),
+                WorkflowEdgePlan("b", "analysis", "writer", bindings = listOf(WorkflowFieldBinding("analysis", "analysis"))),
+                WorkflowEdgePlan("c", "writer", "end", bindings = listOf(WorkflowFieldBinding("document", "document"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("idea"), listOf("document"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(input)),
+            emptyList(), listOf(GuideDefinition("input", "Input", "Input", listOf(GuideField("idea", "Idea", "text", true, help = "Idea")))),
+        )
+
+        val repaired = pipeline().repairGeneratedAgentContracts(bundle)
+
+        assertThat(repaired.proposal.graphPlan!!.nodes.map { it.id }).doesNotContain("trigger")
+        assertThat(repaired.agentDefinitions.map { it.key }).containsExactly("analyst", "writer")
+        assertThat(repaired.agentDefinitions[0].inputSchema.map { it.name }).containsExactly("idea")
+        assertThat(repaired.agentDefinitions[0].outputSchema.map { it.name }).containsExactly("analysis")
+        assertThat(repaired.agentDefinitions[1].inputSchema.map { it.name }).containsExactly("analysis")
+        assertThat(repaired.agentDefinitions[1].outputSchema.map { it.name }).containsExactly("document")
+    }
+
+    @Test
+    fun `sixth generated role is folded into a synthesis agent without exceeding package cap`() {
+        fun agent(key: String, role: String) = AgentDefinition(
+            key, key, role, emptyList(), listOf(FieldDefinition("draft", "string", true, "draft")),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val agents = listOf(
+            agent("research", "research"), agent("requirements", "requirements"), agent("constraints", "constraints"),
+            agent("aggregate", "analysis aggregate"), agent("review", "review"),
+        )
+        val plan = WorkflowGraphPlan(
+            "aggregate-node",
+            listOf(
+                WorkflowNodePlan("aggregate-node", "ai.generate", "Aggregate", mapOf("agentKey" to "aggregate")),
+                WorkflowNodePlan("review-node", "ai.generate", "Review", mapOf("agentKey" to "review")),
+                WorkflowNodePlan("final-node", "ai.generate", "Final writer", mapOf("agentKey" to "missing-writer", "instruction" to "Write final")),
+                WorkflowNodePlan("end", "workflow.end", "End"),
+            ),
+            listOf(
+                WorkflowEdgePlan("a", "aggregate-node", "review-node", bindings = listOf(WorkflowFieldBinding("draft", "draft"))),
+                WorkflowEdgePlan("b", "review-node", "final-node", bindings = listOf(WorkflowFieldBinding("draft", "reviewResult"))),
+                WorkflowEdgePlan("c", "aggregate-node", "final-node", bindings = listOf(WorkflowFieldBinding("draft", "draft"))),
+                WorkflowEdgePlan("d", "final-node", "end", bindings = listOf(WorkflowFieldBinding("document", "document"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), listOf("document"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan), agents,
+            listOf(GuideDefinition("input", "Input", "Input", listOf(GuideField("idea", "Idea", "text", true, help = "Idea")))),
+        )
+
+        val repaired = pipeline().repairGeneratedAgentContracts(bundle)
+
+        assertThat(repaired.agentDefinitions).hasSize(5)
+        assertThat(repaired.proposal.graphPlan!!.nodes.single { it.id == "final-node" }.config["agentKey"]).isEqualTo("aggregate")
+        assertThat(repaired.agentDefinitions.single { it.key == "aggregate" }.outputSchema.map { it.name }).contains("document")
+    }
+
+    @Test
+    fun `external optional fields make their bound agent inputs optional`() {
+        val optional = FieldDefinition("goal", "string", false, "optional goal")
+        val worker = AgentDefinition(
+            "worker", "Worker", "Work", listOf(FieldDefinition("task", "string", true, "task")),
+            listOf(FieldDefinition("result", "string", true, "result")), listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "input",
+            listOf(WorkflowNodePlan("input", "text.input", "Input"), WorkflowNodePlan("work", "ai.generate", "Work", mapOf("agentKey" to "worker"))),
+            listOf(WorkflowEdgePlan("edge", "input", "work", bindings = listOf(WorkflowFieldBinding("goal", "task")))),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("goal"), listOf("result"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(optional)),
+            listOf(worker), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.agentDefinitions.single().inputSchema.single().required).isFalse()
+    }
+
+    @Test
+    fun `branch item field bindings are normalized to their workflow collection`() {
+        val row = listOf(
+            FieldDefinition("branch", "string", true, "branch"),
+            FieldDefinition("record", "string", true, "record"),
+        )
+        val records = FieldDefinition("salesRecords", "array", true, "records", itemType = "object", itemSchema = row)
+        val worker = AgentDefinition(
+            "worker", "Worker", "Analyze", row, listOf(FieldDefinition("result", "string", true, "result")),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "input",
+            listOf(
+                WorkflowNodePlan("input", "text.input", "Input"),
+                WorkflowNodePlan("route", "condition.branch", "Route", mapOf("expression" to "salesRecords.length > 0")),
+                WorkflowNodePlan("work", "ai.generate", "Work", mapOf("agentKey" to "worker")),
+            ),
+            listOf(
+                WorkflowEdgePlan("a", "input", "route", bindings = listOf(WorkflowFieldBinding("salesRecords", "salesRecords"))),
+                WorkflowEdgePlan("b", "route", "work", "hasRecords=true", listOf(
+                    WorkflowFieldBinding("branch", "branch"), WorkflowFieldBinding("record", "record"),
+                )),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("salesRecords"), listOf("result"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(records)),
+            listOf(worker), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.proposal.graphPlan!!.edges.single { it.id == "b" }.bindings)
+            .containsExactly(WorkflowFieldBinding("salesRecords", "salesRecords"))
+        assertThat(normalized.agentDefinitions.single().inputSchema).containsExactly(records)
+    }
+
+    @Test
+    fun `final output contract excludes intermediate fields not bound to workflow end`() {
+        val review = FieldDefinition("reviewResult", "string", true, "review")
+        val handoff = FieldDefinition("handoffTable", "string", true, "handoff")
+        val worker = AgentDefinition(
+            "worker", "Worker", "Work", emptyList(), listOf(review, handoff),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "work",
+            listOf(
+                WorkflowNodePlan("work", "ai.generate", "Work", mapOf("agentKey" to "worker")),
+                WorkflowNodePlan("end", "workflow.end", "End"),
+            ),
+            listOf(WorkflowEdgePlan("done", "work", "end", bindings = listOf(WorkflowFieldBinding("handoffTable", "handoffTable")))),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), listOf("handoffTable"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, outputSchema = listOf(handoff, review)),
+            listOf(worker), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.proposal.outputSchema).containsExactly(handoff)
+    }
+
+    @Test
+    fun `pass through normalizer keeps its incoming field as the outgoing source`() {
+        val reviewed = FieldDefinition("reviewedResults", "array", true, "reviewed", itemType = "string")
+        val source = AgentDefinition(
+            "source", "Source", "Review", emptyList(), listOf(reviewed),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val aggregate = AgentDefinition(
+            "aggregate", "Aggregate", "Aggregate", listOf(reviewed.copy(name = "normalizedResults")),
+            listOf(FieldDefinition("result", "string", true, "result")), listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "source",
+            listOf(
+                WorkflowNodePlan("source", "ai.generate", "Source", mapOf("agentKey" to "source")),
+                WorkflowNodePlan("normalize", "data.normalize", "Normalize"),
+                WorkflowNodePlan("aggregate", "ai.generate", "Aggregate", mapOf("agentKey" to "aggregate")),
+            ),
+            listOf(
+                WorkflowEdgePlan("a", "source", "normalize", bindings = listOf(WorkflowFieldBinding("reviewedResults", "reviewedResults"))),
+                WorkflowEdgePlan("b", "normalize", "aggregate", bindings = listOf(WorkflowFieldBinding("normalizedResults", "normalizedResults"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), listOf("result"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan),
+            listOf(source, aggregate), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.proposal.graphPlan!!.edges.single { it.id == "b" }.bindings)
+            .containsExactly(WorkflowFieldBinding("reviewedResults", "normalizedResults"))
+    }
+
+    @Test
+    fun `agent reused for aggregation and finalization accepts the union of inputs`() {
+        val aggregate = AgentDefinition(
+            "aggregate", "Aggregate", "Aggregate", listOf(
+                FieldDefinition("research", "string", true, "research"),
+                FieldDefinition("review", "string", false, "review"),
+            ), listOf(FieldDefinition("draft", "string", true, "draft")),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val source = AgentDefinition(
+            "source", "Source", "Source", emptyList(), listOf(FieldDefinition("research", "string", true, "research")),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val review = AgentDefinition(
+            "reviewer", "Reviewer", "Review", listOf(FieldDefinition("draft", "string", true, "draft")),
+            listOf(FieldDefinition("review", "string", true, "review")), listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "source-node",
+            listOf(
+                WorkflowNodePlan("source-node", "ai.generate", "Source", mapOf("agentKey" to "source")),
+                WorkflowNodePlan("aggregate-node", "ai.generate", "Aggregate", mapOf("agentKey" to "aggregate")),
+                WorkflowNodePlan("review-node", "ai.generate", "Review", mapOf("agentKey" to "reviewer")),
+                WorkflowNodePlan("final-node", "ai.generate", "Final", mapOf("agentKey" to "aggregate")),
+            ),
+            listOf(
+                WorkflowEdgePlan("a", "source-node", "aggregate-node", bindings = listOf(WorkflowFieldBinding("research", "research"))),
+                WorkflowEdgePlan("b", "aggregate-node", "review-node", bindings = listOf(WorkflowFieldBinding("draft", "draft"))),
+                WorkflowEdgePlan("c", "review-node", "final-node", bindings = listOf(WorkflowFieldBinding("review", "review"))),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), listOf("draft"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan),
+            listOf(source, aggregate, review), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.agentDefinitions.single { it.key == "aggregate" }.inputSchema).allMatch { !it.required }
+    }
+
+    @Test
+    fun `external evidence passed through an undeclared agent output is redirected from workflow input`() {
+        val interviews = FieldDefinition("interviews", "array", true, "interviews", itemType = "string")
+        val analyst = AgentDefinition(
+            "analyst", "Analyst", "Analyze", listOf(interviews), listOf(FieldDefinition("analysis", "string", true, "analysis")),
+            listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val synthesizer = AgentDefinition(
+            "synth", "Synth", "Synthesize", listOf(FieldDefinition("analysis", "string", true, "analysis")),
+            listOf(FieldDefinition("synthesis", "string", true, "synthesis")), listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val reviewer = AgentDefinition(
+            "reviewer", "Reviewer", "Review", listOf(interviews, FieldDefinition("synthesis", "string", true, "synthesis")),
+            listOf(FieldDefinition("review", "string", true, "review")), listOf("work"), listOf("do not invent"), listOf("input"),
+        )
+        val plan = WorkflowGraphPlan(
+            "input",
+            listOf(
+                WorkflowNodePlan("input", "text.input", "Input"),
+                WorkflowNodePlan("analysis", "ai.generate", "Analysis", mapOf("agentKey" to "analyst")),
+                WorkflowNodePlan("synth", "ai.generate", "Synth", mapOf("agentKey" to "synth")),
+                WorkflowNodePlan("review", "ai.generate", "Review", mapOf("agentKey" to "reviewer")),
+            ),
+            listOf(
+                WorkflowEdgePlan("a", "input", "analysis", bindings = listOf(WorkflowFieldBinding("interviews", "interviews"))),
+                WorkflowEdgePlan("b", "analysis", "synth", bindings = listOf(WorkflowFieldBinding("analysis", "analysis"))),
+                WorkflowEdgePlan("c", "synth", "review", bindings = listOf(
+                    WorkflowFieldBinding("synthesis", "synthesis"), WorkflowFieldBinding("interviews", "interviews"),
+                )),
+            ),
+        )
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("interviews"), listOf("review"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(interviews)),
+            listOf(analyst, synthesizer, reviewer), emptyList(),
+        )
+
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+
+        assertThat(normalized.proposal.graphPlan!!.edges.single { it.id == "c" }.bindings.map { it.sourceField }).containsExactly("synthesis")
+        val redirected = normalized.proposal.graphPlan!!.edges.single { it.id == "c-external-interviews" }
+        assertThat(redirected.source).isEqualTo("input")
+        assertThat(redirected.target).isEqualTo("review")
+        assertThat(redirected.bindings).containsExactly(WorkflowFieldBinding("interviews", "interviews"))
+    }
+
+    @Test
+    fun `problem clarification stops after two card rounds while preserving the ten question ceiling`() {
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(0, 0)).isEqualTo(10)
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(3, 1)).isEqualTo(7)
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(6, 2)).isZero()
+    }
+
     @Test
     fun `problem definition canonicalizes redundant UI flags without changing routing`() {
         val raw = AgentDevelopmentProblemDefinition(

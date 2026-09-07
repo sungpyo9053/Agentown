@@ -36,7 +36,7 @@ test("develop patch refreshes the server version before changing the canvas", as
   await page.getByRole("button", { name: "보내기" }).click();
 
   await expect.poll(() => patchBody).toMatchObject({ baseVersionId: "version-2", expectedGraphHash: "stored-hash-2" });
-  await expect(page.getByRole("link", { name: "에이전트 패키지" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "에이전트 패키지 다운로드" })).toBeVisible();
   await page.getByRole("button", { name: "버전" }).click();
   await expect(page.getByText("Version 3")).toBeVisible();
 });
@@ -122,7 +122,7 @@ test("develop CSV test sends structured sample input without exposing compiler i
   });
 
   await page.goto("/develop");
-  await page.getByRole("button", { name: "테스트" }).click();
+  await page.getByRole("button", { name: "테스트", exact: true }).click();
   const input = page.getByLabel("테스트 입력");
   await expect(input).toHaveAttribute("placeholder", /csvA/);
   await expect(input).not.toHaveAttribute("placeholder", /업무 자동화 배치가 아니라/);

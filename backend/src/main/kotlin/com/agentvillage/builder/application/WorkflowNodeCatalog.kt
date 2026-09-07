@@ -675,7 +675,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
 
     private fun requestsExplicitGeneration(value: String) = containsAny(
         value,
-        "초안", "답변", "요약", "작성", "생성", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "릴리스 노트",
+        "초안", "답변", "요약", "작성", "생성", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "기획서", "제시", "릴리스 노트",
         "draft", "answer", "summary", "generate", "write", "extract", "translate", "proofread", "report", "release note",
     )
 

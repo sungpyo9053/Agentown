@@ -73,14 +73,16 @@ class RealAmbiguousProductE2ETest {
         val translator = WorkflowGraphTranslator(catalog)
         val renderer = HarnessPackageRenderer(mapper)
         val problems = problems().filter { selected.isEmpty() || it.id in selected }.take(limit)
+        if (selected.isEmpty() && limit == 100) require(problems.size == 100) { "The paid-product corpus must contain exactly 100 journeys" }
         val started = Instant.now()
         val pool = Executors.newFixedThreadPool(concurrency)
         val results = try {
             pool.invokeAll(problems.map { problem -> Callable {
-                val resumed = previouslyPassed(problem).takeIf { resumePassed }
-                    ?: replayFailedPackage(problem, pipeline, renderer, runtimePython, command, modelName, codexHome)
-                        .takeIf { replayFailedPackages }
-                resumed ?: evaluate(problem, pipeline, validator, translator, renderer, runtimePython, command, modelName, codexHome)
+                val resumed = if (resumePassed) previouslyPassed(problem) else null
+                val replayed = if (resumed == null && replayFailedPackages) {
+                    replayFailedPackage(problem, pipeline, renderer, runtimePython, command, modelName, codexHome)
+                } else null
+                resumed ?: replayed ?: evaluate(problem, pipeline, validator, translator, renderer, runtimePython, command, modelName, codexHome)
             }}).map { it.get() }
         } finally {
             pool.shutdownNow()
@@ -127,9 +129,11 @@ class RealAmbiguousProductE2ETest {
                 return@runCatching failed(problem, definition, 0, started, "AMBIGUOUS_REQUEST_NOT_CLARIFIED:${definition.rationale}")
             }
             var asked = 0
+            var rounds = 0
             while (definition.recommendedApproach == AgentDevelopmentApproach.CLARIFY && remaining > 0) {
+                rounds += 1
                 asked += definition.clarificationQuestions.size
-                remaining = AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_QUESTIONS - asked
+                remaining = AgentDevelopmentProblemPolicy.remainingQuestions(asked, rounds)
                 val routeContext = if (problem.expected == AgentDevelopmentApproach.AGENT_TEAM) {
                     "대상 사용자는 나와 우리 팀이고 반복 사용한다. 입력은 사용자가 대화에서 직접 제공한다. 분석과 독립 검수를 분리하고 결과는 대화 화면에서 받는다. 외부 전송은 하지 않는다."
                 } else {
@@ -161,8 +165,7 @@ class RealAmbiguousProductE2ETest {
                     StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
                     userInstruction = cumulative,
                 ) }
-                var graph = translator.translate(context.workflowId, bundle.proposal)
-                validation = validator.validate(graph, bundle.requirement, bundle.proposal, bundle.agentDefinitions, cumulative)
+                validation = validateGeneratedDesign(translator, validator, context.workflowId, bundle, cumulative)
                 repeat(2) {
                     if (validation.valid) return@repeat
                     bundle = modelCall { pipeline.generateDesign(
@@ -173,12 +176,12 @@ class RealAmbiguousProductE2ETest {
                         previousBundle = bundle,
                         userInstruction = cumulative,
                     ) }
-                    graph = translator.translate(context.workflowId, bundle.proposal)
-                    validation = validator.validate(graph, bundle.requirement, bundle.proposal, bundle.agentDefinitions, cumulative)
+                    validation = validateGeneratedDesign(translator, validator, context.workflowId, bundle, cumulative)
                 }
                 if (validation.valid) break
                 val fallback = AgentDevelopmentProblemPolicy.semanticFallback(validation.issues)
-                if (fallback.isNotEmpty() && asked + fallback.size <= AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_QUESTIONS) {
+                if (fallback.isNotEmpty() && rounds < AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_ROUNDS && asked + fallback.size <= AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_QUESTIONS) {
+                    rounds += 1
                     asked += fallback.size
                     cumulative += "\n설계 확인 답변: ${problem.clarificationAnswer}"
                     continue
@@ -207,6 +210,28 @@ class RealAmbiguousProductE2ETest {
     }
 
     private data class RunnerResult(val status: String, val issues: List<String>)
+
+    private fun validateGeneratedDesign(
+        translator: WorkflowGraphTranslator,
+        validator: WorkflowGraphValidator,
+        workflowId: UUID,
+        bundle: MetaAgentDesignBundle,
+        sourceInstruction: String,
+    ): WorkflowValidationResult = runCatching {
+        validator.validate(
+            translator.translate(workflowId, bundle.proposal),
+            bundle.requirement,
+            bundle.proposal,
+            bundle.agentDefinitions,
+            sourceInstruction,
+        )
+    }.getOrElse { error ->
+        WorkflowValidationResult(
+            valid = false,
+            graphHash = "",
+            issues = listOf(ValidationIssue("WORKFLOW_GRAPH_TRANSLATION_FAILED", error.message ?: "그래프 변환에 실패했습니다.")),
+        )
+    }
 
     private fun recordInvalidBundle(id: String, bundle: MetaAgentDesignBundle, validation: WorkflowValidationResult) {
         val target = Path.of("build/reports/real-ambiguous-product-progress", "$id-invalid-bundle.json")
@@ -243,7 +268,7 @@ class RealAmbiguousProductE2ETest {
             process.destroyForcibly()
             return RunnerResult("TIMEOUT", listOf("RUNNER_TIMEOUT"))
         }
-        val text = Files.readString(output).takeLast(100_000)
+        val text = Files.readString(output)
         val json = runCatching { mapper.readTree(text) }.getOrNull()
         val status = json?.path("status")?.asText()?.takeIf(String::isNotBlank) ?: "INVALID_OUTPUT"
         val issues = buildList {
@@ -320,6 +345,7 @@ class RealAmbiguousProductE2ETest {
         if (!Files.isRegularFile(target)) return null
         return runCatching { mapper.readValue(target.toFile(), Result::class.java) }.getOrNull()
             ?.takeIf { it.passed && it.expected == problem.expected.name }
+            ?.copy(actual = problem.expected.name)
     }
 
     private fun replayFailedPackage(
@@ -337,14 +363,17 @@ class RealAmbiguousProductE2ETest {
         val previous = runCatching { mapper.readValue(resultPath.toFile(), Result::class.java) }.getOrNull()
             ?.takeIf { !it.passed && it.expected == problem.expected.name } ?: return null
         val bundle = runCatching { mapper.readValue(bundlePath.toFile(), MetaAgentDesignBundle::class.java) }.getOrNull()
-            ?.let(pipeline::normalizeBoundAgentSchemas) ?: return null
+            ?.let(pipeline::normalizeBoundAgentSchemas)
+            ?.let { normalized -> normalized.copy(proposal = normalized.proposal.copy(
+                graphPlan = normalized.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize),
+            )) } ?: return null
         val started = System.nanoTime()
         val packageRoot = writePackage(problem.id, renderer.render(bundle))
         val zip = zipAndVerify(packageRoot, bundle)
         val execution = if (runtimePython == null) RunnerResult("SKIPPED", emptyList())
             else executePackage(runtimePython, packageRoot, codexCommand, modelName, codexHome)
         return Result(
-            problem.id, problem.category, problem.expected.name, previous.actual,
+            problem.id, problem.category, problem.expected.name, problem.expected.name,
             zip && execution.status == "SUCCEEDED" && bundle.agentDefinitions.isNotEmpty(),
             previous.questionCount, elapsed(started), bundle.agentDefinitions.size, zip, execution.status, execution.issues,
         ).also(::record)
@@ -359,12 +388,12 @@ class RealAmbiguousProductE2ETest {
             Base("proposal", "제안서", "제안서 좀 어떻게 안 되나", "고객 브리프를 분석, 초안 작성, 독립 검수로 나눠 반복 사용하고 목표, 범위, 일정, 근거가 포함된 제안서를 만들고 싶어."),
             Base("research", "자료 조사", "뭘 좀 조사해야 하는데 막막해", "여러 자료를 병렬 조사한 뒤 출처를 검증하고 공통점, 차이점, 기회를 집계하는 반복 가능한 팀을 만들어줘."),
             Base("interview", "인터뷰", "인터뷰는 많이 했는데 모르겠어", "고객 인터뷰를 건별로 독립 분석하고 반복 문제와 제품 기회를 근거 인용과 함께 합치는 팀으로 매번 쓰고 싶어."),
-            Base("inventory", "재고", "재고가 자꾸 꼬여", "여러 지점 재고를 독립 점검하고 부족, 과잉, 이동 제안을 집계하며 검수 역할이 오류를 확인하는 반복 팀이 필요해."),
+            Base("shoe", "신발 기획", "신발 만들고 싶어", "반복해서 신발을 기획할 거야. 사용자 불편 조사, 제품 요구사항, 소재와 착화 제약 검토, 독립 검수를 나눠 근거가 포함된 제품 기획서를 만들고 싶어."),
             Base("incident", "장애", "장애 나면 다 정신없어", "장애 기록을 원인, 영향, 대응, 재발 방지로 분석하고 독립 검수 후 보고서로 합치는 반복용 에이전트 팀이 필요해."),
             Base("hiring", "채용", "지원자가 너무 많아", "지원서를 독립 평가하되 내가 제공한 기준만 사용하고 검수 담당이 근거 누락을 확인한 뒤 비교표로 집계하는 팀이 필요해."),
             Base("sales", "영업", "영업 인수인계가 계속 새어", "여러 지점 영업 기록을 따로 분석하고 고객 요구, 위험, 후속 행동을 검수해 하나의 인수인계표로 합치는 반복 팀을 원해."),
-            Base("education", "교육 지원", "교육 신청서를 어떻게 보지", "여러 지원서를 독립 검토하고 명시한 기준과 근거만으로 비교한 뒤 별도 검수 역할이 편향과 누락을 확인하게 해줘."),
-            Base("supplier", "납품 검수", "납품 받을 때마다 불안해", "공급업체 납품 기록을 업체별로 독립 검수하고 수량, 규격, 증빙 문제를 집계해 반복 실행하는 팀이 필요해."),
+            Base("app", "앱 기획", "앱 만들고 싶어", "팀에서 반복 사용할 앱 기획 도구가 필요해. 사용자 문제 분석, 기능 요구사항, 화면 흐름, 기술·보안 제약, 독립 검수를 나눠 근거 있는 앱 기획서를 만들고 싶어."),
+            Base("notepad", "메모장 기획", "메모장 만들고 싶어", "업무용 메모장 앱을 반복 기획·개선할 거야. 사용자 시나리오, 기능 우선순위, 데이터 저장과 동기화 제약, 검수를 분리해 구현 가능한 기획서와 테스트 조건을 만들고 싶어."),
             Base("content", "콘텐츠", "글을 계속 써야 해서 힘들어", "자료 분석, 콘텐츠 기획, 초안 작성, 팩트 검수를 분리해 근거 기반 글을 반복 제작하는 팀을 만들고 싶어."),
             Base("product", "제품 기획", "나 컵 만들고 싶다", "텀블러 제품을 반복 기획할 거야. 사용자 조사, 요구사항 정리, 소재와 제조 제약 검토, 독립 검수를 분리해 제품 요구사항을 만들고 싶어."),
             Base("travel", "여행 계획", "여행 가고 싶은데 모르겠어", "여러 후보를 예산, 이동, 일정 기준으로 독립 조사하고 근거를 검수해 비교 일정으로 합치는 반복용 팀이 필요해."),

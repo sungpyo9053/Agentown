@@ -227,9 +227,6 @@ class BuilderService(
                     question = "합격·승인과 거절을 나누는 정확한 수치 또는 조건을 알려주세요.",
                 )))
                 generationDrafts.checkpoint(context.conversation.id, bundle)
-            } else if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT && AgentDevelopmentProblemPolicy.semanticFallback(validation.issues).isNotEmpty()) {
-                bundle = bundle.copy(clarificationQuestions = AgentDevelopmentProblemPolicy.semanticFallback(validation.issues))
-                generationDrafts.checkpoint(context.conversation.id, bundle)
             } else {
                 for (repairAttempt in 1..2) {
                     if (validation.valid) break
@@ -241,7 +238,7 @@ class BuilderService(
                 }
                 if (!validation.valid) {
                     generationDrafts.validationFailed(context.conversation.id, validation.issues)
-                    val fallback = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT) {
+                    val fallback = if (mode == StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT && remainingAgentDevelopmentQuestions(context.conversation.id) > 0) {
                         AgentDevelopmentProblemPolicy.semanticFallback(validation.issues)
                     } else emptyList()
                     if (fallback.isNotEmpty()) {
@@ -265,7 +262,7 @@ class BuilderService(
             ?: requirements.save(BuilderRequirementEntity(conversationId = context.conversation.id, structuredJson = map))
         if (questions.isNotEmpty()) {
             if (context.workflow.status != WorkflowStatus.NEEDS_CLARIFICATION) transition(context.workflow, WorkflowStatus.NEEDS_CLARIFICATION)
-            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계를 진행하려면 아래 ${questions.size}가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요."))
+            messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계를 진행하려면 아래 ${questions.size}가지 정보가 더 필요합니다. 화면의 선택 카드에서 조건을 골라 주세요."))
         } else {
             saveDesign(context, bundle, instruction, jobId)
             requireCompletePackage(packageRenderer.render(bundle))
@@ -296,7 +293,7 @@ class BuilderService(
         messages.save(BuilderMessage(
             conversationId = context.conversation.id,
             role = "ASSISTANT",
-            content = "에이전트로 나누기 전에 문제를 정확히 정의하려면 아래 ${problem.clarificationQuestions.size}가지가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요.",
+            content = "에이전트로 나누기 전에 문제를 정확히 정의하려면 아래 ${problem.clarificationQuestions.size}가지가 더 필요합니다. 화면의 선택 카드에서 조건을 골라 주세요.",
             workflowVersionId = context.workflow.currentVersionId,
         ))
     }
@@ -330,12 +327,12 @@ class BuilderService(
     }
 
     private fun remainingAgentDevelopmentQuestions(conversationId: UUID): Int {
-        val asked = messages.findAllByConversationIdOrderByCreatedAt(conversationId)
+        val roundCounts = messages.findAllByConversationIdOrderByCreatedAt(conversationId)
             .asSequence()
             .filter { it.role == "ASSISTANT" }
             .mapNotNull { CLARIFICATION_COUNT.find(it.content)?.groupValues?.get(1)?.toIntOrNull() }
-            .sum()
-        return (AgentDevelopmentProblemPolicy.MAX_CLARIFICATION_QUESTIONS - asked).coerceAtLeast(0)
+            .toList()
+        return AgentDevelopmentProblemPolicy.remainingQuestions(roundCounts.sum(), roundCounts.size)
     }
 
     private fun validateGeneratedDesign(workflowId: UUID, bundle: MetaAgentDesignBundle, sourceInstruction: String): WorkflowValidationResult =

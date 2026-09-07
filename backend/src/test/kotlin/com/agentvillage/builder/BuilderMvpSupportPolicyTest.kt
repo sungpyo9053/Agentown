@@ -81,4 +81,22 @@ class BuilderMvpSupportPolicyTest {
         }.isInstanceOf(BadRequestException::class.java)
             .hasMessageContaining("개발 도구 쓰기·배포")
     }
+
+    @Test
+    fun `deployment review package without actual deployment remains supported`() {
+        assertThatCode {
+            BuilderMvpSupportPolicy.requireSupported(
+                AutomationRequirement(
+                    objective = "운영 배포 검토 패키지를 만들되 실제 배포는 하지 않는다.",
+                    trigger = "수동 실행",
+                    inputs = listOf("변경사항", "회귀 결과"),
+                    outputs = listOf("배포 검토표"),
+                    steps = listOf("변경 분석", "체크리스트 검수"),
+                    decisions = emptyList(),
+                    exceptions = emptyList(),
+                    humanApprovalRequired = false,
+                ),
+            )
+        }.doesNotThrowAnyException()
+    }
 }

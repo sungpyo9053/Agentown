@@ -7,6 +7,25 @@ import org.junit.jupiter.api.Test
 
 class WorkflowGraphPlanNormalizerTest {
     @Test
+    fun `workflow end bindings keep every terminal output when generated targets collide`() {
+        val plan = WorkflowGraphPlan(
+            "writer",
+            listOf(
+                WorkflowNodePlan("writer", "ai.generate", "Writer", mapOf("agentKey" to "writer")),
+                WorkflowNodePlan("end", "workflow.end", "End"),
+            ),
+            listOf(WorkflowEdgePlan("finish", "writer", "end", bindings = listOf(
+                WorkflowFieldBinding("comparisonTable", "response"),
+                WorkflowFieldBinding("summary", "response"),
+            ))),
+        )
+
+        val normalized = WorkflowGraphPlanNormalizer.normalize(plan)
+
+        assertThat(normalized.edges.single().bindings.map { it.targetField }).containsExactly("response", "summary")
+    }
+
+    @Test
     fun `fills registered renderer and normalizes branch edge syntax without changing semantics`() {
         val plan = WorkflowGraphPlan(
             entryNodeId = "branch",

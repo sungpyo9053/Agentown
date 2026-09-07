@@ -66,9 +66,13 @@ class CodexCliMetaAgentModel(
             다음 원칙을 지킨다.
             - 문제의 대상 사용자, 실제 불편 또는 목적, 원하는 최종 결과, 해결 범위가 역할 분해를 바꿀 만큼 빠졌으면 readyForDesign=false로 둔다.
             - 한 번에 답하기 쉬운 핵심 질문만 1~3개 묻는다. 서로 밀접한 항목은 한 질문으로 묶는다.
+            - 각 질문에는 사용자가 빠르게 고를 수 있는 현실적인 options를 2~7개 제공한다. 선택지만으로 모든 답을 강제하지 말고 customPlaceholder에 짧은 직접 입력 안내를 작성한다.
+            - 여러 결과가 동시에 필요할 수 있는 질문만 multiple=true로 둔다. 모호한 사용자를 위해 가능한 경우 "아직 모르겠음" 선택지를 포함한다.
             - remainingQuestions보다 많은 질문을 만들지 않는다. remainingQuestions=0이면 CLARIFY를 반환하지 말고 지금까지의 답변과 명시한 안전한 가정으로 PROMPT_ONLY 또는 AGENT_TEAM을 결정한다.
             - 구현 기술, 트리거, Slack/Notion 같은 연동, 승인 방식은 문제 정의에 꼭 필요하지 않으면 묻지 않는다.
             - 사용자가 말하지 않은 문제, 결과, 사업 규칙을 만들지 않는다. 무해한 대화 기본값만 assumptions에 둔다.
+            - readyForDesign=true로 엔진에 넘길 기획서에는 inputs, workflowShape, evidencePolicy, failurePolicy, forbiddenActions를 사용자 대화에서 추출해 채운다. 독립 작업과 전체 완료 후 합류가 명시되면 workflowShape에 보존한다.
+            - 입력 개수, 근거 문장, 미확인·충돌 처리, 외부 전송·구매·배포 금지처럼 실행 결과를 좌우하는 조건을 요약에서 버리지 않는다.
             ${AgentDevelopmentProblemPolicy.promptInstructions()}
             - PROMPT_ONLY면 에이전트를 만들지 말고 바로 복사해 쓸 구체적인 suggestedPrompt를 작성한다.
             - PROMPT_ONLY와 AGENT_TEAM은 readyForDesign=true, clarificationQuestions=[]로 둔다. CLARIFY이면 질문에 필요한 현재 이해도 problemStatement에 보존한다.
@@ -109,6 +113,7 @@ class CodexCliMetaAgentModel(
         2. Requirement Clarifier: 자동화에 반드시 필요하지만 누락된 정보만 질문한다.
         3. Automation Architect: 요구사항과 의미가 같은 실행 그래프 graphPlan, 사람 승인 지점, Mock 연동, 실패 처리를 설계한다.
         4. Agent Designer: 템플릿과 안전한 노드를 먼저 사용하고, 자연어 판단 단계에 필요한 최소 Agent Definition만 만든다. 기본은 한 명이며 독립 검증이나 분리된 전문성이 반드시 필요할 때만 추가한다. 트리거, 수집, 중복 제거, 승인, 외부 전송 자체를 AI Agent로 만들지 않는다.
+        agentDefinitions와 서로 다른 AI 역할은 최대 5개다. 모든 ai.generate/ai.classify의 agentKey를 반드시 이 5개 이내 정의 중 하나와 연결하고, 추가 작성 단계가 필요하면 기존 집계 Agent를 재사용한다.
         5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
         graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, knowledge.search.mock, data.csv.compare, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
@@ -140,6 +145,7 @@ class CodexCliMetaAgentModel(
         사용자 요구사항을 지원되는 다른 시나리오로 바꾸거나 누락하지 않는다.
         Python, JavaScript, Shell, 임의 코드, 패키지 설치, 실제 외부 전송을 제안하지 않는다.
         이미 제공된 정보를 다시 질문하지 않는다. 정보가 부족하면 최소 질문만 clarificationQuestions에 넣는다.
+        clarificationQuestions를 만들 때는 질문별로 2~7개의 짧은 options, multiple 여부, 항상 보이는 직접 입력란의 customPlaceholder를 함께 작성한다.
         $clarificationInstruction
         모든 사용자 표시 문장은 한국어로 작성한다. JSON 외의 설명이나 Markdown을 출력하지 않는다.
 

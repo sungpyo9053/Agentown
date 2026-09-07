@@ -20,7 +20,8 @@ internal object SchemaSampleGenerator {
                 field.objectSchema.orEmpty().forEach { nested -> put(nested.name, value(nested, "$path.${nested.name}", index)) }
             }
             "boolean" -> false
-            "number", "integer" -> field.minimum ?: 1
+            "number" -> field.minimum ?: 1.0
+            "integer" -> (field.minimum ?: 1.0).toInt()
             else -> sampleText(field, index)
         }
     }
@@ -40,7 +41,12 @@ internal object SchemaSampleGenerator {
         "date" -> "2026-09-05"
         "date-time" -> "2026-09-05T09:00:00+09:00"
         "uri" -> "https://example.com/evidence-${index + 1}"
-        else -> sampleText(field, index)
+        else -> if (isReferenceLocation(field)) "https://example.com/material-${index + 1}" else sampleText(field, index)
+    }
+
+    private fun isReferenceLocation(field: FieldDefinition): Boolean {
+        val hint = "${field.name} ${field.description}".lowercase()
+        return listOf("url", "uri", "link", "링크", "출처", "자료 위치", "조사할 자료", "참고 자료").any(hint::contains)
     }
 
     private fun sampleText(field: FieldDefinition, index: Int): String = field.enumValues?.firstOrNull() ?: with(field.name) { when {

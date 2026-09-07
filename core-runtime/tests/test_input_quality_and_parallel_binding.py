@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from agentown_tframex_adapter.adapter import DefinitionError, _apply_input_bindings, _assert_semantic_success, _output_correction_message, _set_parallel_field
-from agentown_tframex_adapter.capabilities import data_deduplicate, data_normalize, quality_check, template_plain_text
+from agentown_tframex_adapter.adapter import DefinitionError, _apply_input_bindings, _assert_semantic_success, _evaluate_branch_expression, _output_correction_message, _set_parallel_field
+from agentown_tframex_adapter.capabilities import _matches_contract, data_deduplicate, data_normalize, quality_check, template_plain_text
 from agentown_tframex_adapter.codex_llm import _json_schema
 
 
@@ -41,6 +41,34 @@ def test_codex_output_schema_preserves_nested_runtime_contract():
     ])
     assert "format" not in uri_schema["properties"]["source"]
     assert "format" not in uri_schema["properties"]["sources"]["items"]
+
+
+def test_codex_output_schema_uses_required_nullable_for_domain_optional_fields():
+    schema = _json_schema([
+        {"name": "requiredTitle", "type": "string", "required": True},
+        {"name": "optionalContext", "type": "string", "required": False},
+        {"name": "items", "type": "array", "required": True, "itemType": "object", "itemSchema": [
+            {"name": "id", "type": "string", "required": True},
+            {"name": "note", "type": "string", "required": False},
+        ]},
+    ])
+
+    assert schema["required"] == ["requiredTitle", "optionalContext", "items"]
+    assert schema["properties"]["optionalContext"]["type"] == ["string", "null"]
+    item = schema["properties"]["items"]["items"]
+    assert item["required"] == ["id", "note"]
+    assert item["properties"]["note"]["type"] == ["string", "null"]
+
+
+def test_runtime_contract_accepts_null_only_for_optional_fields():
+    assert _matches_contract(None, {"name": "note", "type": "string", "required": False})
+    assert not _matches_contract(None, {"name": "title", "type": "string", "required": True})
+
+
+def test_branch_expression_evaluates_supported_length_comparison_only():
+    assert _evaluate_branch_expression({"records": [1]}, "records.length > 0") is True
+    assert _evaluate_branch_expression({"records": []}, "records.length > 0") is False
+    assert _evaluate_branch_expression({"records": [1]}, "records.pop() > 0") is not True
 
 
 def test_input_quality_validates_and_preserves_declared_workflow_input():

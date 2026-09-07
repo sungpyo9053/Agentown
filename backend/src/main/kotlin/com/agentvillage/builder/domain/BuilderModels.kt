@@ -62,7 +62,15 @@ data class AutomationRequirement(
     val unresolvedQuestions: List<UnresolvedQuestion> = emptyList(),
 )
 
-data class ClarificationQuestion(val id: String, val field: String, val question: String, val required: Boolean = true)
+data class ClarificationQuestion(
+    val id: String,
+    val field: String,
+    val question: String,
+    val required: Boolean = true,
+    val options: List<String> = emptyList(),
+    val multiple: Boolean = false,
+    val customPlaceholder: String = "답을 직접 적어주세요",
+)
 
 data class AutomationProposal(
     val name: String,

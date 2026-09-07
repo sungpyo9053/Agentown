@@ -303,20 +303,22 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
-    fun `agent development never asks more than ten clarification questions`() {
+    fun `agent development resolves within two card rounds and never exceeds ten questions`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("question-cap-$suffix@example.com", "password123", "cap_$suffix", "질문 한도 검증"))
         var snapshot = service.createConversation(owner.id, "question-cap-agent-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
         snapshot = service.sendMessage(owner.id, snapshot.conversationId, "나 컵 만들고 싶다.", "question-cap-first-$suffix")
 
         repeat(10) { index ->
-            snapshot = service.sendMessage(owner.id, snapshot.conversationId, "아직 잘 모르겠어.", "question-cap-answer-$index-$suffix")
+            if (snapshot.status == WorkflowStatus.NEEDS_CLARIFICATION) {
+                snapshot = service.sendMessage(owner.id, snapshot.conversationId, "아직 잘 모르겠어.", "question-cap-answer-$index-$suffix")
+            }
         }
 
         val asked = snapshot.messages
             .filter { it.role == "ASSISTANT" && it.content.startsWith("에이전트로 나누기 전에") }
             .sumOf { Regex("아래 (\\d+)가지").find(it.content)!!.groupValues[1].toInt() }
-        assertThat(asked).isEqualTo(10)
+        assertThat(asked).isBetween(1, 6)
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.DRAFT)
         assertThat(snapshot.clarificationQuestions).isEmpty()
         assertThat(snapshot.agentDefinitions).isEmpty()
@@ -857,7 +859,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         assertThat(snapshot.proposal).isNull()
         assertThat(snapshot.agentDefinitions).isEmpty()
         assertThat(snapshot.graph).isNull()
-        assertThat(snapshot.messages.last().content).isEqualTo("설계를 진행하려면 아래 4가지 정보가 더 필요합니다. 질문별 답변을 한 번에 작성해 주세요.")
+        assertThat(snapshot.messages.last().content).isEqualTo("설계를 진행하려면 아래 4가지 정보가 더 필요합니다. 화면의 선택 카드에서 조건을 골라 주세요.")
         assertThat(snapshot.messages.last().content).doesNotContain(snapshot.clarificationQuestions.first().question)
     }
 

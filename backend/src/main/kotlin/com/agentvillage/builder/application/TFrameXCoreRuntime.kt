@@ -170,6 +170,26 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             }
             return fields.values.singleOrNull()
         }
+        fun nearestDownstreamAgentInputNames(nodeId: String): Set<String> {
+            val pending = ArrayDeque<Pair<String, Int>>()
+            outgoing[nodeId].orEmpty().forEach { pending.add(it.target to 1) }
+            val visited = mutableSetOf<String>()
+            val names = linkedSetOf<String>()
+            var foundDepth: Int? = null
+            while (pending.isNotEmpty()) {
+                val (currentId, currentDepth) = pending.removeFirst()
+                if (foundDepth != null && currentDepth > foundDepth) break
+                if (!visited.add(currentId)) continue
+                val current = nodesById[currentId] ?: continue
+                if (current.nodeType in aiTypes) {
+                    definitions[current.config["agentKey"]?.toString()]?.inputSchema?.mapTo(names) { it.name }
+                    foundDepth = currentDepth
+                } else {
+                    outgoing[currentId].orEmpty().forEach { pending.add(it.target to currentDepth + 1) }
+                }
+            }
+            return names
+        }
         fun parallelResultFieldFor(node: WorkflowNode): String = if (node.nodeType in aiTypes) {
             runtimeAgentDefinition(node).inputSchema
                 ?.firstOrNull { it.type.equals("array", true) }?.name ?: "results"
@@ -180,6 +200,25 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         fun upstreamMessageSchema(node: WorkflowNode): List<FieldDefinition> {
             val ancestors = nearestExecutableAncestors(node.id)
             if (ancestors.size > 1) {
+                val namedJoinFields = incomingEdges[node.id].orEmpty().flatMap { edge ->
+                    val sourceNode = nodesById[edge.source] ?: return@flatMap emptyList()
+                    edge.bindings.mapNotNull { (targetField, sourceField) ->
+                        if (targetField == "context" && sourceField == "context") return@mapNotNull null
+                        outputSchemaFor(sourceNode).firstOrNull { it.name == sourceField }
+                            ?.copy(name = indexedArrayRoot(targetField))
+                    }
+                }.distinctBy { it.name }
+                val bindingCount = incomingEdges[node.id].orEmpty().sumOf { edge ->
+                    edge.bindings.count { (target, source) -> target != "context" || source != "context" }
+                }
+                val downstreamInputs = nearestDownstreamAgentInputNames(node.id)
+                if (namedJoinFields.isNotEmpty() && namedJoinFields.size == bindingCount &&
+                    namedJoinFields.all { it.name in downstreamInputs }
+                ) {
+                    return (workflowInputSchema + namedJoinFields + FieldDefinition(
+                        "failures", "array", true, "parallel task failures",
+                    )).distinctBy { it.name }
+                }
                 val resultField = parallelResultFieldFor(node)
                 val resultContract = nearestDownstreamAgentArrayContract(node.id)
                     ?: FieldDefinition(resultField, "array", true, "parallel task results")
@@ -245,14 +284,25 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             }.distinct()
             if (node.nodeType in aiTypes) {
                 val source = runtimeAgentDefinition(node)
-                val runtimeSource = if (parallelScopeByNode[node.id] == null) source else source.copy(
-                    outputSchema = source.outputSchema.map { field ->
-                        if (field.type.equals("array", true)) field.copy(minItems = 1, maxItems = 1) else field
-                    },
-                )
                 val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
                 inputDefaults.putAll(boundWorkflowInputDefaults(node))
+                val activeInputNames = (
+                    inputBindings.map { it.getValue("targetField").substringBefore('.').substringBefore('[') } +
+                        inputDefaults.keys.filterNot { it.startsWith("_agentown") }
+                    ).toSet()
+                val activeOutputNames = outgoing[node.id].orEmpty().flatMap { edge ->
+                    edge.bindings.values.map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
+                }.filterNot { it in setOf("context", "error") }.toSet()
+                val nodeSource = source.copy(
+                    inputSchema = source.inputSchema.filter { it.name in activeInputNames }.ifEmpty { source.inputSchema },
+                    outputSchema = source.outputSchema.filter { it.name in activeOutputNames }.ifEmpty { source.outputSchema },
+                )
+                val runtimeSource = if (parallelScopeByNode[node.id] == null) nodeSource else nodeSource.copy(
+                    outputSchema = nodeSource.outputSchema.map { field ->
+                        if (field.type.equals("array", true)) field.copy(minItems = 1, maxItems = 1) else field
+                    },
+                )
                 parallelScopeByNode[node.id]?.let { (index, size) ->
                     inputDefaults["_agentownParallelIndex"] = index
                     inputDefaults["_agentownParallelSize"] = size
@@ -308,7 +358,12 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     inputDefaults["agentownFailClosed"] = !hasExplicitRouter
                 }
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName && nearestExecutableAncestors(node.id).size > 1) {
-                    inputDefaults["agentownResultFields"] = listOf(parallelResultFieldFor(node))
+                    val upstreamNames = upstreamMessageSchema(node).map { it.name }.toSet()
+                    inputDefaults["agentownResultFields"] = incomingEdges[node.id].orEmpty()
+                        .flatMap { edge -> edge.bindings.map { (targetField, _) -> indexedArrayRoot(targetField) } }
+                        .filter { it != "context" && it in upstreamNames }
+                        .distinct()
+                        .ifEmpty { listOf(parallelResultFieldFor(node)) }
                 }
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "kind" to "tool", "toolName" to toolName,
@@ -355,7 +410,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                             ) {
                                 throw BadRequestException("EXECUTION_NOT_CONFIGURED", "병렬 Join은 최상위 필드 binding만 지원합니다: $sourceField -> $targetField")
                             }
-                            val effectiveTargetField = if (nextAgent == null) resultField else indexedArrayRoot(targetField)
+                            val namedQualityJoin = nextNode?.nodeType == NodeType.QUALITY_CHECK.wireName &&
+                                upstreamMessageSchema(nextNode).any { it.name == indexedArrayRoot(targetField) }
+                            val effectiveTargetField = if (nextAgent == null && !namedQualityJoin) resultField else indexedArrayRoot(targetField)
                             val targetContract = if (nextAgent == null) {
                                 nextNode?.let(::upstreamMessageSchema)?.firstOrNull { it.name == effectiveTargetField }
                             } else {
@@ -465,6 +522,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             mapOf(
                 "name" to routerName,
                 "kind" to "router",
+                "expression" to branch.config["expression"],
                 "routeConditions" to outgoing[branch.id].orEmpty().map { edge ->
                     val condition = parseCondition(edge.condition)
                     val qualityFallback = nearestExecutableAncestors(branch.id).singleOrNull()

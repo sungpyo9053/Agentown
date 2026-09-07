@@ -13,6 +13,11 @@
     "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "maxItems": 10 },
     "rationale": { "type": "string", "minLength": 1, "maxLength": 600 },
     "suggestedPrompt": { "type": "string", "maxLength": 4000 },
+    "inputs": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 12 },
+    "workflowShape": { "type": "string", "maxLength": 600 },
+    "evidencePolicy": { "type": "string", "maxLength": 500 },
+    "failurePolicy": { "type": "string", "maxLength": 500 },
+    "forbiddenActions": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "maxItems": 10 },
     "clarificationQuestions": {
       "type": "array",
       "maxItems": 3,
@@ -23,11 +28,14 @@
           "id": { "type": "string", "pattern": "^[a-z0-9-]{1,60}$" },
           "field": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,59}$" },
           "question": { "type": "string", "minLength": 1, "maxLength": 500 },
-          "required": { "type": "boolean" }
+          "required": { "type": "boolean" },
+          "options": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 80 }, "minItems": 2, "maxItems": 7 },
+          "multiple": { "type": "boolean" },
+          "customPlaceholder": { "type": "string", "minLength": 1, "maxLength": 120 }
         },
-        "required": ["id", "field", "question", "required"]
+        "required": ["id", "field", "question", "required", "options", "multiple", "customPlaceholder"]
       }
     }
   },
-  "required": ["readyForDesign", "recommendedApproach", "problemStatement", "targetUser", "desiredOutcome", "scope", "constraints", "assumptions", "rationale", "suggestedPrompt", "clarificationQuestions"]
+  "required": ["readyForDesign", "recommendedApproach", "problemStatement", "targetUser", "desiredOutcome", "scope", "constraints", "assumptions", "rationale", "suggestedPrompt", "inputs", "workflowShape", "evidencePolicy", "failurePolicy", "forbiddenActions", "clarificationQuestions"]
 }

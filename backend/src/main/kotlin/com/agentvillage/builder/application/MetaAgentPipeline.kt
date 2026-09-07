@@ -28,6 +28,11 @@ data class AgentDevelopmentProblemDefinition(
     val rationale: String,
     val suggestedPrompt: String,
     val clarificationQuestions: List<ClarificationQuestion>,
+    val inputs: List<String> = emptyList(),
+    val workflowShape: String = "",
+    val evidencePolicy: String = "",
+    val failurePolicy: String = "",
+    val forbiddenActions: List<String> = emptyList(),
 ) {
     fun designBrief(originalInstruction: String): String = """
         원문: ${originalInstruction.trim()}
@@ -35,6 +40,11 @@ data class AgentDevelopmentProblemDefinition(
         대상 사용자: $targetUser
         원하는 결과: $desiredOutcome
         해결 범위: $scope
+        입력 자료: ${inputs.joinToString("; ").ifBlank { "사용자가 대화에서 제공" }}
+        작업 구조: ${workflowShape.ifBlank { "결과에 필요한 최소 단계로 구성" }}
+        근거 규칙: ${evidencePolicy.ifBlank { "입력에 없는 사실은 만들지 않음" }}
+        실패 규칙: ${failurePolicy.ifBlank { "확인할 수 없는 항목은 실패 이유와 함께 표시" }}
+        금지 범위: ${forbiddenActions.joinToString("; ").ifBlank { "사용자가 요청하지 않은 외부 실행 없음" }}
         제약: ${constraints.joinToString("; ").ifBlank { "명시되지 않음" }}
         안전한 가정: ${assumptions.joinToString("; ").ifBlank { "없음" }}
     """.trimIndent()
@@ -477,7 +487,8 @@ class StructuredMetaAgentPipeline(
             else -> normalized
         }
         val executionSafe = if (mode == DesignMode.AGENT_DEVELOPMENT) replaceDirectInputUnresolvedTools(standardized) else standardized
-        val bindingNormalized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalizeBoundAgentSchemas(executionSafe) else executionSafe
+        val agentContractSafe = if (mode == DesignMode.AGENT_DEVELOPMENT) repairGeneratedAgentContracts(executionSafe) else executionSafe
+        val bindingNormalized = if (mode == DesignMode.AGENT_DEVELOPMENT) normalizeBoundAgentSchemas(agentContractSafe) else agentContractSafe
         val cumulative = if (mode == DesignMode.AGENT_DEVELOPMENT) bindingNormalized
         else preserveCumulativeClassificationRevision(standardized, instruction)
         val contractNormalized = cumulative.copy(proposal = cumulative.proposal.copy(graphPlan = cumulative.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize)))
@@ -594,33 +605,252 @@ class StructuredMetaAgentPipeline(
         })
     }
 
+    /**
+     * Repairs only two bounded generation defects: an input/trigger prefix left before the declared entry,
+     * and an AI node whose referenced Agent definition was omitted. It never changes business branches or
+     * invents an integration. Missing field contracts are derived exclusively from graph bindings.
+     */
+    internal fun repairGeneratedAgentContracts(bundle: MetaAgentDesignBundle): MetaAgentDesignBundle {
+        val originalPlan = bundle.proposal.graphPlan ?: return bundle
+        val reachable = mutableSetOf<String>()
+        val outgoing = originalPlan.edges.groupBy { it.source }
+        val queue = java.util.ArrayDeque<String>().apply { add(originalPlan.entryNodeId) }
+        while (queue.isNotEmpty()) {
+            val node = queue.removeFirst()
+            if (!reachable.add(node)) continue
+            outgoing[node].orEmpty().forEach { queue.add(it.target) }
+        }
+        val prefixCandidates = originalPlan.nodes
+            .filter { it.id !in reachable && it.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName) }
+            .map { it.id }
+            .toSet()
+        val removablePrefixes = prefixCandidates
+            .filter { id -> originalPlan.edges.filter { it.source == id }.all { it.target == originalPlan.entryNodeId || it.target in reachable || it.target in prefixCandidates } }
+            .toSet()
+        val plan = originalPlan.copy(
+            nodes = originalPlan.nodes.filterNot { it.id in removablePrefixes },
+            edges = originalPlan.edges.filterNot { it.source in removablePrefixes || it.target in removablePrefixes },
+        )
+        val nodesById = plan.nodes.associateBy { it.id }
+        val incoming = plan.edges.groupBy { it.target }
+        val outgoingEdges = plan.edges.groupBy { it.source }
+        val agents = bundle.agentDefinitions.toMutableList()
+        val agentIndex = agents.mapIndexed { index, agent -> agent.key to index }.toMap().toMutableMap()
+
+        fun root(value: String) = value.removePrefix("request.").substringBefore('.').substringBefore('[')
+        fun fieldsFor(node: WorkflowNodePlan, input: Boolean): List<FieldDefinition> {
+            val edges = if (input) incoming[node.id].orEmpty() else outgoingEdges[node.id].orEmpty()
+            return edges.flatMap { edge ->
+                edge.bindings.mapNotNull { binding ->
+                    val sourceName = root(binding.sourceField)
+                    val targetName = root(binding.targetField)
+                    val name = if (input) targetName else sourceName
+                    if (name in setOf("context", "status", "error")) return@mapNotNull null
+                    val peerNode = nodesById[if (input) edge.source else edge.target]
+                    val peerAgent = peerNode?.config?.get("agentKey")?.toString()
+                        ?.let(agentIndex::get)?.let(agents::get)
+                    val field = if (input) {
+                        if (peerNode?.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) {
+                            bundle.proposal.inputSchema.firstOrNull { it.name == sourceName }
+                        } else peerAgent?.outputSchema?.firstOrNull { it.name == sourceName }
+                    } else {
+                        peerAgent?.inputSchema?.firstOrNull { it.name == targetName }
+                    }
+                    (field?.copy(name = name) ?: FieldDefinition(name, "string", true, "${node.label} ${if (input) "입력" else "출력"}"))
+                }
+            }.distinctBy { it.name }
+        }
+
+        val repairedNodes = plan.nodes.map { node ->
+            if (node.nodeType !in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)) return@map node
+            val key = node.config["agentKey"]?.toString()?.takeIf(String::isNotBlank) ?: return@map node
+            if (key in agentIndex) return@map node
+            val inputs = fieldsFor(node, input = true)
+            val outputs = fieldsFor(node, input = false).ifEmpty {
+                bundle.proposal.outputSchema.ifEmpty { listOf(FieldDefinition("result", "string", true, "${node.label} 결과")) }
+            }
+            val instruction = node.config["instruction"]?.toString()?.takeIf(String::isNotBlank)
+                ?: "선언된 입력만 사용해 ${node.label} 결과를 생성한다."
+            if (agents.size < 5) {
+                val agent = AgentDefinition(
+                    key = key,
+                    name = node.label,
+                    role = instruction,
+                    inputSchema = inputs,
+                    outputSchema = outputs,
+                    behaviorRules = listOf("선언된 입력과 앞 단계 결과만 사용한다."),
+                    forbiddenRules = listOf("입력에 없는 사실을 만들거나 외부 작업을 수행하지 않는다."),
+                    evidenceRequirements = listOf("결론을 사용한 입력 및 앞 단계 결과와 연결한다."),
+                )
+                agentIndex[key] = agents.size
+                agents += agent
+                node
+            } else {
+                val synthesis = Regex("종합|집계|작성|writer|aggregate|synth", RegexOption.IGNORE_CASE)
+                val replacementIndex = agents.indexOfFirst { synthesis.containsMatchIn("${it.key} ${it.name} ${it.role}") }
+                    .takeIf { it >= 0 }
+                    ?: incoming[node.id].orEmpty().asReversed().firstNotNullOfOrNull { edge ->
+                        nodesById[edge.source]?.config?.get("agentKey")?.toString()?.let(agentIndex::get)
+                    }
+                    ?: 0
+                val replacement = agents[replacementIndex]
+                agents[replacementIndex] = replacement.copy(
+                    role = "${replacement.role} ${node.label} 단계에서는 다음 지시를 따른다: $instruction",
+                    inputSchema = (replacement.inputSchema + inputs.map { it.copy(required = false) }).distinctBy { it.name },
+                    outputSchema = (replacement.outputSchema + outputs).distinctBy { it.name },
+                )
+                node.copy(config = node.config + ("agentKey" to replacement.key))
+            }
+        }
+        return bundle.copy(
+            proposal = bundle.proposal.copy(graphPlan = plan.copy(nodes = repairedNodes)),
+            agentDefinitions = agents,
+        )
+    }
+
     /** Keeps a field contract identical while it crosses Agent-to-Agent edges or is passed through. */
     internal fun normalizeBoundAgentSchemas(bundle: MetaAgentDesignBundle): MetaAgentDesignBundle {
-        val plan = bundle.proposal.graphPlan ?: return bundle
+        val originalPlan = bundle.proposal.graphPlan ?: return bundle
+        val originalAgents = bundle.agentDefinitions.associateBy { it.key }
+        val originalNodes = originalPlan.nodes.associateBy { it.id }
+        val externalFields = bundle.proposal.inputSchema.map { it.name }.toSet()
+        val entryNode = originalNodes[originalPlan.entryNodeId]
+        val redirected = mutableListOf<WorkflowEdgePlan>()
+        val removedTargetFields = mutableMapOf<String, Set<String>>()
+        val branchNormalizedEdges = originalPlan.edges.map { edge ->
+            if (originalNodes[edge.source]?.nodeType != NodeType.CONDITION_BRANCH.wireName || edge.bindings.isEmpty()) {
+                return@map edge
+            }
+            val sourceNames = edge.bindings.map { it.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[') }.toSet()
+            val collection = bundle.proposal.inputSchema.singleOrNull { field ->
+                field.type.equals("array", true) && field.itemType.equals("object", true) &&
+                    sourceNames.isNotEmpty() && sourceNames.all { name -> field.itemSchema.orEmpty().any { it.name == name } }
+            } ?: return@map edge
+            removedTargetFields[edge.target] = edge.bindings
+                .map { it.targetField.removePrefix("request.").substringBefore('.').substringBefore('[') }.toSet()
+            edge.copy(bindings = listOf(WorkflowFieldBinding(collection.name, collection.name)))
+        }
+        val qualityNormalizedEdges = branchNormalizedEdges.map { edge ->
+            val sourceNode = originalNodes[edge.source] ?: return@map edge
+            if (sourceNode.nodeType != NodeType.QUALITY_CHECK.wireName) return@map edge
+            val produced = branchNormalizedEdges.filter { it.target == sourceNode.id }.flatMap { it.bindings }
+                .map { it.targetField.removePrefix("request.").substringBefore('.').substringBefore('[') }
+                .toSet() + "qualityPassed"
+            val kept = edge.bindings.filter { binding ->
+                binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[') in produced
+            }
+            val removed = edge.bindings - kept.toSet()
+            if (removed.isNotEmpty()) {
+                removedTargetFields[edge.target] = removedTargetFields[edge.target].orEmpty() + removed.map {
+                    it.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                }
+            }
+            edge.copy(bindings = kept.ifEmpty { listOf(WorkflowFieldBinding("context", "context")) })
+        }
+        val passThroughTypes = setOf(NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName)
+        val passThroughNormalizedEdges = qualityNormalizedEdges.map { edge ->
+            val sourceNode = originalNodes[edge.source] ?: return@map edge
+            if (sourceNode.nodeType !in passThroughTypes) return@map edge
+            val incomingFields = qualityNormalizedEdges.filter { it.target == sourceNode.id }
+                .flatMap { it.bindings }
+                .map { it.targetField.removePrefix("request.").substringBefore('.').substringBefore('[') }
+                .distinct()
+            if (incomingFields.size != 1) return@map edge
+            edge.copy(bindings = edge.bindings.map { binding ->
+                val sourceRoot = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                if (sourceRoot in incomingFields) binding else binding.copy(sourceField = incomingFields.single())
+            })
+        }
+        val edges = passThroughNormalizedEdges.map { edge ->
+            val sourceAgent = originalNodes[edge.source]?.config?.get("agentKey")?.toString()?.let(originalAgents::get)
+            val targetAgent = originalNodes[edge.target]?.config?.get("agentKey")?.toString()?.let(originalAgents::get)
+            val kept = edge.bindings.filterNot { binding ->
+                val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                val targetName = binding.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                val externalPassThrough = entryNode?.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName) &&
+                    sourceAgent != null && sourceName !in sourceAgent.outputSchema.map { it.name } && sourceName in externalFields &&
+                    targetAgent?.inputSchema?.any { it.name == targetName } == true
+                if (externalPassThrough) {
+                    redirected += WorkflowEdgePlan(
+                        id = "${edge.id}-external-$sourceName",
+                        source = originalPlan.entryNodeId,
+                        target = edge.target,
+                        condition = "inputAvailable=true",
+                        bindings = listOf(binding),
+                    )
+                }
+                externalPassThrough
+            }
+            edge.copy(bindings = kept.ifEmpty { listOf(WorkflowFieldBinding("context", "context")) })
+        }
+        val plan = originalPlan.copy(edges = (edges + redirected).distinctBy { it.id })
+        val nodesById = plan.nodes.associateBy { it.id }
         val agentKeyByNode = plan.nodes.mapNotNull { node ->
             node.config["agentKey"]?.toString()?.let { node.id to it }
         }.toMap()
         var agents = bundle.agentDefinitions.associateBy { it.key }
+        val reused = agentKeyByNode.values.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
         repeat(bundle.agentDefinitions.size.coerceAtLeast(1)) {
             plan.edges.forEach { edge ->
-                val sourceKey = agentKeyByNode[edge.source] ?: return@forEach
+                val sourceKey = agentKeyByNode[edge.source]
                 val targetKey = agentKeyByNode[edge.target] ?: return@forEach
-                val sourceAgent = agents[sourceKey] ?: return@forEach
                 val targetAgent = agents[targetKey] ?: return@forEach
-                var inputs = targetAgent.inputSchema
+                var inputs = targetAgent.inputSchema.filterNot { it.name in removedTargetFields[edge.target].orEmpty() }
                 var outputs = targetAgent.outputSchema
                 edge.bindings.forEach { binding ->
                     val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
                     val targetName = binding.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
-                    val sourceField = sourceAgent.outputSchema.firstOrNull { it.name == sourceName } ?: return@forEach
+                    val sourceAgent = sourceKey?.let(agents::get)
+                    var sourceField = sourceAgent?.outputSchema?.firstOrNull { it.name == sourceName }
+                        ?: bundle.proposal.inputSchema.firstOrNull { field ->
+                            nodesById[edge.source]?.nodeType in setOf(
+                                NodeType.MANUAL_TRIGGER.wireName,
+                                NodeType.TEXT_INPUT.wireName,
+                                NodeType.CONDITION_BRANCH.wireName,
+                            ) && field.name == sourceName
+                        }
+                    if (sourceField == null && sourceAgent != null && sourceName !in setOf("context", "status", "error")) {
+                        sourceField = inputs.firstOrNull { it.name == targetName }?.copy(name = sourceName)
+                            ?: bundle.proposal.outputSchema.firstOrNull { it.name == sourceName || it.name == targetName }?.copy(name = sourceName)
+                            ?: FieldDefinition(sourceName, "string", true, "${nodesById[edge.source]?.label ?: sourceAgent.name} 출력")
+                        agents = agents + (sourceAgent.key to sourceAgent.copy(outputSchema = sourceAgent.outputSchema + sourceField))
+                    }
+                    sourceField ?: return@forEach
                     val replacement = sourceField.copy(name = targetName)
-                    inputs = inputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
+                    inputs = if (inputs.any { it.name == targetName }) {
+                        inputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
+                    } else inputs + replacement.copy(required = targetKey !in reused)
                     outputs = outputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
                 }
                 agents = agents + (targetKey to targetAgent.copy(inputSchema = inputs, outputSchema = outputs))
             }
         }
-        return bundle.copy(agentDefinitions = bundle.agentDefinitions.map { agents.getValue(it.key) })
+        plan.edges.filter { agentKeyByNode[it.source] != null && agentKeyByNode[it.target] == null }.forEach { edge ->
+            val sourceKey = agentKeyByNode.getValue(edge.source)
+            val sourceAgent = agents[sourceKey] ?: return@forEach
+            val additions = edge.bindings.mapNotNull { binding ->
+                val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                if (sourceName in sourceAgent.outputSchema.map { it.name } || sourceName in setOf("context", "status", "error")) return@mapNotNull null
+                bundle.proposal.outputSchema.firstOrNull { it.name == sourceName } ?: FieldDefinition(sourceName, "string", true, "${nodesById[edge.source]?.label ?: sourceAgent.name} 출력")
+            }
+            if (additions.isNotEmpty()) agents = agents + (sourceKey to sourceAgent.copy(outputSchema = sourceAgent.outputSchema + additions))
+        }
+        val workflowEndIds = plan.nodes.filter { it.nodeType == NodeType.WORKFLOW_END.wireName }.map { it.id }.toSet()
+        val terminalOutputNames = plan.edges.filter { it.target in workflowEndIds }
+            .flatMap { edge -> edge.bindings.map { it.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[') } }
+            .filterNot { it in setOf("context", "status", "error") }
+            .toSet()
+        val finalOutputSchema = bundle.proposal.outputSchema
+            .filter { terminalOutputNames.isEmpty() || it.name in terminalOutputNames }
+            .ifEmpty { bundle.proposal.outputSchema }
+        return bundle.copy(
+            proposal = bundle.proposal.copy(graphPlan = plan, outputSchema = finalOutputSchema),
+            agentDefinitions = bundle.agentDefinitions.map { original ->
+                agents.getValue(original.key).let { agent ->
+                    if (agent.key in reused) agent.copy(inputSchema = agent.inputSchema.map { it.copy(required = false) }) else agent
+                }
+            },
+        )
     }
 
     /** Preserve every allowed enum value when multiple producers share one bound contract. */
@@ -1170,6 +1400,17 @@ internal object WorkflowGraphPlanNormalizer {
             .map { duplicates ->
                 duplicates.first().copy(bindings = duplicates.flatMap { it.bindings }.distinct())
             }
+        val nodeTypes = plan.nodes.associate { it.id to it.nodeType }
+        val bindingsSafeEdges = edges.map { edge ->
+            if (nodeTypes[edge.target] != NodeType.WORKFLOW_END.wireName) return@map edge
+            val used = mutableSetOf<String>()
+            edge.copy(bindings = edge.bindings.mapIndexed { index, binding ->
+                if (used.add(binding.targetField)) return@mapIndexed binding
+                val base = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
+                val target = generateSequence(base.ifBlank { "result$index" }) { "$it-$index" }.first(used::add)
+                binding.copy(targetField = target)
+            })
+        }
         val nodes = plan.nodes.map { node ->
             if (node.nodeType !in setOf(NodeType.TEMPLATE_RENDER.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.EMAIL_SEND_MOCK.wireName)) return@map node
             if (!node.config["rendererKey"]?.toString().isNullOrBlank()) return@map node
@@ -1177,7 +1418,7 @@ internal object WorkflowGraphPlanNormalizer {
         }
         return plan.copy(
             nodes = nodes,
-            edges = edges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge },
+            edges = bindingsSafeEdges.map { edge -> if (edge.bindings.isEmpty()) edge.copy(bindings = listOf(WorkflowFieldBinding("context", "context"))) else edge },
         )
     }
 

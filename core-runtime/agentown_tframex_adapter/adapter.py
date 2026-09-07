@@ -250,6 +250,8 @@ class TracingLLMAgent(LLMAgent):
 
     @staticmethod
     def _validate_field_value(actual: Any, field: dict[str, Any], label: str, path: str) -> None:
+        if actual is None and not field.get("required"):
+            return
         expected = {"string": str, "array": list, "object": dict, "boolean": bool, "number": (int, float), "integer": int}
         expected_type = field.get("type")
         if expected_type in expected:
@@ -357,6 +359,9 @@ class ToolExecutorAgent(BaseAgent):
             result = await self.config["engine"].execute_tool_by_llm_definition(tool_name, content)
             if isinstance(result, dict) and "error" in result:
                 raise RuntimeError(str(result["error"]))
+            if isinstance(result, dict):
+                declared = [str(field["name"]) for field in self.config.get("output_schema") or []]
+                result = {name: result[name] for name in declared if name in result}
             TracingLLMAgent._validate_json_contract(
                 json.dumps(result, ensure_ascii=False),
                 self.config.get("output_schema") or [],
@@ -397,6 +402,8 @@ class ConditionRouterAgent(BaseAgent):
             actual = _resolve_path(value, str(condition.get("field") or ""))
             if actual is _MISSING and condition.get("fallbackField"):
                 actual = _resolve_path(value, str(condition["fallbackField"]))
+            if actual is _MISSING and self.config.get("expression"):
+                actual = _evaluate_branch_expression(value, str(self.config["expression"]))
             if actual is not _MISSING and _condition_matches(
                 actual,
                 str(condition.get("operator") or "EQUALS"),
@@ -535,6 +542,7 @@ class AgentownTFrameXAdapter:
                 input_defaults=dict(config.get("inputDefaults") or {}),
                 preserve_input=config.get("preserveInput") is True,
                 route_conditions=list(config.get("routeConditions") or []),
+                expression=config.get("expression"),
             )(agent_class)
 
     def _step(self, value: Any) -> str | BasePattern:
@@ -856,3 +864,41 @@ def _condition_matches(actual: Any, operator: str, expected: Any) -> bool:
     if operator == "GREATER_THAN_OR_EQUALS":
         return actual >= expected_value
     raise ValueError(f"Unsupported route operator: {operator}")
+
+
+def _evaluate_branch_expression(value: dict[str, Any], expression: str) -> Any:
+    """Evaluate the deliberately small condition.branch expression language."""
+    match = re.fullmatch(
+        r"\s*([A-Za-z][A-Za-z0-9_.]*(?:\.length)?)\s*(==|!=|>=|<=|>|<)\s*(true|false|-?\d+(?:\.\d+)?)\s*",
+        expression,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return _MISSING
+    path, operator, raw_expected = match.groups()
+    wants_length = path.endswith(".length")
+    if wants_length:
+        path = path[:-7]
+    actual = _resolve_path(value, path)
+    if actual is _MISSING:
+        return _MISSING
+    if wants_length:
+        if not isinstance(actual, (list, dict, str)):
+            return _MISSING
+        actual = len(actual)
+    if raw_expected.lower() in {"true", "false"}:
+        expected: Any = raw_expected.lower() == "true"
+    else:
+        expected = float(raw_expected)
+    operations = {
+        "==": lambda: actual == expected,
+        "!=": lambda: actual != expected,
+        ">=": lambda: actual >= expected,
+        "<=": lambda: actual <= expected,
+        ">": lambda: actual > expected,
+        "<": lambda: actual < expected,
+    }
+    try:
+        return operations[operator]()
+    except TypeError:
+        return _MISSING

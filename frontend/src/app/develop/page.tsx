@@ -1,10 +1,9 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect -- restore the server-owned session id once on mount */
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/react";
-import { Bot, Boxes, CheckCircle2, ChevronRight, CircleStop, Database, FileCode2, GitBranch, History, PanelRight, Play, Plus, RotateCcw, Save, Send, Sparkles, TestTube2, Users, Wrench, X } from "lucide-react";
+import { Bot, CheckCircle2, ChevronRight, CircleStop, Database, Download, FileCode2, History, PanelRight, Play, Plus, RotateCcw, Save, Send, Sparkles, TestTube2, Users, Wrench, X } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { api } from "@/lib/api";
 
@@ -12,9 +11,10 @@ type Agent = { key: string; name: string; role: string; behaviorRules: string[];
 type Resource = { resourceKind: "TOOL" | "SKILL" | "CONNECTOR" | "MEMORY"; resourceKey: string; label: string; availability: string; reason: string; requiresUserAction: boolean };
 type GraphNode = { id: string; nodeType: string; label: string; position: { x: number; y: number }; config: Record<string, unknown> };
 type Graph = { nodes: GraphNode[]; edges: Array<{ id: string; source: string; target: string }> };
+type ClarificationQuestion = { id: string; field: string; question: string; required?: boolean; options?: string[]; multiple?: boolean; customPlaceholder?: string };
 type Snapshot = {
   conversationId: string; workflowId: string; status: string;
-  clarificationQuestions: Array<{ id: string; field: string; question: string }>;
+  clarificationQuestions: ClarificationQuestion[];
   proposal?: { name: string; summary: string; capabilities: string[]; resourcePlan?: { bindings: Resource[]; uncoveredCapabilities: string[]; simulationReady: boolean; productionReady: boolean }; agentDesign?: { naturalLanguageSummary: string; assumptions: Array<{ key: string; value: string; reason: string }>; simulationScenarios: Array<{ name: string; input: Record<string, unknown>; expectedStages: string[] }>; review: { passed: boolean; issues: Array<{ code: string; message: string }> } } };
   agentDefinitions: Agent[]; graph?: Graph; currentVersionId?: string; validation?: { valid: boolean; graphHash: string };
   sampleInput: Record<string, unknown>;
@@ -60,7 +60,7 @@ export default function AgentDevelopmentPage() {
   const [sessionId, setSessionId] = useState<string>();
   const [message, setMessage] = useState("");
   const [jobId, setJobId] = useState<string>();
-  const [panel, setPanel] = useState<"team" | "resources" | "graph" | "versions" | "output">("team");
+  const [panel, setPanel] = useState<"team" | "resources" | "versions" | "output">("team");
   const [mobileInspector, setMobileInspector] = useState(false);
   const [run, setRun] = useState<Run>();
   const [testInput, setTestInput] = useState("");
@@ -116,7 +116,7 @@ export default function AgentDevelopmentPage() {
     onSuccess: next => { store(next); setMessage(""); setPanel("team"); },
     onError: () => snapshotQuery.refetch(),
   });
-  const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-design") }, body: JSON.stringify({ approve }) }), onSuccess: next => { store(next); if (next.graph) setPanel("graph"); } });
+  const decideDesign = useMutation({ mutationFn: (approve: boolean) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/design-decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-design") }, body: JSON.stringify({ approve }) }), onSuccess: next => { store(next); setPanel("team"); } });
   const updateAgent = useMutation({ mutationFn: ({ agentKey, value }: { agentKey: string; value: Agent }) => api<Snapshot>(`/agent-development/sessions/${snapshot!.conversationId}/agents/${agentKey}`, { method: "PUT", headers: { "Idempotency-Key": key("agent-config") }, body: JSON.stringify(value) }), onSuccess: next => store(next) });
   const simulate = useMutation({ mutationFn: () => api<Run>(`/agent-development/sessions/${snapshot!.conversationId}/simulations`, { method: "POST", headers: { "Idempotency-Key": key("agent-test") }, body: JSON.stringify({ input: parseTestInput(testInput, snapshot) }) }), onSuccess: next => { setRun(next); setPanel("output"); } });
   const decideRun = useMutation({ mutationFn: (approve: boolean) => api<Run>(`/agent-development/runs/${run!.id}/decision`, { method: "POST", headers: { "Idempotency-Key": key("agent-run-decision") }, body: JSON.stringify({ approve }) }), onSuccess: setRun });
@@ -137,9 +137,6 @@ export default function AgentDevelopmentPage() {
 
   const pending = create.isPending || send.isPending || patch.isPending || decideDesign.isPending || updateAgent.isPending || simulate.isPending || decideRun.isPending || restoreVersion.isPending || Boolean(jobId && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.data?.status ?? ""));
   const error = create.error || send.error || patch.error || decideDesign.error || updateAgent.error || simulate.error || decideRun.error || restoreVersion.error || snapshotQuery.error || (job.data?.status === "FAILED" ? new Error(job.data.errorMessage ?? "에이전트 생성에 실패했습니다.") : null);
-  const flowNodes = useMemo<Node[]>(() => snapshot?.graph?.nodes.map(node => ({ id: node.id, position: node.position, data: { label: node.label }, style: { width: 180, borderRadius: 6, border: "1px solid #d4d4d0", fontSize: 12, padding: 12, background: "white" } })) ?? [], [snapshot?.graph]);
-  const flowEdges = useMemo<Edge[]>(() => snapshot?.graph?.edges.map(edge => ({ ...edge, animated: true })) ?? [], [snapshot?.graph]);
-
   return <AppShell kicker="DEVELOP" title="에이전트 개발" workspace>
     <div className="relative grid h-full min-h-0 bg-[#f5f5f2] lg:grid-cols-[250px_minmax(420px,1fr)_360px]">
       <aside className="hidden min-h-0 border-r border-hairline bg-white lg:flex lg:flex-col">
@@ -167,7 +164,7 @@ export default function AgentDevelopmentPage() {
               <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => { setMessage(example); void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "EXAMPLE_SELECTED" }) }).catch(() => undefined); }} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
             </div>}
             {snapshot?.messages.map(item => <article key={item.id} className={`flex gap-3 ${item.role === "USER" ? "justify-end" : "justify-start"}`}>{item.role !== "USER" && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span>}<div className={`max-w-[82%] rounded-md px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "bg-[#e9e9e4] text-ink" : "border border-hairline bg-white"}`}>{item.content}</div></article>)}
-            {snapshot?.status === "NEEDS_CLARIFICATION" && snapshot.clarificationQuestions.map(question => <article key={question.id} className="ml-11 rounded-md border border-amber-200 bg-amber-50 p-4"><p className="text-[11px] font-semibold text-amber-800">설계에 꼭 필요한 기준</p><p className="mt-2 text-sm leading-6 text-amber-950">{question.question}</p></article>)}
+            {snapshot?.status === "NEEDS_CLARIFICATION" && <ClarificationForm key={`${snapshot.conversationId}:${snapshot.clarificationQuestions.map(question => question.id).join(",")}`} questions={snapshot.clarificationQuestions} pending={pending} submit={content => send.mutate(content)} />}
             {pending && <article className="flex gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span><div className="min-w-64 rounded-md border border-hairline p-4"><div className="flex items-center justify-between gap-4"><p className="text-sm font-medium">에이전트를 구성하고 있습니다</p><span className="text-[11px] text-mute">{job.data ? `${stageLabel(job.data.stage)} · ${job.data.elapsedSeconds}초` : "요청 준비"}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cloud"><div className="h-full w-2/3 animate-pulse rounded-full bg-coral" /></div><button onClick={() => cancel.mutate()} disabled={!jobId} className="mt-3 flex items-center gap-1 text-xs text-mute hover:text-sale"><CircleStop className="h-3.5 w-3.5" />중지</button></div></article>}
             {error && <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error.message}</div>}
           </div>
@@ -176,22 +173,20 @@ export default function AgentDevelopmentPage() {
       </main>
 
       <aside className="hidden min-h-0 border-l border-hairline bg-[#fafaf8] lg:flex lg:flex-col">
-        <div className="grid h-14 shrink-0 grid-cols-5 border-b border-hairline"><InspectorTab active={panel === "team"} onClick={() => setPanel("team")} icon={Users} label="팀" /><InspectorTab active={panel === "resources"} onClick={() => setPanel("resources")} icon={Database} label="리소스" /><InspectorTab active={panel === "graph"} onClick={() => setPanel("graph")} icon={GitBranch} label="구조" /><InspectorTab active={panel === "versions"} onClick={() => setPanel("versions")} icon={History} label="버전" /><InspectorTab active={panel === "output"} onClick={() => setPanel("output")} icon={TestTube2} label="테스트" /></div>
+        <div className="grid h-14 shrink-0 grid-cols-4 border-b border-hairline"><InspectorTab active={panel === "team"} onClick={() => setPanel("team")} icon={Users} label="팀" /><InspectorTab active={panel === "resources"} onClick={() => setPanel("resources")} icon={Database} label="리소스" /><InspectorTab active={panel === "versions"} onClick={() => setPanel("versions")} icon={History} label="버전" /><InspectorTab active={panel === "output"} onClick={() => setPanel("output")} icon={TestTube2} label="테스트" /></div>
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {panel === "team" && <TeamPanel snapshot={snapshot} pending={pending} decide={approve => decideDesign.mutate(approve)} save={(agentKey, value) => updateAgent.mutate({ agentKey, value })} />}
           {panel === "resources" && <ResourcesPanel snapshot={snapshot} />}
-          {panel === "graph" && <div className="h-full min-h-[420px] border border-hairline bg-white">{snapshot?.graph ? <ReactFlow nodes={flowNodes} edges={flowEdges} fitView proOptions={{ hideAttribution: true }}><Background gap={18} size={1} /><Controls showInteractive={false} /></ReactFlow> : <Empty icon={Boxes} text="대화로 에이전트를 만들면 협업 구조가 표시됩니다." />}</div>}
           {panel === "versions" && <VersionsPanel snapshot={snapshot} pending={pending} restore={versionId => restoreVersion.mutate(versionId)} />}
           {panel === "output" && <OutputPanel snapshot={snapshot} run={run} input={testInput} setInput={setTestInput} pending={pending} simulate={() => simulate.mutate()} decide={approve => decideRun.mutate(approve)} />}
         </div>
       </aside>
 
       {mobileInspector && <section className="absolute inset-0 z-30 flex min-h-0 flex-col bg-[#fafaf8] lg:hidden" aria-label="에이전트 상세">
-        <header className="flex h-14 shrink-0 items-center border-b border-hairline bg-white"><div className="grid h-full flex-1 grid-cols-5"><InspectorTab active={panel === "team"} onClick={() => setPanel("team")} icon={Users} label="팀" /><InspectorTab active={panel === "resources"} onClick={() => setPanel("resources")} icon={Database} label="리소스" /><InspectorTab active={panel === "graph"} onClick={() => setPanel("graph")} icon={GitBranch} label="구조" /><InspectorTab active={panel === "versions"} onClick={() => setPanel("versions")} icon={History} label="버전" /><InspectorTab active={panel === "output"} onClick={() => setPanel("output")} icon={TestTube2} label="테스트" /></div><button onClick={() => setMobileInspector(false)} title="닫기" aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center"><X className="h-4 w-4" /></button></header>
+        <header className="flex h-14 shrink-0 items-center border-b border-hairline bg-white"><div className="grid h-full flex-1 grid-cols-4"><InspectorTab active={panel === "team"} onClick={() => setPanel("team")} icon={Users} label="팀" /><InspectorTab active={panel === "resources"} onClick={() => setPanel("resources")} icon={Database} label="리소스" /><InspectorTab active={panel === "versions"} onClick={() => setPanel("versions")} icon={History} label="버전" /><InspectorTab active={panel === "output"} onClick={() => setPanel("output")} icon={TestTube2} label="테스트" /></div><button onClick={() => setMobileInspector(false)} title="닫기" aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center"><X className="h-4 w-4" /></button></header>
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {panel === "team" && <TeamPanel snapshot={snapshot} pending={pending} decide={approve => decideDesign.mutate(approve)} save={(agentKey, value) => updateAgent.mutate({ agentKey, value })} />}
           {panel === "resources" && <ResourcesPanel snapshot={snapshot} />}
-          {panel === "graph" && <div className="h-full min-h-[420px] border border-hairline bg-white">{snapshot?.graph ? <ReactFlow nodes={flowNodes} edges={flowEdges} fitView proOptions={{ hideAttribution: true }}><Background gap={18} size={1} /><Controls showInteractive={false} /></ReactFlow> : <Empty icon={Boxes} text="대화로 에이전트를 만들면 협업 구조가 표시됩니다." />}</div>}
           {panel === "versions" && <VersionsPanel snapshot={snapshot} pending={pending} restore={versionId => restoreVersion.mutate(versionId)} />}
           {panel === "output" && <OutputPanel snapshot={snapshot} run={run} input={testInput} setInput={setTestInput} pending={pending} simulate={() => simulate.mutate()} decide={approve => decideRun.mutate(approve)} />}
         </div>
@@ -202,7 +197,26 @@ export default function AgentDevelopmentPage() {
 
 function TeamPanel({ snapshot, pending, decide, save }: { snapshot?: Snapshot; pending: boolean; decide: (approve: boolean) => void; save: (agentKey: string, value: Agent) => void }) {
   if (!snapshot?.proposal) return <Empty icon={Users} text="역할에 맞는 에이전트 팀이 여기에 구성됩니다." />;
-  return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold text-coral">AGENT PACKAGE</p><p className="mt-2 text-sm leading-6">{snapshot.proposal.summary}</p><div className="mt-3 flex flex-wrap gap-1">{snapshot.proposal.capabilities.map(item => <span key={item} className="rounded-md bg-cloud px-2 py-1 text-[11px]">{item}</span>)}</div></div>{snapshot.agentDefinitions.length === 0 && <div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold">결정론적 Function 워크플로</p><p className="mt-2 text-xs leading-5 text-mute">AI 팀원 없이 선언된 Function과 조건만으로 실행됩니다.</p></div>}{snapshot.agentDefinitions.map(agent => <AgentEditor key={`${agent.key}-${snapshot.currentVersionId ?? "draft"}`} agent={agent} resources={snapshot.proposal?.resourcePlan?.bindings ?? []} disabled={pending || !snapshot.currentVersionId} save={value => save(agent.key, value)} />)}{snapshot.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2 pt-1"><button disabled={pending} onClick={() => decide(false)} className="rounded-md border border-hairline px-3 py-2.5 text-xs disabled:opacity-40">수정 요청</button><button disabled={pending} onClick={() => decide(true)} className="rounded-md bg-ink px-3 py-2.5 text-xs text-white disabled:opacity-40">설계 승인</button></div>}{snapshot.currentVersionId && <a href={`/api/agent-development/sessions/${snapshot.conversationId}/package`} className="flex items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs"><FileCode2 className="h-3.5 w-3.5" />에이전트 패키지</a>}</div>;
+  return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold text-coral">AGENT PACKAGE</p><p className="mt-2 text-sm leading-6">{snapshot.proposal.summary}</p><div className="mt-3 flex flex-wrap gap-1">{snapshot.proposal.capabilities.map(item => <span key={item} className="rounded-md bg-cloud px-2 py-1 text-[11px]">{item}</span>)}</div></div>{snapshot.agentDefinitions.length === 0 && <div className="rounded-md border border-hairline bg-white p-4"><p className="text-xs font-semibold">결정론적 Function 워크플로</p><p className="mt-2 text-xs leading-5 text-mute">AI 팀원 없이 선언된 Function과 조건만으로 실행됩니다.</p></div>}{snapshot.agentDefinitions.map(agent => <AgentEditor key={`${agent.key}-${snapshot.currentVersionId ?? "draft"}`} agent={agent} resources={snapshot.proposal?.resourcePlan?.bindings ?? []} disabled={pending || !snapshot.currentVersionId} save={value => save(agent.key, value)} />)}{snapshot.status === "WAITING_DESIGN_APPROVAL" && <div className="grid grid-cols-2 gap-2 pt-1"><button disabled={pending} onClick={() => decide(false)} className="rounded-md border border-hairline px-3 py-2.5 text-xs disabled:opacity-40">수정 요청</button><button disabled={pending} onClick={() => decide(true)} className="rounded-md bg-ink px-3 py-2.5 text-xs text-white disabled:opacity-40">설계 승인</button></div>}{snapshot.currentVersionId && <PackageDownloadButton conversationId={snapshot.conversationId} />}</div>;
+}
+function PackageDownloadButton({ conversationId }: { conversationId: string }) {
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState("");
+  async function download() {
+    setDownloading(true); setError("");
+    try {
+      const response = await fetch(`/api/agent-development/sessions/${conversationId}/package`, { credentials: "include" });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "패키지를 내려받지 못했습니다.");
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("빈 패키지가 반환되었습니다.");
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = `agentown-agent-${conversationId.slice(0, 8)}.zip`; anchor.style.display = "none";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "패키지를 내려받지 못했습니다."); }
+    finally { setDownloading(false); }
+  }
+  return <div><button type="button" disabled={downloading} onClick={download} className="flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs disabled:opacity-40">{downloading ? <Download className="h-3.5 w-3.5 animate-pulse" /> : <FileCode2 className="h-3.5 w-3.5" />}{downloading ? "패키지 준비 중" : "에이전트 패키지 다운로드"}</button>{error && <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p>}</div>;
 }
 function AgentEditor({ agent, resources, disabled, save }: { agent: Agent; resources: Resource[]; disabled: boolean; save: (value: Agent) => void }) {
   const [editing, setEditing] = useState(false);
@@ -216,7 +230,7 @@ function AgentEditor({ agent, resources, disabled, save }: { agent: Agent; resou
 function RuleEditor({ label, values, onChange }: { label: string; values: string[]; onChange: (values: string[]) => void }) { return <div><label className="text-[11px] font-semibold">{label}</label><textarea value={values.join("\n")} onChange={event => onChange(event.target.value.split("\n"))} rows={3} className="mt-1 w-full resize-y rounded-md border border-hairline px-3 py-2 text-xs leading-5" /></div>; }
 function ResourceChecks({ label, items, selected, toggle }: { label: string; items: Resource[]; selected: string[]; toggle: (key: string) => void }) { if (!items.length) return null; return <fieldset><legend className="text-[11px] font-semibold">{label}</legend><div className="mt-1 space-y-1">{items.map(item => <label key={item.resourceKey} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={selected.includes(item.resourceKey)} onChange={() => toggle(item.resourceKey)} />{item.label}</label>)}</div></fieldset>; }
 function ResourcesPanel({ snapshot }: { snapshot?: Snapshot }) {
-  const resources = snapshot?.proposal?.resourcePlan?.bindings ?? [];
+  const resources = Array.from(new Map((snapshot?.proposal?.resourcePlan?.bindings ?? []).map(item => [`${item.resourceKind}:${item.resourceKey}`, item])).values());
   if (!resources.length) return <Empty icon={Database} text="설계가 생성되면 필요한 도구, 스킬, 커넥터와 메모리가 표시됩니다." />;
   return <div className="space-y-3"><div className="grid grid-cols-3 gap-2"><ReadinessBox label="패키지" status={snapshot?.packageStatus ?? "EXECUTION_NOT_CONFIGURED"} /><ReadinessBox label="대화형" status={snapshot?.interactiveStatus ?? "EXECUTION_NOT_CONFIGURED"} /><ReadinessBox label="자동화" status={snapshot?.automationStatus ?? "EXECUTION_NOT_CONFIGURED"} /></div>{resources.map(item => <article key={`${item.resourceKind}-${item.resourceKey}`} className="rounded-md border border-hairline bg-white p-3"><div className="flex items-center justify-between gap-2"><p className="truncate text-xs font-semibold">{item.label}</p><span className={`rounded px-1.5 py-0.5 text-[10px] ${item.availability === "INSTALLED" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>{item.availability}</span></div><p className="mt-1 text-[10px] uppercase text-mute">{item.resourceKind} · {item.resourceKey}</p><p className="mt-2 text-[11px] leading-5 text-mute">{item.reason}</p></article>)}</div>;
 }
@@ -228,10 +242,52 @@ function OutputPanel({ snapshot, run, input, setInput, pending, simulate, decide
   return <div className="space-y-3"><div className="rounded-md border border-hairline bg-white p-3"><label className="text-[11px] font-semibold">테스트 입력</label><textarea aria-label="테스트 입력" value={input} onChange={event => setInput(event.target.value)} placeholder={sample} rows={4} className="mt-2 w-full resize-y rounded-md border border-hairline px-3 py-2 text-xs leading-5" /><button disabled={pending} onClick={simulate} className="mt-2 flex w-full items-center justify-center gap-1 rounded-md bg-ink py-2.5 text-xs text-white disabled:opacity-35"><Play className="h-3.5 w-3.5" />테스트 실행</button></div>{run && <div className="rounded-md border border-hairline bg-white p-3"><div className="flex items-center justify-between"><p className="text-xs font-semibold">실행 결과</p><span className="text-[10px] text-mute">{run.status}</span></div>{run.status === "SUCCEEDED" && run.requirementMatched === true && <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-[11px] font-semibold text-emerald-800">샘플 Runner 서버 검증이 완료되었습니다.</div>}{run.failureMessage && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] leading-5 text-amber-900"><p className="font-semibold">{run.failureCode ?? run.status}</p><p className="mt-1">{run.failureMessage}</p></div>}<div className="mt-3 space-y-1">{run.steps.map(step => <div key={`${step.sequenceNo}-${step.nodeId}`} className="flex items-center justify-between border-b border-hairline py-1.5 text-[11px]"><span>{step.sequenceNo}. {step.nodeType}</span><span className="text-mute">{step.status}</span></div>)}</div>{run.status === "WAITING_APPROVAL" && <div className="mt-3 grid grid-cols-2 gap-2"><button onClick={() => decide(false)} className="rounded-md border border-hairline py-2 text-xs">거절</button><button onClick={() => decide(true)} className="rounded-md bg-ink py-2 text-xs text-white">계속 실행</button></div>}<pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-[#f5f5f2] p-3 text-[11px] leading-5">{JSON.stringify(run.output ?? {}, null, 2)}</pre></div>}</div>;
 }
 function GuideField({ number, label, placeholder, value, onChange }: { number: string; label: string; placeholder: string; value: string; onChange: (value: string) => void }) { return <label className="rounded-md border border-hairline bg-white p-3 text-xs font-semibold"><span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-ink text-[10px] text-white">{number}</span>{label}<input value={value} onChange={event => onChange(event.target.value)} placeholder={placeholder} maxLength={500} className="mt-3 w-full border-0 border-b border-hairline px-0 py-2 text-sm font-normal outline-none focus:border-ink" /></label>; }
-function NextAction({ status, hasVersion, run, open }: { status?: string; hasVersion: boolean; run?: Run; open: (panel: "team" | "graph" | "output") => void }) {
+type ClarificationChoiceConfig = { options: string[]; multiple: boolean; placeholder: string };
+function clarificationChoiceConfig(question: ClarificationQuestion): ClarificationChoiceConfig {
+  if (question.options && question.options.length > 0) return { options: question.options, multiple: question.multiple ?? false, placeholder: question.customPlaceholder || "답을 직접 적어주세요" };
+  const meaning = `${question.field} ${question.question}`.toLowerCase();
+  if ((meaning.includes("누가") || meaning.includes("사용자") || meaning.includes("targetuser")) && meaning.includes("컵")) {
+    return { options: ["개인 일상용", "어린이·고령자용", "사무실·카페용", "야외·휴대용", "장애·불편 개선용", "기타 — 직접 입력"], multiple: false, placeholder: "사용자와 해결하려는 불편을 자유롭게 적어주세요" };
+  }
+  if (meaning.includes("결과물") || meaning.includes("desiredoutcome") || (meaning.includes("컵") && (meaning.includes("제작") || meaning.includes("디자인")))) {
+    return { options: ["실제 제작 가능한 컵", "디자인 콘셉트 이미지", "치수 포함 설계도", "3D 모델", "시제품 제작 가이드", "아직 모르겠음", "기타 — 직접 입력"], multiple: true, placeholder: "원하는 특징·형태나 다른 결과물을 적어주세요" };
+  }
+  if (meaning.includes("승인") || meaning.includes("검토")) return { options: ["바로 결과 제공", "담당자 검토 후 확정", "아직 모르겠음", "기타 — 직접 입력"], multiple: false, placeholder: "원하는 검토·승인 방식을 적어주세요" };
+  if (meaning.includes("언제") || meaning.includes("시작") || meaning.includes("트리거")) return { options: ["필요할 때 직접 시작", "정해진 시간에 시작", "특정 이벤트가 생기면 시작", "아직 모르겠음", "기타 — 직접 입력"], multiple: false, placeholder: "업무가 시작되는 상황을 적어주세요" };
+  return { options: ["아직 모르겠음", "기타 — 직접 입력"], multiple: false, placeholder: "답을 직접 적어주세요" };
+}
+function ClarificationForm({ questions, pending, submit }: { questions: ClarificationQuestion[]; pending: boolean; submit: (content: string) => void }) {
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [details, setDetails] = useState<Record<string, string>>({});
+  function toggle(question: ClarificationQuestion, option: string, multiple: boolean) {
+    setSelected(current => {
+      const values = current[question.id] ?? [];
+      if (!multiple) return { ...current, [question.id]: values.includes(option) ? [] : [option] };
+      if (option === "아직 모르겠음") return { ...current, [question.id]: values.includes(option) ? [] : [option] };
+      const withoutUnknown = values.filter(value => value !== "아직 모르겠음");
+      return { ...current, [question.id]: withoutUnknown.includes(option) ? withoutUnknown.filter(value => value !== option) : [...withoutUnknown, option] };
+    });
+  }
+  function answer(question: ClarificationQuestion) {
+    const choices = (selected[question.id] ?? []).filter(value => !value.startsWith("기타"));
+    const detail = (details[question.id] ?? "").trim();
+    return [...choices, ...(detail ? [detail] : [])];
+  }
+  const complete = questions.length > 0 && questions.every(question => !question.required || answer(question).length > 0);
+  function startDesign() {
+    if (!complete || pending) return;
+    submit(questions.map((question, index) => `${index + 1}. ${question.question}\n답변: ${answer(question).join(", ")}`).join("\n\n"));
+  }
+  return <section className="ml-0 space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 md:ml-11 md:p-5" aria-label="설계 입력 카드">
+    <div><p className="text-sm font-semibold text-amber-950">설계에 필요한 조건을 선택해 주세요</p><p className="mt-1 text-xs leading-5 text-amber-800">채팅 문장을 다시 만들 필요 없이 선택하고 바로 설계를 시작할 수 있습니다.</p></div>
+    {questions.map((question, index) => { const config = clarificationChoiceConfig(question); const values = selected[question.id] ?? []; return <fieldset key={question.id} className="rounded-md border border-amber-200 bg-white p-4"><legend className="px-1 text-xs font-semibold text-amber-900">{index + 1}. {question.question}</legend><div className="mt-2 flex flex-wrap gap-2">{config.options.map(option => <button key={option} type="button" aria-pressed={values.includes(option)} onClick={() => toggle(question, option, config.multiple)} className={`rounded-full border px-3 py-2 text-xs transition ${values.includes(option) ? "border-ink bg-ink text-white" : "border-hairline bg-white hover:border-charcoal"}`}>{option}</button>)}</div><label className="mt-3 block text-[11px] font-semibold text-mute">직접 입력<input value={details[question.id] ?? ""} onChange={event => setDetails(current => ({ ...current, [question.id]: event.target.value }))} placeholder={config.placeholder} maxLength={500} className="mt-1 w-full rounded-md border border-hairline px-3 py-2.5 text-sm font-normal text-ink outline-none focus:border-ink" /></label></fieldset>; })}
+    <button type="button" disabled={!complete || pending} onClick={startDesign} className="flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">이 조건으로 설계 시작 <ChevronRight className="h-4 w-4" /></button>
+  </section>;
+}
+function NextAction({ status, hasVersion, run, open }: { status?: string; hasVersion: boolean; run?: Run; open: (panel: "team" | "output") => void }) {
   let text = "1. 만들 업무를 적고 요청문을 보내세요.";
-  let action: { label: string; panel: "team" | "graph" | "output" } | undefined;
-  if (status === "WAITING_DESIGN_APPROVAL") { text = "2. 팀과 실행 구조를 확인한 뒤 설계를 승인하세요."; action = { label: "팀 확인", panel: "team" }; }
+  let action: { label: string; panel: "team" | "output" } | undefined;
+  if (status === "WAITING_DESIGN_APPROVAL") { text = "2. 팀 역할과 결과·실패 규칙을 확인한 뒤 설계를 승인하세요."; action = { label: "팀 확인", panel: "team" }; }
   else if (status === "NEEDS_CLARIFICATION") { text = "판정 기준처럼 임의로 정할 수 없는 정보에 답해 주세요."; }
   else if (hasVersion && run?.status !== "SUCCEEDED") { text = "3. 자동 생성된 유효 샘플로 실제 실행을 시험하세요."; action = { label: "테스트 열기", panel: "output" }; }
   else if (run?.status === "SUCCEEDED" && run.requirementMatched === true) { text = "4. 검증 완료. 팀 탭에서 패키지를 내려받아 사용할 수 있습니다."; action = { label: "패키지 받기", panel: "team" }; }

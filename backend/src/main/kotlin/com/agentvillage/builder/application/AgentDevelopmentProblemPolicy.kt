@@ -17,6 +17,7 @@ data class AgentDevelopmentRoutingRule(
  */
 object AgentDevelopmentProblemPolicy {
     const val MAX_CLARIFICATION_QUESTIONS = 10
+    const val MAX_CLARIFICATION_ROUNDS = 2
     private val routingRules = listOf(
         AgentDevelopmentRoutingRule(
             id = "clarify-material-ambiguity",
@@ -39,12 +40,21 @@ object AgentDevelopmentProblemPolicy {
         "- ${rule.condition}: recommendedApproach=${rule.result.name}"
     }
 
+    fun remainingQuestions(asked: Int, completedRounds: Int): Int =
+        if (completedRounds >= MAX_CLARIFICATION_ROUNDS) 0
+        else (MAX_CLARIFICATION_QUESTIONS - asked).coerceAtLeast(0)
+
     fun requireValid(problem: AgentDevelopmentProblemDefinition, remainingQuestions: Int) {
         require(problem.problemStatement.isNotBlank())
         require(problem.clarificationQuestions.size <= minOf(3, remainingQuestions))
         require(problem.clarificationQuestions.map { it.field }.distinct().size == problem.clarificationQuestions.size)
         require((problem.recommendedApproach == AgentDevelopmentApproach.CLARIFY) == !problem.readyForDesign)
         require(problem.readyForDesign == problem.clarificationQuestions.isEmpty())
+        if (problem.readyForDesign) {
+            require(problem.targetUser.isNotBlank())
+            require(problem.desiredOutcome.isNotBlank())
+            require(problem.scope.isNotBlank())
+        }
         if (problem.recommendedApproach == AgentDevelopmentApproach.PROMPT_ONLY) require(problem.suggestedPrompt.isNotBlank())
         if (remainingQuestions == 0) require(problem.recommendedApproach != AgentDevelopmentApproach.CLARIFY)
     }

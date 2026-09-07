@@ -262,6 +262,29 @@ class AgentPackageRuntimeTest {
     }
 
     @Test
+    fun `sample research material locations are runnable absolute urls`() {
+        val fields = listOf(
+            FieldDefinition("materials", "array", true, "조사할 자료 또는 자료 목록", minItems = 1, itemType = "string"),
+        )
+
+        val sample = SchemaSampleGenerator.generate(fields)
+
+        assertThat(sample["materials"]).isEqualTo(listOf("https://example.com/material-1"))
+    }
+
+    @Test
+    fun `sample input preserves integer type when minimum is numeric`() {
+        val fields = listOf(
+            FieldDefinition("travelerCount", "integer", true, "여행자 수", minimum = 1.0),
+        )
+
+        val sample = SchemaSampleGenerator.generate(fields)
+
+        assertThat(sample["travelerCount"]).isEqualTo(1)
+        assertThat(WorkflowInputContract.valueIssue(fields, sample)).isNull()
+    }
+
+    @Test
     fun `downloaded CSV package executes through its embedded pinned TFrameX runtime`(@TempDir directory: Path) {
         val python = System.getenv("TFRAMEX_TEST_PYTHON") ?: return
         val bundle = pipeline.generateDesign(
