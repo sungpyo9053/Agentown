@@ -303,7 +303,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
     }
 
     @Test
-    fun `agent development resolves within two card rounds and never exceeds ten questions`() {
+    fun `agent development resolves within ten interactions and never exceeds ten questions`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("question-cap-$suffix@example.com", "password123", "cap_$suffix", "질문 한도 검증"))
         var snapshot = service.createConversation(owner.id, "question-cap-agent-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
@@ -318,7 +318,7 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         val asked = snapshot.messages
             .filter { it.role == "ASSISTANT" && it.content.startsWith("에이전트로 나누기 전에") }
             .sumOf { Regex("아래 (\\d+)가지").find(it.content)!!.groupValues[1].toInt() }
-        assertThat(asked).isBetween(1, 6)
+        assertThat(asked).isBetween(1, 10)
         assertThat(snapshot.status).isEqualTo(WorkflowStatus.DRAFT)
         assertThat(snapshot.clarificationQuestions).isEmpty()
         assertThat(snapshot.agentDefinitions).isEmpty()

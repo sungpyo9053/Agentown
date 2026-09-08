@@ -315,10 +315,14 @@ class MetaAgentPipelineSafetyTest {
     }
 
     @Test
-    fun `problem clarification stops after two card rounds while preserving the ten question ceiling`() {
+    fun `problem clarification preserves remaining questions after two card rounds`() {
         assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(0, 0)).isEqualTo(10)
         assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(3, 1)).isEqualTo(7)
-        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(6, 2)).isZero()
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(6, 2)).isEqualTo(4)
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(4, 2)).isEqualTo(6)
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(9, 9)).isEqualTo(1)
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(10, 4)).isZero()
+        assertThat(AgentDevelopmentProblemPolicy.remainingQuestions(10, 10)).isZero()
     }
 
     @Test
