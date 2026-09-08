@@ -88,8 +88,11 @@ test("a patch error does not leak into a prompt-only project or its follow-up", 
     })),
   }));
   let followUp = false;
-  await page.route("**/api/agent-development/sessions/prompt-project/messages", route => {
+  let releaseResponse!: () => void;
+  const responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
+  await page.route("**/api/agent-development/sessions/prompt-project/messages", async route => {
     followUp = true;
+    await responseGate;
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ id: "job-1", conversationId: "prompt-project", status: "RUNNING" }) });
   });
   await page.goto("/develop");
@@ -101,4 +104,6 @@ test("a patch error does not leak into a prompt-only project or its follow-up", 
   await page.getByLabel("에이전트 개발 요청").fill("손가락 조작이 어려운 사용자를 대상으로 해줘");
   await page.getByRole("button", { name: "보내기", exact: true }).click();
   await expect.poll(() => followUp).toBe(true);
+  await expect(page.getByRole("button", { name: "보내기", exact: true })).toBeDisabled();
+  releaseResponse();
 });

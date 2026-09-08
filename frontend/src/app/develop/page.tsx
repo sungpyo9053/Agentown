@@ -95,7 +95,7 @@ export default function AgentDevelopmentPage() {
 
   const create = useMutation({ mutationFn: () => api<Snapshot>("/agent-development/sessions", { method: "POST", headers: { "Idempotency-Key": key("agent-session") }, body: "{}" }), onSuccess: store });
   const send = useMutation({
-    onMutate: () => resetActionFeedback(),
+    onMutate: () => resetActionFeedback(false),
     mutationFn: async (content: string) => {
       let current = snapshot;
       if (!current) current = await api<Snapshot>("/agent-development/sessions", { method: "POST", headers: { "Idempotency-Key": key("agent-session") }, body: "{}" });
@@ -135,8 +135,9 @@ export default function AgentDevelopmentPage() {
     setMessage(lines.join("\n"));
     void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "GUIDED_REQUEST_COMPOSED" }) }).catch(() => undefined);
   }
-  function resetActionFeedback() {
-    [create, send, patch, decideDesign, updateAgent, simulate, decideRun, restoreVersion, cancel].forEach(action => action.reset());
+  function resetActionFeedback(resetSend = true) {
+    [create, patch, decideDesign, updateAgent, simulate, decideRun, restoreVersion, cancel].forEach(action => action.reset());
+    if (resetSend) send.reset();
   }
   function newSession() { resetActionFeedback(); window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
 
