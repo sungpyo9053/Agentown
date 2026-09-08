@@ -65,3 +65,40 @@ test("team view hides developer graph, deduplicates resources, and downloads a b
   await page.getByRole("button", { name: "에이전트 패키지 다운로드" }).click();
   await expect((await download).suggestedFilename()).toBe("agentown-agent-conversa.zip");
 });
+
+test("a patch error does not leak into a prompt-only project or its follow-up", async ({ page }) => {
+  await mockShell(page, baseSnapshot({
+    status: "READY_TO_SIMULATE", clarificationQuestions: [], currentVersionId: "version-1",
+    graph: { nodes: [], edges: [] }, validation: { valid: true, issues: [] },
+    versions: [{ id: "version-1", versionNo: 1, graphHash: "hash-1" }],
+  }));
+  const errorMessage = "요청한 변경은 아직 지원하지 않습니다.";
+  await page.route("**/api/agent-development/sessions/conversation-card/patches", route => route.fulfill({
+    status: 400, contentType: "application/json", body: JSON.stringify({ code: "UNSUPPORTED_GRAPH_PATCH", message: errorMessage }),
+  }));
+  await page.route("**/api/agent-development/sessions", route => route.fulfill({
+    contentType: "application/json", body: JSON.stringify([
+      { conversationId: "prompt-project", title: "마우스 디자인", status: "DRAFT" },
+    ]),
+  }));
+  await page.route("**/api/agent-development/sessions/prompt-project", route => route.fulfill({
+    contentType: "application/json", body: JSON.stringify(baseSnapshot({
+      conversationId: "prompt-project", status: "DRAFT", clarificationQuestions: [],
+      messages: [{ id: "prompt-message", role: "ASSISTANT", content: "이 프롬프트를 그대로 넣어보세요: 마우스 디자인 시안을 제안해줘." }],
+    })),
+  }));
+  let followUp = false;
+  await page.route("**/api/agent-development/sessions/prompt-project/messages", route => {
+    followUp = true;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ id: "job-1", conversationId: "prompt-project", status: "RUNNING" }) });
+  });
+  await page.goto("/develop");
+  await page.getByLabel("에이전트 개발 요청").fill("새로운 역할도 추가해줘");
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
+  await expect(page.getByText(errorMessage, { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /마우스 디자인/ }).click();
+  await expect(page.getByText(errorMessage, { exact: true })).toHaveCount(0);
+  await page.getByLabel("에이전트 개발 요청").fill("손가락 조작이 어려운 사용자를 대상으로 해줘");
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
+  await expect.poll(() => followUp).toBe(true);
+});

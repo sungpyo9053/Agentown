@@ -80,6 +80,7 @@ export default function AgentDevelopmentPage() {
   const job = useQuery({ queryKey: ["agent-development-job", jobId], queryFn: () => api<Job>(`/agent-development/jobs/${jobId}`), enabled: Boolean(jobId), refetchInterval: query => ["SUCCEEDED", "FAILED", "CANCELLED"].includes(query.state.data?.status ?? "") ? false : 1200 });
 
   function store(next: Snapshot) {
+    resetActionFeedback();
     setSessionId(next.conversationId);
     window.localStorage.setItem(storageKey, next.conversationId);
     queryClient.setQueryData(["agent-development", next.conversationId], next);
@@ -94,6 +95,7 @@ export default function AgentDevelopmentPage() {
 
   const create = useMutation({ mutationFn: () => api<Snapshot>("/agent-development/sessions", { method: "POST", headers: { "Idempotency-Key": key("agent-session") }, body: "{}" }), onSuccess: store });
   const send = useMutation({
+    onMutate: () => resetActionFeedback(),
     mutationFn: async (content: string) => {
       let current = snapshot;
       if (!current) current = await api<Snapshot>("/agent-development/sessions", { method: "POST", headers: { "Idempotency-Key": key("agent-session") }, body: "{}" });
@@ -133,7 +135,10 @@ export default function AgentDevelopmentPage() {
     setMessage(lines.join("\n"));
     void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "GUIDED_REQUEST_COMPOSED" }) }).catch(() => undefined);
   }
-  function newSession() { window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
+  function resetActionFeedback() {
+    [create, send, patch, decideDesign, updateAgent, simulate, decideRun, restoreVersion, cancel].forEach(action => action.reset());
+  }
+  function newSession() { resetActionFeedback(); window.localStorage.removeItem(storageKey); setSessionId(undefined); setMessage(""); setJobId(undefined); setRun(undefined); setTestInput(""); create.mutate(); }
 
   const pending = create.isPending || send.isPending || patch.isPending || decideDesign.isPending || updateAgent.isPending || simulate.isPending || decideRun.isPending || restoreVersion.isPending || Boolean(jobId && !["SUCCEEDED", "FAILED", "CANCELLED"].includes(job.data?.status ?? ""));
   const error = create.error || send.error || patch.error || decideDesign.error || updateAgent.error || simulate.error || decideRun.error || restoreVersion.error || snapshotQuery.error || (job.data?.status === "FAILED" ? new Error(job.data.errorMessage ?? "에이전트 생성에 실패했습니다.") : null);
@@ -141,7 +146,7 @@ export default function AgentDevelopmentPage() {
     <div className="relative grid h-full min-h-0 bg-[#f5f5f2] lg:grid-cols-[250px_minmax(420px,1fr)_360px]">
       <aside className="hidden min-h-0 border-r border-hairline bg-white lg:flex lg:flex-col">
         <div className="flex h-14 items-center justify-between border-b border-hairline px-4"><div className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="h-4 w-4 text-coral" />에이전트 개발</div><button onClick={newSession} title="새 에이전트" aria-label="새 에이전트" className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-cloud"><Plus className="h-4 w-4" /></button></div>
-        <div className="min-h-0 flex-1 overflow-auto p-2">{sessions.data?.map(item => <button key={item.conversationId} onClick={() => { setSessionId(item.conversationId); window.localStorage.setItem(storageKey, item.conversationId); setJobId(undefined); }} className={`mb-1 w-full rounded-md px-3 py-3 text-left ${sessionId === item.conversationId ? "bg-ink text-white" : "hover:bg-cloud"}`}><p className="truncate text-sm font-medium">{item.title}</p><p className={`mt-1 truncate text-[11px] ${sessionId === item.conversationId ? "text-stone-300" : "text-mute"}`}>{item.currentVersionNo ? `Version ${item.currentVersionNo}` : "설계 전"} · {koStatus(item.status)}</p></button>)}</div>
+        <div className="min-h-0 flex-1 overflow-auto p-2">{sessions.data?.map(item => <button key={item.conversationId} onClick={() => { resetActionFeedback(); setSessionId(item.conversationId); window.localStorage.setItem(storageKey, item.conversationId); setJobId(undefined); setRun(undefined); setTestInput(""); }} className={`mb-1 w-full rounded-md px-3 py-3 text-left ${sessionId === item.conversationId ? "bg-ink text-white" : "hover:bg-cloud"}`}><p className="truncate text-sm font-medium">{item.title}</p><p className={`mt-1 truncate text-[11px] ${sessionId === item.conversationId ? "text-stone-300" : "text-mute"}`}>{item.currentVersionNo ? `Version ${item.currentVersionNo}` : "설계 전"} · {koStatus(item.status)}</p></button>)}</div>
         <div className="border-t border-hairline p-3 text-[11px] leading-5 text-mute">대화, 에이전트 구성, 버전 기록이 프로젝트별로 보존됩니다.</div>
       </aside>
 

@@ -21,12 +21,12 @@ object AgentDevelopmentProblemPolicy {
     private val routingRules = listOf(
         AgentDevelopmentRoutingRule(
             id = "clarify-material-ambiguity",
-            condition = "문제의 대상, 실제 불편 또는 목적, 원하는 결과, 해결 범위가 역할 분해를 바꿀 만큼 빠져 있다. 특히 불편이나 바람만 말한 짧은 요청은 도메인을 추론할 수 있어도 먼저 확인한다",
+            condition = "문제의 대상, 실제 불편 또는 목적, 원하는 결과, 해결 범위가 역할 분해를 바꿀 만큼 빠져 있다. 특히 불편이나 바람만 말한 짧은 요청은 도메인을 추론할 수 있어도 먼저 확인한다. 선택 카드의 넓은 대상 분류와 결과물 형식만으로 실제 불편이 확인됐다고 판단하지 않는다. 핵심 사용 조건이 미확인이라면 이를 가정으로 떠넘긴 PROMPT_ONLY보다 추가 질문을 우선한다",
             result = AgentDevelopmentApproach.CLARIFY,
         ),
         AgentDevelopmentRoutingRule(
             id = "prefer-one-shot-prompt",
-            condition = "도구, 지속 상태, 반복 실행, 병렬 작업, 독립 검증, 분리된 전문 책임 없이 한 번의 좋은 지시로 해결할 수 있다",
+            condition = "핵심 사용 조건과 실제 목적이 확인되었고, 도구, 지속 상태, 반복 실행, 병렬 작업, 독립 검증, 분리된 전문 책임 없이 한 번의 좋은 지시로 해결할 수 있다. 사용자가 이런 기술 요소를 명시하지 않았다는 사실만으로 충분하다고 판단하지 말고 결과에 필요한 작업으로 판단한다",
             result = AgentDevelopmentApproach.PROMPT_ONLY,
         ),
         AgentDevelopmentRoutingRule(
