@@ -2,6 +2,7 @@ package com.agentvillage.builder.presentation
 
 import com.agentvillage.builder.application.BuilderGenerationService
 import com.agentvillage.builder.application.BuilderService
+import com.agentvillage.builder.application.HostedPackageEntry
 import com.agentvillage.builder.application.BuilderUsageLimiter
 import com.agentvillage.builder.application.AgentDefinitionUpdate
 import com.agentvillage.builder.application.TFrameXFlowImport
@@ -9,6 +10,7 @@ import com.agentvillage.builder.infrastructure.AgentDevelopmentActivityRecorder
 import com.agentvillage.builder.domain.BuilderConversationPurpose
 import com.agentvillage.identity.infrastructure.AuthenticatedUser
 import jakarta.validation.Valid
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.security.core.annotation.AuthenticationPrincipal
 import org.springframework.http.ContentDisposition
 import org.springframework.http.HttpHeaders
@@ -24,6 +26,7 @@ class AgentDevelopmentController(
     private val generation: BuilderGenerationService,
     private val usage: BuilderUsageLimiter,
     private val activities: AgentDevelopmentActivityRecorder,
+    @Value("\${agentown.public-origin:https://agentown.reviewdr.kr}") private val publicOrigin: String = "https://agentown.reviewdr.kr",
 ) {
     data class EngagementEventRequest(val eventType: String)
     data class AgentDefinitionUpdateRequest(
@@ -170,7 +173,7 @@ class AgentDevelopmentController(
     fun downloadPackage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable sessionId: UUID): ResponseEntity<ByteArray> {
         service.requireConversationPurpose(user.userId, sessionId, BuilderConversationPurpose.AGENT_DEVELOPMENT)
         val snapshot = service.snapshot(user.userId, sessionId)
-        val files = service.harnessPackage(user.userId, snapshot.workflowId)
+        val files = service.harnessPackage(user.userId, snapshot.workflowId) + HostedPackageEntry.files(publicOrigin, sessionId)
         val bytes = AgentPackageArchive.create(files)
         return ResponseEntity.ok()
             .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(AgentPackageArchive.FILE_NAME).build().toString())
