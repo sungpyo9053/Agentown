@@ -296,7 +296,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 }.filterNot { it in setOf("context", "error") }.toSet()
                 val nodeSource = source.copy(
                     inputSchema = source.inputSchema.filter { it.name in activeInputNames }.ifEmpty { source.inputSchema },
-                    outputSchema = source.outputSchema.filter { it.name in activeOutputNames }.ifEmpty { source.outputSchema },
+                    outputSchema = if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) {
+                        finalOutputSchema
+                    } else source.outputSchema.filter { it.name in activeOutputNames }.ifEmpty { source.outputSchema },
                 )
                 val runtimeSource = if (parallelScopeByNode[node.id] == null) nodeSource else nodeSource.copy(
                     outputSchema = nodeSource.outputSchema.map { field ->
@@ -649,6 +651,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         appendLine("반드시 JSON 객체만 반환하고 아래 출력 계약 전체를 재귀적으로 준수한다. itemSchema의 필수 필드를 포함하고 선언되지 않은 필드는 반환하지 않는다:")
         appendLine(mapper.writeValueAsString(agent.outputSchema))
         appendLine("입력에 없는 사실이나 실행 결과를 만들지 않는다.")
+        appendLine(AgentOutputQualityPolicy.instructions)
     }
 
     private fun descendants(start: String, outgoing: Map<String, List<WorkflowEdge>>): Set<String> {

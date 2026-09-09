@@ -1,0 +1,28 @@
+package com.agentvillage.builder
+
+import com.agentvillage.builder.application.AgentOutputQualityPolicy
+import com.agentvillage.builder.application.agentDevelopmentPrompt
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+
+class AgentOutputQualityPolicyTest {
+    @Test
+    fun `quality guidance preserves facts while enabling scoped recommendations`() {
+        assertThat(AgentOutputQualityPolicy.instructions).contains(
+            "함께 발생한 사건만으로 인과관계를 확정하지 않는다",
+            "원문에 확정된 절차·제약·약속은 미확정으로 낮추지 않는다",
+            "구체적인 안과 선택 이유",
+            "단순 추출·번역·원문 요약 역할에는 새 기획",
+            "새 JSON 필드를 만들지 않는다",
+        )
+    }
+
+    @Test
+    fun `design policy adds no fixed role graph or external capability`() {
+        val prompt = agentDevelopmentPrompt("사용자가 제공한 자료를 검토해줘")
+        assertThat(prompt).contains(AgentOutputQualityPolicy.instructions)
+        assertThat(prompt).contains("별도 에이전트나 도구를 추가하지 마세요")
+        assertThat(prompt).contains("실제 안을 만드는 책임", "제안 자체를 막는 규칙을 넣지 마세요")
+        assertThat(prompt).endsWith("사용자가 제공한 자료를 검토해줘")
+    }
+}

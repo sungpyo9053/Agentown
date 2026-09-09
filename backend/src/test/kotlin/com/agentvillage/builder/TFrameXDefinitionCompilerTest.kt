@@ -17,6 +17,29 @@ class TFrameXDefinitionCompilerTest {
     private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
+    fun `terminal agent emits the complete workflow contract even when end binding selects one field`() {
+        val finalFields = listOf(
+            FieldDefinition("review", "string", true, "review evidence"),
+            FieldDefinition("finalPlan", "string", true, "final plan"),
+        )
+        val agent = AgentDefinition("writer", "Writer", "Synthesize", emptyList(), finalFields,
+            listOf("write"), listOf("do not invent"), listOf("input"))
+        val graph = WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = "write",
+            nodes = listOf(
+                WorkflowNode("write", "ai.generate", "Write", NodePosition(0.0, 0.0), mapOf("agentKey" to "writer")),
+                WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+            ),
+            edges = listOf(WorkflowEdge("finish", "write", "end", bindings = mapOf("result" to "finalPlan"))),
+        )
+        val compiled = compiler.compile("final-contract", graph, listOf(agent), emptyMap(), finalFields)
+        val terminal = (compiled["agents"] as List<Map<String, Any?>>).single()
+        assertThat(terminal["outputSchema"]).isEqualTo(compiled["finalOutputSchema"])
+        assertThat(terminal["systemPrompt"].toString()).contains(mapper.writeValueAsString(finalFields))
+        assertThat(terminal["preserveInput"]).isEqualTo(false)
+    }
+
+    @Test
     fun `same depth specialists without one immediate join stay as flat sequential steps`() {
         fun agent(key: String, inputs: List<FieldDefinition>, outputs: List<FieldDefinition>) = AgentDefinition(
             key, key, key, inputs, outputs, listOf("work"), listOf("do not invent"), listOf("evidence"),
@@ -227,7 +250,7 @@ class TFrameXDefinitionCompilerTest {
         assertThat(workerOutput.single { it.name == "values" })
             .extracting("minItems", "maxItems").containsExactly(1, 1)
         assertThat(runtimeAgents.first { it["name"] == "collector__collect" }["systemPrompt"].toString())
-            .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다")
+            .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다", "결과물 품질 기준:")
         assertThat(definition["workflowInputSchema"]).isEqualTo(workflowInputs)
     }
 
