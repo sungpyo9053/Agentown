@@ -46,6 +46,27 @@ class CodexCliMetaAgentModelTest {
     }
 
     @Test
+    fun `package delivery is not a workflow capability in intake and design`() {
+        for (stage in listOf("define_agent_development_problem", "builder_design_bundle")) {
+            val localRunner = mock<CodexCliRunner>()
+            whenever(localRunner.hasSharedAuth()).thenReturn(true)
+            whenever(localRunner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")
+            val localModel = CodexCliMetaAgentModel(credentials, localRunner, ObjectMapper(), "gpt-test")
+            localModel.generate(context, stage, mapOf(
+                "designMode" to "AGENT_DEVELOPMENT",
+                "instruction" to "다운로드하여 반복 실행하는 팀으로 텍스트 기획안과 근거표를 반환해줘",
+            ))
+            val prompt = argumentCaptor<String>()
+            verify(localRunner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
+            assertThat(prompt.firstValue).contains(
+                "플랫폼의 전달 및 실행 방식이지 사용자 업무의 도구가 아니다",
+                "tool.unresolved를 추가하지 않는다",
+                "사용자 업무 자체가 결과 파일 저장·외부 전송·예약을 명시한 경우에는 그 요구를 보존",
+            )
+        }
+    }
+
+    @Test
     fun `generation prompt preserves exact array cardinality and integer types`() {
         whenever(runner.hasSharedAuth()).thenReturn(true)
         whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")

@@ -14,6 +14,11 @@ from tframex.util.llms import BaseLLMWrapper
 from .adapter import ExecutionNotConfigured
 
 
+def codex_auth_file() -> Path:
+    configured = os.environ.get("CODEX_HOME")
+    return (Path(configured) if configured else Path.home() / ".codex") / "auth.json"
+
+
 class CodexCliLLMWrapper(BaseLLMWrapper):
     """TFrameX LLM transport backed by the server's authenticated Codex CLI."""
 
@@ -30,9 +35,8 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
         executable = shutil.which(self.command)
         if executable is None:
             raise ExecutionNotConfigured(f"Codex CLI '{self.command}' is unavailable")
-        codex_home = os.environ.get("CODEX_HOME")
-        auth_file = os.path.join(codex_home, "auth.json") if codex_home else ""
-        if not auth_file or not os.path.isfile(auth_file) or not os.access(auth_file, os.R_OK):
+        auth_file = codex_auth_file()
+        if not auth_file.is_file() or not os.access(auth_file, os.R_OK):
             raise ExecutionNotConfigured("Codex CLI authentication is unavailable")
         prompt = "\n\n".join(
             f"<{message.role}>\n{message.content or ''}\n</{message.role}>" for message in messages

@@ -4,10 +4,19 @@ import com.agentvillage.builder.application.BuilderMvpSupportPolicy
 import com.agentvillage.builder.domain.AutomationRequirement
 import com.agentvillage.common.exception.BadRequestException
 import org.assertj.core.api.Assertions.assertThatCode
+import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 class BuilderMvpSupportPolicyTest {
+    @Test
+    fun `package download does not imply workflow storage but explicit writes remain gated`() {
+        assertThat(BuilderMvpSupportPolicy.unsupportedCapabilities("다운로드하여 반복 실행할 에이전트 팀으로 텍스트 기획안을 반환해줘"))
+            .doesNotContain("로컬 파일 저장")
+        assertThat(BuilderMvpSupportPolicy.unsupportedCapabilities("패키지를 다운로드하고 매 실행 결과를 파일로 저장해줘"))
+            .contains("로컬 파일 저장")
+    }
+
     @Test
     fun `supported Slack FAQ mock requirement remains allowed`() {
         assertThatCode {

@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from .adapter import AgentownTFrameXAdapter, DefinitionError, ExecutionNotConfigured
-from .codex_llm import CodexCliLLMWrapper
+from .codex_llm import CodexCliLLMWrapper, codex_auth_file
 from .capabilities import BUILTIN_TOOLS
 
 
@@ -33,11 +33,10 @@ def health():
 @app.get("/ready")
 def readiness():
     command = os.environ.get("AGENTOWN_CODEX_COMMAND", "codex")
-    codex_home = os.environ.get("CODEX_HOME", "")
-    auth_file = os.path.join(codex_home, "auth.json") if codex_home else ""
+    auth_file = codex_auth_file()
     if shutil.which(command) is None:
         return JSONResponse(status_code=503, content={"status": "NOT_READY", "code": "CODEX_CLI_UNAVAILABLE"})
-    if not auth_file or not os.path.isfile(auth_file) or not os.access(auth_file, os.R_OK):
+    if not auth_file.is_file() or not os.access(auth_file, os.R_OK):
         return JSONResponse(status_code=503, content={"status": "NOT_READY", "code": "CODEX_AUTH_UNAVAILABLE"})
     return {"status": "READY", "runtime": "TFrameX"}
 

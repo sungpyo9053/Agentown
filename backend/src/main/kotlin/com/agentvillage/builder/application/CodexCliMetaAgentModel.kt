@@ -74,6 +74,7 @@ class CodexCliMetaAgentModel(
             - readyForDesign=true로 엔진에 넘길 기획서에는 inputs, workflowShape, evidencePolicy, failurePolicy, forbiddenActions를 사용자 대화에서 추출해 채운다. 독립 작업과 전체 완료 후 합류가 명시되면 workflowShape에 보존한다.
             - 입력 개수, 근거 문장, 미확인·충돌 처리, 외부 전송·구매·배포 금지처럼 실행 결과를 좌우하는 조건을 요약에서 버리지 않는다.
             ${AgentDevelopmentProblemPolicy.promptInstructions()}
+            - ${AgentDevelopmentProblemPolicy.PACKAGE_DELIVERY_BOUNDARY}
             - PROMPT_ONLY면 에이전트를 만들지 말고 바로 복사해 쓸 구체적인 suggestedPrompt를 작성한다.
             - PROMPT_ONLY와 AGENT_TEAM은 readyForDesign=true, clarificationQuestions=[]로 둔다. CLARIFY이면 질문에 필요한 현재 이해도 problemStatement에 보존한다.
             - 접근 방식을 정하기 전에 필요한 작업, 작업별 산출물, 결과 확인 기준을 정리한다. workflowShape에는 이 작업 분해를 기록하고 rationale에는 작업을 합쳐도 되는지 또는 역할을 나눠야 하는지 근거를 짧게 설명한다. 사용자가 도구나 반복 실행을 명시하지 않았다는 이유는 근거가 아니다.
@@ -97,6 +98,7 @@ class CodexCliMetaAgentModel(
             사용자가 대화로 사용할 에이전트의 역할, 도구, 스킬, 메모리, 협업 순서와 검증 시나리오를 설계한다.
             사용자가 말하지 않은 업무 자동화, 예약 실행, Slack, Notion, FAQ, 외부 전송 또는 승인을 추가하지 않는다.
             입력·출력·외부 연동의 기본값이 사용자 요청에 이미 제공되면 다시 질문하지 않는다.
+            ${AgentDevelopmentProblemPolicy.PACKAGE_DELIVERY_BOUNDARY}
         """.trimIndent() else """
             당신은 Agentown 서버에 고정된 업무 자동화 메타 에이전트 팀이다.
             사용자의 업무 자동화 요구에서 트리거, 자료, 승인, 전달 위치를 정확히 설계한다.

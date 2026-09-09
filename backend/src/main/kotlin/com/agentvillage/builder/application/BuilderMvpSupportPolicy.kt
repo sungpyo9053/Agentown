@@ -19,7 +19,9 @@ object BuilderMvpSupportPolicy {
         val normalized = text.lowercase()
         return buildList {
             capability(normalized, "음성·녹음 파일 전사", "녹음 파일", "음성 파일", "오디오 파일", "speech to text", "transcription")
-            if (listOf("로컬저장", "로컬 저장", "내 컴퓨터", "파일로 저장", "다운로드", "폴더에 저장").any(normalized::contains)) {
+            // Downloading an Agentown package is platform delivery, not a workflow file write.
+            // Actual storage requests remain gated independently of package delivery wording.
+            if (listOf("로컬저장", "로컬 저장", "내 컴퓨터", "파일로 저장", "폴더에 저장").any(normalized::contains)) {
                 add("로컬 파일 저장")
             }
             capability(normalized, "Google Workspace 쓰기", "google drive", "구글 드라이브", "google sheets", "구글 시트", "google calendar", "구글 캘린더", "microsoft forms")

@@ -18,6 +18,7 @@ data class AgentDevelopmentRoutingRule(
 object AgentDevelopmentProblemPolicy {
     const val MAX_CLARIFICATION_QUESTIONS = 10
     const val MAX_CLARIFICATION_ROUNDS = 10
+    const val PACKAGE_DELIVERY_BOUNDARY = "Agentown 에이전트 패키지의 다운로드·설치·로컬 반복 실행은 플랫폼의 전달 및 실행 방식이지 사용자 업무의 도구가 아니다. 이 표현만으로 로컬 파일 저장, 패키지 설치, 예약 실행 노드나 tool.unresolved를 추가하지 않는다. 사용자 업무 자체가 결과 파일 저장·외부 전송·예약을 명시한 경우에는 그 요구를 보존하고 필요한 실제 기능을 검증한다. 텍스트 기획안이나 근거표 반환은 AI 출력과 workflow.end로 표현한다."
     private val routingRules = listOf(
         AgentDevelopmentRoutingRule(
             id = "resolve-topic-boundary-first",

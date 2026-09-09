@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from tframex.models.primitives import Message
 
-from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper
+from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper, codex_auth_file
 
 
 class _Process:
@@ -17,6 +17,14 @@ class _Process:
 
 
 class CodexWritableHomeTest(unittest.IsolatedAsyncioTestCase):
+    def test_default_cli_home_requires_no_extra_environment_variable(self):
+        with patch.dict(os.environ, {}, clear=True), patch("pathlib.Path.home", return_value=Path("/test-user")):
+            self.assertEqual(codex_auth_file(), Path("/test-user/.codex/auth.json"))
+
+    def test_explicit_cli_home_does_not_fall_back_to_another_identity(self):
+        with patch.dict(os.environ, {"CODEX_HOME": "/configured-auth"}, clear=True):
+            self.assertEqual(codex_auth_file(), Path("/configured-auth/auth.json"))
+
     async def test_read_only_shared_auth_is_copied_to_private_writable_home(self):
         with tempfile.TemporaryDirectory() as shared_home:
             Path(shared_home, "auth.json").write_text('{"token":"secret"}', encoding="utf-8")
