@@ -165,7 +165,7 @@ class MetaAgentRun(
 )
 
 enum class BuilderGenerationStatus { QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED }
-enum class BuilderGenerationStage { REQUEST_ACCEPTED, CODEX_ANALYZING, STRUCTURE_VALIDATING, DESIGN_SAVING, COMPLETED, FAILED, CANCELLED }
+enum class BuilderGenerationStage { REQUEST_ACCEPTED, PROBLEM_DEFINING, CODEX_ANALYZING, DESIGN_REPAIRING, RETRYING, STRUCTURE_VALIDATING, DESIGN_SAVING, COMPLETED, FAILED, CANCELLED }
 
 @Entity @Table(name = "builder_generation_jobs")
 class BuilderGenerationJob(

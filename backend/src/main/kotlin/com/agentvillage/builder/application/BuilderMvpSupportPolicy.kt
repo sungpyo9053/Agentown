@@ -49,7 +49,7 @@ object BuilderMvpSupportPolicy {
         if (markers.any(text::contains)) add(label)
     }
 
-    private fun requireSupported(text: String) {
+    internal fun requireSupported(text: String) {
         val required = unsupportedCapabilities(text)
         if (required.isEmpty()) return
         throw BadRequestException(

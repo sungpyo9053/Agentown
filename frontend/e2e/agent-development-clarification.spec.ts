@@ -1,5 +1,40 @@
 import { expect, test } from "@playwright/test";
 
+test("runtime input is explicit and nested JSON results are readable with raw data retained", async ({ page }, testInfo) => {
+  await mockShell(page, baseSnapshot({ status: "READY_TO_SIMULATE", clarificationQuestions: [], currentVersionId: "v1", sampleInput: { userMemo: "제품 사용 목적과 불편 예시 1" } }));
+  await page.route("**/api/agent-development/sessions/conversation-card/simulations", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+    id: "run-readable", status: "SUCCEEDED", requirementMatched: true, steps: [],
+    output: { renderedResponse: JSON.stringify({ finalPlan: "기획안\n낮은 클릭 힘\n\n근거표\n손목 움직임 제한", evidence: "<img src=x onerror=alert(1)>" }) },
+  }) }));
+  await page.goto("/develop");
+  await page.getByRole("button", { name: "테스트", exact: true }).click();
+  await expect(page.getByRole("button", { name: "테스트 실행", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "입력 예시 채우기" }).click();
+  await expect(page.getByRole("textbox", { name: "테스트 입력" })).toHaveValue(/제품 사용 목적과 불편/);
+  await page.getByRole("textbox", { name: "테스트 입력" }).fill(JSON.stringify({ userMemo: "손목 움직임 제한" }));
+  await page.getByRole("button", { name: "테스트 실행", exact: true }).click();
+  const result = page.getByRole("region", { name: "읽기 쉬운 실행 결과" });
+  await expect(result).toContainText("낮은 클릭 힘");
+  await expect(result.locator("pre").first()).toContainText("근거표");
+  expect(await result.locator("pre").first().textContent()).not.toContain("\\n");
+  await expect(result.locator("img")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("readable-result.png"), fullPage: true });
+  await expect(result.locator("details")).not.toHaveAttribute("open", "");
+  await result.getByText("개발자용 원본 JSON", { exact: true }).click();
+  await expect(result.locator("details pre")).toContainText("renderedResponse");
+});
+
+test("slow generation shows the actual retry stage rather than a false completion estimate", async ({ page }) => {
+  await mockShell(page, baseSnapshot());
+  await page.route("**/api/agent-development/jobs/job-1", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ id: "job-1", conversationId: "conversation-card", status: "RUNNING", stage: "RETRYING", elapsedSeconds: 70, remainingSeconds: 50 }) }));
+  await page.goto("/develop");
+  await page.getByRole("textbox", { name: "에이전트 개발 요청" }).fill("추가 조건입니다");
+  await page.getByRole("button", { name: "보내기", exact: true }).click();
+  await expect(page.getByText("응답 오류 후 재시도 · 70초 경과")).toBeVisible();
+  await expect(page.getByText(/예상보다 오래 걸리고 있습니다/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "중지", exact: true })).toBeEnabled();
+});
+
 function baseSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     conversationId: "conversation-card",

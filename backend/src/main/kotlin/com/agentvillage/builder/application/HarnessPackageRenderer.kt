@@ -251,6 +251,8 @@ class HarnessPackageRenderer(
 
         첫 요청 예시: `examples/sample-input.json의 입력으로 이 업무를 실행해 줘.`
 
+        `examples/sample-input.json`은 입력 형식 확인용 예시입니다. 실행 전에 예시 값을 실제 업무 자료로 바꿔 주세요. 예시 실행 성공은 실제 업무 결과의 품질을 보장하지 않습니다.
+
         Codex와 Claude Code는 `AGENTS.md`를 공통 실행 계약으로 사용합니다. 입력 예시는 아래와 같습니다.
 
         ```json

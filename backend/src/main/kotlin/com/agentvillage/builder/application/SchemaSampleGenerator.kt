@@ -10,7 +10,6 @@ internal object SchemaSampleGenerator {
     private fun value(field: FieldDefinition, path: String, index: Int): Any? = when {
         field.name == "csvA" -> "id,name\n1,old\n2,remove\n"
         field.name == "csvB" -> "id,name\n1,new\n3,add\n"
-        field.name.contains("memo", true) -> "재고 확인이 필요하며 담당 매니저에게 인계합니다."
         else -> when (field.type.lowercase()) {
             "array" -> {
                 val count = field.minItems ?: if (field.maxItems == 0) 0 else 1

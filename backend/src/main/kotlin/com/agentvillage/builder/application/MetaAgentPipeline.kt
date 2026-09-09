@@ -272,9 +272,9 @@ class StructuredMetaAgentPipeline(
         )
         val stage = "define_agent_development_problem"
         audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
-        progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
+        progress.running(context.jobId, BuilderGenerationStage.PROBLEM_DEFINING)
         return try {
-            val result = structuredGenerationRetry {
+            val result = structuredGenerationRetry(onRetry = { progress.running(context.jobId, BuilderGenerationStage.RETRYING) }) {
                 AgentDevelopmentProblemPolicy.canonicalize(
                     mapper.readValue(model.generate(context, stage, input), AgentDevelopmentProblemDefinition::class.java),
                     remainingQuestions,
@@ -328,10 +328,13 @@ class StructuredMetaAgentPipeline(
         designStages.forEach { stage ->
             audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
         }
-        progress.running(context.jobId, BuilderGenerationStage.CODEX_ANALYZING)
+        progress.running(context.jobId, if (validationFeedback.isEmpty()) BuilderGenerationStage.CODEX_ANALYZING else BuilderGenerationStage.DESIGN_REPAIRING)
         return try {
             val semanticInstruction = userInstruction ?: instruction
-            val bundle = structuredGenerationRetry {
+            // Reject known unsupported work before spending an entire model call on its design.
+            // Keep the post-generation check too, to catch capabilities invented by the model.
+            BuilderMvpSupportPolicy.requireSupported(semanticInstruction)
+            val bundle = structuredGenerationRetry(onRetry = { progress.running(context.jobId, BuilderGenerationStage.RETRYING) }) {
                 val raw = model.generate(context, "builder_design_bundle", input)
                 progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
                 val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
@@ -359,7 +362,7 @@ class StructuredMetaAgentPipeline(
         }
     }
 
-    private fun <T> structuredGenerationRetry(block: () -> T): T {
+    private fun <T> structuredGenerationRetry(onRetry: () -> Unit = {}, block: () -> T): T {
         var last: Exception? = null
         repeat(2) { attempt ->
             try {
@@ -373,6 +376,7 @@ class StructuredMetaAgentPipeline(
                     else -> true
                 }
                 if (attempt == 1 || !retryable) throw exception
+                onRetry()
                 last = exception
             }
         }

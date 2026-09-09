@@ -22,6 +22,18 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    @Test
+    fun `known unavailable file writes fail before any model generation`() {
+        val model = mock<MetaAgentModel>()
+        val mapper = jacksonObjectMapper()
+        val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }
+        val pipeline = StructuredMetaAgentPipeline(model, mapper, MetaAgentAuditService(runs), mock())
+        assertThatThrownBy {
+            pipeline.generateDesign(PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()), "보고서를 파일로 저장해줘")
+        }.isInstanceOf(BadRequestException::class.java).hasMessageContaining("로컬 파일 저장")
+        org.mockito.kotlin.verify(model, org.mockito.kotlin.never()).generate(any(), any(), any())
+    }
+
     private fun pipeline(): StructuredMetaAgentPipeline {
         val mapper = jacksonObjectMapper()
         val runs = mock<MetaAgentRunRepository>().also { whenever(it.save(any())).thenAnswer { call -> call.arguments[0] } }

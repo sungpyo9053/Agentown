@@ -126,6 +126,7 @@ test("develop CSV test sends structured sample input without exposing compiler i
   const input = page.getByLabel("테스트 입력");
   await expect(input).toHaveAttribute("placeholder", /csvA/);
   await expect(input).not.toHaveAttribute("placeholder", /업무 자동화 배치가 아니라/);
+  await page.getByRole("button", { name: "입력 예시 채우기" }).click();
   await page.getByRole("button", { name: "테스트 실행" }).click();
   await expect.poll(() => simulationBody).toEqual({ input: { csvA: "id,name\n1,old\n2,remove\n", csvB: "id,name\n1,new\n3,add\n" } });
 });
