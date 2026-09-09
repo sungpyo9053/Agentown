@@ -20,6 +20,7 @@ function readable(value: unknown, depth = 0): string {
 
 export function AgentResultView({ output }: { output: unknown }) {
   const [copyStatus, setCopyStatus] = useState("");
+  const [downloadStatus, setDownloadStatus] = useState("");
   const text = readable(output);
   return <section aria-label="읽기 쉬운 실행 결과" className="mt-3 space-y-3">
     <button className="rounded-md border border-hairline px-3 py-1.5 text-xs" onClick={async () => {
@@ -27,6 +28,17 @@ export function AgentResultView({ output }: { output: unknown }) {
       catch { setCopyStatus("복사하지 못했습니다. 본문을 선택해 복사해 주세요."); }
     }}>결과 복사</button>
     <span role="status" className="ml-2 text-xs text-mute">{copyStatus}</span>
+    <button className="rounded-md border border-hairline px-3 py-1.5 text-xs" onClick={() => {
+      try {
+        const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+        const anchor = document.createElement("a");
+        anchor.href = url; anchor.download = "agentown-result.txt";
+        document.body.appendChild(anchor); anchor.click(); anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        setDownloadStatus("다운로드를 요청했습니다. 브라우저의 다운로드 목록을 확인해 주세요.");
+      } catch { setDownloadStatus("저장하지 못했습니다. 결과 복사를 이용해 주세요."); }
+    }}>결과 파일 저장</button>
+    <span role="status" className="text-xs text-mute">{downloadStatus}</span>
     <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#f5f5f2] p-4 text-xs leading-6">{text}</pre>
     <details><summary className="cursor-pointer text-xs text-mute">개발자용 원본 JSON</summary><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px]">{JSON.stringify(output, null, 2)}</pre></details>
   </section>;

@@ -77,6 +77,7 @@ data class BuilderSnapshot(
     val approvedVersionId: UUID?,
     val messages: List<BuilderMessageView>,
     val versions: List<WorkflowVersionView>,
+    val externalInputSchema: List<FieldDefinition> = emptyList(),
 )
 data class BuilderConversationSummary(val conversationId: UUID, val workflowId: UUID, val title: String, val status: WorkflowStatus, val currentVersionNo: Int?, val updatedAt: Instant)
 @Service
@@ -982,6 +983,7 @@ class BuilderService(
             version?.id, context.workflow.approvedVersionId,
             messages.findAllByConversationIdOrderByCreatedAt(conversationId).map { BuilderMessageView(it.id, it.role, it.content, it.workflowVersionId, it.createdAt) },
             versions.findAllByWorkflowIdOrderByVersionNoDesc(context.workflow.id).map { WorkflowVersionView(it.id, it.versionNo, it.graphHash, it.changeSummary, it.approved, it.templateVersionId, it.createdAt) },
+            externalInputs,
         )
     }
 

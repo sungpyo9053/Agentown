@@ -336,6 +336,8 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
             "writing-team-message-$suffix",
         )
         assertThat(snapshot.agentDefinitions.map { it.key }).containsExactly("content-writer")
+        assertThat(snapshot.externalInputSchema.map { it.name }).containsAll(snapshot.sampleInput.keys)
+        assertThat(snapshot.externalInputSchema).isNotEmpty()
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "writing-team-design-$suffix")
         val agentPackage = service.harnessPackage(owner.id, snapshot.workflowId)
         assertThat(agentPackage.keys).contains(
