@@ -236,6 +236,28 @@ class WorkflowGraphValidatorTest {
         assertThat(result.issues).anyMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
     }
 
+    @Test fun `user data followed by independent review does not make the user an approver`() {
+        val requirement = AutomationRequirement(
+            objective = "자료를 검토한다.", trigger = "수동 실행", inputs = listOf("자료"), outputs = listOf("보고서"),
+            steps = listOf("검토"), decisions = emptyList(), exceptions = emptyList(), humanApprovalRequired = false,
+        )
+        val proposal = AutomationProposal("보고서", "자료를 검토한다.", listOf("검토"), emptyList(), emptyList(), "실패 시 중단")
+        listOf(
+            "사용자 불편 분석, 제품 후보 제안, 독립 검토 후 종합하는 에이전트 팀",
+            "사용자 요구를 분석하고 독립 검토 후 종합한다.",
+            "담당자 의견 수집, 에이전트 확인 후 결과를 반환한다.",
+        ).forEach { source ->
+            assertThat(validator.validate(graph(approval = false), requirement, proposal, emptyList(), source).issues)
+                .describedAs(source)
+                .noneMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
+        }
+        listOf("담당자 검토 후 진행", "사용자의 확인 후 진행", "관리자가 결과를 검토한 뒤 진행", "human review approval", "operator 확인 후 진행").forEach { source ->
+            assertThat(validator.validate(graph(approval = false), requirement, proposal, emptyList(), source).issues)
+                .describedAs(source)
+                .anyMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
+        }
+    }
+
     @Test fun `internal agent fields cannot be invented as workflow inputs`() {
         val requirement = AutomationRequirement(
             objective = "사용자가 제공한 자료를 분석해 결과를 생성한다.", trigger = "수동 실행",

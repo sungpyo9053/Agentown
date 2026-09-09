@@ -358,8 +358,9 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         // Only treat review/confirmation wording as approval when the request names a
         // human actor who performs that review before the workflow may continue.
         return Regex(
-            "(사람|사용자|담당자|관리자|운영자|승인자|human|operator)" +
-                "(가|이|은|는|의|에게)?\\s*.{0,20}(검토|확인)\\s*(후|하고|한 뒤|를 거쳐|가 끝나면|완료 후)",
+            "(?:(?:사람|사용자|담당자|관리자|운영자|승인자)" +
+                "(?:(?:가|이|은|는|에게)\\s*[^,.!?\\n]{0,20}|(?:의)?\\s*)|(?:human|operator)\\b\\s*)" +
+                "(검토|확인)\\s*(후|하고|한 뒤|를 거쳐|가 끝나면|완료 후)",
         ).containsMatchIn(source)
     }
 
