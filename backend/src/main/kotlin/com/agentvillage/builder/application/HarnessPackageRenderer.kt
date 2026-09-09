@@ -78,9 +78,11 @@ class HarnessPackageRenderer(
             )))
             put("runners/python/runner.py", pythonTFrameXRunner())
             put("runtime/pyproject.toml", TFrameXRuntimeResources.read("pyproject.toml"))
-            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py").forEach { name ->
+            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py", "office.py").forEach { name ->
                 put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
+            put("company/index.html", TFrameXRuntimeResources.read("agentown_tframex_adapter/office.html"))
+            put("company/README.md", "# 내 PC에서 회사 보기\n\nSTART_HERE.md의 Python 실행 환경을 준비하고 패키지 루트에서 `.venv/bin/python runners/python/runner.py --office`를 실행하세요. 입력은 examples/sample-input.json에 실제 자료를 넣으세요. 터미널에 표시된 로컬 주소에서 직원별 실제 진행 상태와 결과를 볼 수 있습니다. 실행 종료 후에도 화면은 유지되며 Ctrl+C로 닫습니다. 애니메이션은 내 PC에서 실행되지만 AI 호출에는 설정된 제공자와 인터넷이 필요합니다. 웹에서 실행한 작업이나 Codex 채팅은 이 로컬 실행기 화면에 연결되지 않습니다.\n")
             put(".env.example", environmentExample(resources))
             put("README.md", packageReadme(normalized))
             put("START_HERE.md", startHere(normalized, resources, generatedSampleInput))
@@ -272,11 +274,17 @@ class HarnessPackageRenderer(
         .venv/bin/pip install ./runtime
         .venv/bin/python runners/python/runner.py
         ```
+
+        ## 내 PC에서 직원들이 일하는 회사 화면 보기
+
+        위 실행 환경을 준비한 뒤 `.venv/bin/python runners/python/runner.py --office`로 실행하세요.
+        브라우저의 로컬 회사 화면에서 실제 에이전트별 진행 상태와 결과를 봅니다. AI 호출에는 설정된 제공자와 인터넷이 필요합니다.
+        실행이 끝나면 Ctrl+C로 로컬 화면 서버를 종료합니다. 웹 실행이나 별도 채팅의 작업 상태는 표시하지 않습니다.
     """.trimIndent() + "\n"
 
     private fun pythonTFrameXRunner() = """
         #!/usr/bin/env python3
-        import asyncio, json, os, sys
+        import asyncio, json, os, sys, webbrowser
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
@@ -290,13 +298,27 @@ class HarnessPackageRenderer(
             raise SystemExit(2)
         definition = json.loads((root / "runtime-definition.json").read_text())
         definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text()), ensure_ascii=False)
+        office = None
+        if "--office" in sys.argv:
+            from agentown_tframex_adapter.office import LocalOffice, OfficeTrace
+            office = LocalOffice(root)
+            office.start()
+            office.finish("RUNNING")
+            print("로컬 회사 화면: " + office.url, file=sys.stderr, flush=True)
+            try:
+                webbrowser.open(office.url)
+            except webbrowser.Error:
+                print("브라우저에서 위 로컬 주소를 직접 여세요.", file=sys.stderr)
 
         async def execute():
             llm = CodexCliLLMWrapper(
                 command=os.environ.get("AGENTOWN_CODEX_COMMAND", "codex"),
                 model=os.environ.get("AGENTOWN_CODEX_MODEL", "gpt-5.6-luna"),
             )
-            return await AgentownTFrameXAdapter(llm=llm, tools=BUILTIN_TOOLS).run(definition)
+            adapter = AgentownTFrameXAdapter(llm=llm, tools=BUILTIN_TOOLS)
+            if office:
+                adapter.trace = OfficeTrace(office)
+            return await adapter.run(definition)
 
         try:
             result = asyncio.run(execute())
@@ -304,12 +326,31 @@ class HarnessPackageRenderer(
             try: output = json.loads(final)
             except json.JSONDecodeError: output = {"result": final}
             print(json.dumps({"status": "SUCCEEDED", "output": output, **result}, ensure_ascii=False, indent=2, default=str))
+            if office: office.finish("SUCCEEDED")
         except ExecutionNotConfigured as error:
+            if office: office.finish("EXECUTION_NOT_CONFIGURED")
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": "EXECUTION_NOT_CONFIGURED", "message": str(error)}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
         except Exception as error:
+            if office: office.finish("FAILED")
             print(json.dumps({"status": "FAILED", "code": "TFRAMEX_EXECUTION_FAILED", "message": str(error)}, ensure_ascii=False, indent=2))
             raise SystemExit(1)
+        except KeyboardInterrupt:
+            if office:
+                office.finish("INTERRUPTED")
+                office.close()
+                office = None
+            raise SystemExit(130)
+        finally:
+            if office:
+                print("회사 화면이 열려 있습니다. Ctrl+C로 종료합니다.", file=sys.stderr, flush=True)
+                try:
+                    import threading
+                    threading.Event().wait()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    office.close()
     """.trimIndent() + "\n"
 
     private fun yaml(value: String) = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""

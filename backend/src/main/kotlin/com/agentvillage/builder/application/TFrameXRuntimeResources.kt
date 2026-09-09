@@ -11,6 +11,8 @@ object TFrameXRuntimeResources {
         "agentown_tframex_adapter/codex_llm.py",
         "agentown_tframex_adapter/capabilities.py",
         "agentown_tframex_adapter/server.py",
+        "agentown_tframex_adapter/office.py",
+        "agentown_tframex_adapter/office.html",
     )
 
     fun read(path: String): String {

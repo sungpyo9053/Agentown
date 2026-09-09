@@ -37,6 +37,7 @@ class AgentPackageRuntimeTest {
             "AGENTS.md", "CODEX.md", "CLAUDE.md", "START_HERE.md",
             "agent.yaml", "workflow.yaml", "workflow.json", "examples/sample-input.json",
             "schemas/input.schema.json", "schemas/output.schema.json",
+            "company/index.html", "company/README.md", "runtime/agentown_tframex_adapter/office.py",
         )
         assertThat(files.getValue("runtime/pyproject.toml"))
             .contains("23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603")
@@ -48,6 +49,8 @@ class AgentPackageRuntimeTest {
         assertThat(files.getValue("AGENTS.md"))
             .contains("Join successor only after every predecessor succeeded", "EXECUTION_NOT_CONFIGURED")
         assertThat(files.getValue("START_HERE.md")).contains("codex", "claude", "examples/sample-input.json")
+        assertThat(files.getValue("runners/python/runner.py")).contains("--office", "OfficeTrace(office)")
+        assertThat(files.getValue("company/index.html")).contains("prefers-reduced-motion", "textContent", "fetch('state'")
         val status = mapper.readTree(files.getValue("runtime-status.json"))
         assertThat(status["packageStatus"].asText()).isEqualTo("PACKAGE_VALIDATED")
         assertThat(status["interactiveStatus"].asText()).isEqualTo("INTERACTIVE_READY")
