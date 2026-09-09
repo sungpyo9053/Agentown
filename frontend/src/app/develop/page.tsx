@@ -8,6 +8,7 @@ import { AppShell } from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { AgentResultView } from "@/components/AgentResultView";
 import { AgentWorkProgress } from "@/components/AgentWorkProgress";
+import { clarificationDraftKey, readClarificationDraft } from "@/lib/clarificationDraft";
 
 type Agent = { key: string; name: string; role: string; behaviorRules: string[]; forbiddenRules: string[]; evidenceRequirements: string[]; toolKeys: string[]; skillKeys: string[]; memoryScope: string };
 type Resource = { resourceKind: "TOOL" | "SKILL" | "CONNECTOR" | "MEMORY"; resourceKey: string; label: string; availability: string; reason: string; requiresUserAction: boolean };
@@ -85,6 +86,9 @@ export default function AgentDevelopmentPage() {
     resetActionFeedback();
     setSessionId(next.conversationId);
     window.localStorage.setItem(storageKey, next.conversationId);
+    if (next.status !== "NEEDS_CLARIFICATION") {
+      try { window.sessionStorage.removeItem(clarificationDraftKey(next.conversationId)); } catch { /* storage may be unavailable */ }
+    }
     queryClient.setQueryData(["agent-development", next.conversationId], next);
     queryClient.invalidateQueries({ queryKey: ["agent-development-sessions"] });
   }
@@ -172,7 +176,7 @@ export default function AgentDevelopmentPage() {
               <div className="mt-6"><p className="mb-2 text-xs font-semibold text-mute">또는 완성된 예시로 시작</p><div className="grid gap-2">{examples.map(example => <button key={example} onClick={() => { setMessage(example); void api("/agent-development/events", { method: "POST", body: JSON.stringify({ eventType: "EXAMPLE_SELECTED" }) }).catch(() => undefined); }} className="flex items-center justify-between rounded-md border border-hairline px-4 py-3 text-left text-sm hover:border-charcoal hover:bg-cloud"><span>{example}</span><ChevronRight className="h-4 w-4 shrink-0 text-mute" /></button>)}</div></div>
             </div>}
             {snapshot?.messages.map(item => <article key={item.id} className={`flex gap-3 ${item.role === "USER" ? "justify-end" : "justify-start"}`}>{item.role !== "USER" && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span>}<div className={`max-w-[82%] rounded-md px-4 py-3 text-sm leading-6 ${item.role === "USER" ? "bg-[#e9e9e4] text-ink" : "border border-hairline bg-white"}`}>{item.content}</div></article>)}
-            {snapshot?.status === "NEEDS_CLARIFICATION" && <ClarificationForm key={`${snapshot.conversationId}:${snapshot.clarificationQuestions.map(question => question.id).join(",")}`} questions={snapshot.clarificationQuestions} pending={pending} submit={content => send.mutate(content)} />}
+            {snapshot?.status === "NEEDS_CLARIFICATION" && <ClarificationForm key={`${snapshot.conversationId}:${JSON.stringify(snapshot.clarificationQuestions)}`} conversationId={snapshot.conversationId} questions={snapshot.clarificationQuestions} pending={pending} submit={content => send.mutate(content)} />}
             {pending && <article className="flex gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-4 w-4" /></span><div className="min-w-64 rounded-md border border-hairline p-4"><AgentWorkProgress stage={jobId ? job.data?.stage : undefined} elapsed={jobId ? job.data?.elapsedSeconds : undefined} executing={simulate.isPending || decideRun.isPending} /><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-cloud"><div className="h-full w-2/3 animate-pulse rounded-full bg-coral" /></div><button onClick={() => cancel.mutate()} disabled={!jobId} className="mt-3 flex items-center gap-1 text-xs text-mute hover:text-sale"><CircleStop className="h-3.5 w-3.5" />중지</button></div></article>}
             {error && <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error.message}</div>}
           </div>
@@ -264,9 +268,24 @@ function clarificationChoiceConfig(question: ClarificationQuestion): Clarificati
   if (meaning.includes("언제") || meaning.includes("시작") || meaning.includes("트리거")) return { options: ["필요할 때 직접 시작", "정해진 시간에 시작", "특정 이벤트가 생기면 시작", "아직 모르겠음", "기타 — 직접 입력"], multiple: false, placeholder: "업무가 시작되는 상황을 적어주세요" };
   return { options: ["아직 모르겠음", "기타 — 직접 입력"], multiple: false, placeholder: "답을 직접 적어주세요" };
 }
-function ClarificationForm({ questions, pending, submit }: { questions: ClarificationQuestion[]; pending: boolean; submit: (content: string) => void }) {
+function ClarificationForm({ conversationId, questions, pending, submit }: { conversationId: string; questions: ClarificationQuestion[]; pending: boolean; submit: (content: string) => void }) {
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [details, setDetails] = useState<Record<string, string>>({});
+  const [restored, setRestored] = useState(false);
+  const draftKey = clarificationDraftKey(conversationId);
+  const signature = JSON.stringify(questions);
+  useEffect(() => {
+    try {
+      const saved = readClarificationDraft(window.sessionStorage.getItem(draftKey), signature, JSON.parse(signature).map((question: ClarificationQuestion) => question.id));
+      setSelected(saved.selected);
+      setDetails(saved.details);
+    } catch { /* keep the form usable when browser storage is disabled */ }
+    setRestored(true);
+  }, [draftKey, signature]);
+  useEffect(() => {
+    if (!restored) return;
+    try { window.sessionStorage.setItem(draftKey, JSON.stringify({ signature, selected, details })); } catch { /* retain in-memory answers */ }
+  }, [draftKey, signature, selected, details, restored]);
   function toggle(question: ClarificationQuestion, option: string, multiple: boolean) {
     setSelected(current => {
       const values = current[question.id] ?? [];
