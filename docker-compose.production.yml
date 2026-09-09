@@ -7,9 +7,10 @@ services:
       - ./deploy/codex-auth:/source:ro
       - codex_auth:/target
     command: >
-      sh -ec 'test -r /source/auth.json;
-      rm -rf /target/*;
+      sh -ec 'if ! test -s /target/auth.json; then
+      test -r /source/auth.json;
       cp -a /source/. /target/;
+      fi;
       chown -R 10001:10001 /target;
       find /target -type d -exec chmod 700 {} +;
       find /target -type f -exec chmod 600 {} +'
