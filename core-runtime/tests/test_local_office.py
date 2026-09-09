@@ -11,7 +11,7 @@ from agentown_tframex_adapter.office import LocalOffice, OfficeTrace
 def office(tmp_path):
     (tmp_path / 'design-bundle.json').write_text(json.dumps({
         'proposal': {'name': 'Test company'},
-        'agentDefinitions': [{'key': 'worker.a', 'name': 'Alice', 'role': 'Review'}],
+        'agentDefinitions': [{'key': 'worker.a', 'name': 'Alice', 'role': 'Review', 'outputSchema': [{'name': 'result'}]}],
     }))
     (tmp_path / 'workflow.json').write_text(json.dumps({'nodes': [
         {'id': 'review1', 'config': {'agentKey': 'worker.a'}},
@@ -44,6 +44,25 @@ def test_unknown_nodes_do_not_animate_employees_and_cancel_is_honest(office):
     office.record({'kind': 'agent_start', 'agent': 'worker-a__review1'})
     office.finish('INTERRUPTED')
     assert office.snapshot()['employees'][0]['status'] == 'INTERRUPTED'
+
+
+def test_view_projects_declared_output_without_changing_runtime_trace(office):
+    trace = OfficeTrace(office)
+    raw = json.dumps({'result': 'Actual answer', 'request': 'Original input', '_agentownParallelIndex': 1})
+    trace.append({'kind': 'agent_end', 'agent': 'worker-a__review1', 'output': raw})
+    assert json.loads(office.snapshot()['employees'][0]['output']) == {'result': 'Actual answer'}
+    assert trace[0]['output'] == raw
+
+
+def test_later_parallel_success_does_not_erase_prior_failure(office):
+    office.record({'kind': 'agent_error', 'agent': 'worker-a__review1', 'error': 'real failure'})
+    office.record({'kind': 'agent_start', 'agent': 'worker-a__review2'})
+    office.record({'kind': 'agent_end', 'agent': 'worker-a__review2', 'output': '{"result":"success"}'})
+    assert office.snapshot()['employees'][0]['status'] == 'FAILED'
+    assert office.snapshot()['employees'][0]['output'] == 'real failure'
+    office.record({'kind': 'agent_start', 'agent': 'worker-a__review1'})
+    office.record({'kind': 'agent_end', 'agent': 'worker-a__review1', 'output': '{"result":"recovered"}'})
+    assert office.snapshot()['employees'][0]['status'] == 'SUCCEEDED'
 
 
 def test_loopback_capability_no_file_serving_or_writes(office):

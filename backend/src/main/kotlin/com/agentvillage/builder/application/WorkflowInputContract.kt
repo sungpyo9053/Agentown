@@ -81,6 +81,9 @@ internal object WorkflowInputContract {
         fields.firstOrNull { it.uniqueBy != null && !it.itemType.equals("object", true) }?.let {
             return "$path 필드 '${it.name}'의 uniqueBy는 object 배열에만 사용할 수 있습니다."
         }
+        fields.firstOrNull { field -> field.uniqueBy != null && field.itemSchema.orEmpty().none { it.name == field.uniqueBy } }?.let {
+            return "$path 필드 '${it.name}'의 uniqueBy '${it.uniqueBy}'는 같은 배열 항목의 itemSchema에 직접 선언된 필드여야 합니다. 하위 배열의 필드를 상위 배열 식별자로 사용할 수 없습니다."
+        }
         fields.forEach { field ->
             field.itemSchema?.let { nested ->
                 schemaIssue(nested, "$path.${field.name}[]")?.let { return it }

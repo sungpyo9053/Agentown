@@ -22,6 +22,19 @@ RECORDS_CONTRACT = [
 ]
 
 
+def test_parallel_scope_preserves_unpartitioned_lists_when_worker_count_differs():
+    content = json.dumps({"feedbacks": ["F1", "F2", "F3"], "context": "three source records"})
+    for index in (1, 2):
+        result = json.loads(_apply_input_bindings(content, [], {
+            "_agentownParallelIndex": index, "_agentownParallelSize": 2,
+        }))
+        assert result["_agentownAssignedInput"]["feedbacks"] == ["F1", "F2", "F3"]
+    exact = json.loads(_apply_input_bindings(json.dumps({"feedbacks": ["F1", "F2"]}), [], {
+        "_agentownParallelIndex": 2, "_agentownParallelSize": 2,
+    }))
+    assert exact["_agentownAssignedInput"]["feedbacks"] == "F2"
+
+
 def test_codex_output_schema_preserves_nested_runtime_contract():
     schema = _json_schema(RECORDS_CONTRACT)
 

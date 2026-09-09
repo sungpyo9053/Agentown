@@ -154,6 +154,31 @@ class TFrameXDefinitionCompilerTest {
 
         assertThat(collectorInput.single { it.name == "candidate" }.type).isEqualTo("array")
         assertThat(bindings).allMatch { it["aggregationMode"] == "APPEND_ITEM" }
+
+        val textVerifier = verifier.copy(outputSchema = listOf(FieldDefinition("verification", "string", true, "text", minLength = 1)))
+        val textCollector = collector.copy(inputSchema = listOf(FieldDefinition("candidate", "string", true, "text", minLength = 1)))
+        val textDefinition = compiler.compile("repeated-text", graph, listOf(textVerifier, textCollector), emptyMap())
+        val textAgents = textDefinition["agents"] as List<Map<String, Any?>>
+        val textInput = (textAgents.single { it["name"] == "collector__collect" }["inputSchema"] as List<FieldDefinition>).single()
+        val textParallel = ((textDefinition["pattern"] as Map<*, *>)["steps"] as List<*>).first() as Map<*, *>
+        val textBindings = (textParallel["taskResultBindings"] as Map<*, *>).values.flatMap { it as List<Map<String, String>> }
+        assertThat(textInput.type).isEqualTo("array")
+        assertThat(textInput.itemType).isEqualTo("string")
+        assertThat(textInput.itemMinLength).isEqualTo(1)
+        assertThat(textBindings).allMatch { it["aggregationMode"] == "APPEND_ITEM" }
+        val sequential = graph.copy(edges = graph.edges + WorkflowEdge("order", "verify-1", "verify-2"))
+        val sequentialDefinition = compiler.compile("sequential-text", sequential, listOf(textVerifier, textCollector), emptyMap())
+        val sequentialAgents = sequentialDefinition["agents"] as List<Map<String, Any?>>
+        val sequentialInput = (sequentialAgents.single { it["name"] == "collector__collect" }["inputSchema"] as List<FieldDefinition>).single()
+        assertThat(sequentialInput.type).isEqualTo("string")
+        val reusedCollector = textCollector.copy(inputSchema = textCollector.inputSchema + listOf(
+            FieldDefinition("otherStageOnly", "string", false, "not bound at this node"),
+            FieldDefinition("requiredContext", "string", true, "must not drop required validation"),
+        ))
+        val reusedDefinition = compiler.compile("scoped-input", graph, listOf(textVerifier, reusedCollector), emptyMap())
+        val reusedAgents = reusedDefinition["agents"] as List<Map<String, Any?>>
+        val reusedInput = reusedAgents.single { it["name"] == "collector__collect" }["inputSchema"] as List<FieldDefinition>
+        assertThat(reusedInput.map { it.name }).containsExactly("candidate", "requiredContext")
     }
 
     @Test

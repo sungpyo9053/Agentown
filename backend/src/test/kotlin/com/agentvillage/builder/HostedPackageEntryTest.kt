@@ -15,7 +15,8 @@ class HostedPackageEntryTest {
         assertTrue(html.contains("최신 설계"))
         assertFalse(html.contains("<script"))
         assertFalse(html.contains("<form"))
-        assertTrue(files.getValue("웹에서_시작하기.txt").contains(id.toString()))
+        assertTrue(files.getValue("WEB_START.txt").contains(id.toString()))
+        assertTrue(files.keys.all { name -> name.all { it.code in 32..126 } }, "Entry filenames must work with legacy ZIP extractors")
     }
 
     @Test

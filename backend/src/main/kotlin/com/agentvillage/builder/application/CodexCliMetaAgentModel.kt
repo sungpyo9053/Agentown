@@ -128,6 +128,7 @@ class CodexCliMetaAgentModel(
         배열 항목이 원시값이면 itemType에 해당 타입을 선언하고 itemSchema는 null로 둔다. 배열 항목이 구조화 객체이면 itemType=object로 선언하고 itemSchema에 객체의 모든 필드를 FieldDefinition으로 재귀적으로 선언한다. 구조화 객체 배열을 itemType 또는 itemSchema가 없는 일반 array로 축약하지 않는다. 배열이 아닌 필드의 itemType과 itemSchema는 모두 null이어야 한다.
         object 필드는 objectSchema에 내부 필드를 재귀적으로 선언한다. 최종 출력이나 Agent 입출력의 object를 내부 계약 없는 빈 object로 두지 않는다.
         날짜는 format=date 또는 date-time, URL은 format=uri, 비어 있으면 안 되는 문자열은 minLength=1, 제한된 상태·판정 값은 enumValues, 숫자 범위는 minimum/maximum으로 선언한다. 문자열 배열 항목의 URL/날짜/최소 길이는 itemFormat/itemMinLength로 선언한다. 중복 금지 배열은 uniqueItems=true, 객체 배열에서 특정 식별자가 고유해야 하면 uniqueBy에 그 필드명을 선언한다.
+        uniqueBy는 해당 배열의 itemSchema에 직접 선언된 필드만 참조한다. 중첩 배열의 항목 필드를 바깥 배열의 식별자로 사용하지 않는다.
         모든 FieldDefinition에는 minItems, maxItems, itemType, itemSchema, itemFormat, itemMinLength, objectSchema, format, enumValues, minimum, maximum, minLength, uniqueItems, uniqueBy를 항상 포함하고 적용되지 않는 값은 null로 둔다.
         판정·합격·거절처럼 결과를 바꾸는 업무 규칙이나 숫자 임계값이 사용자 요청에 없으면 LLM이 임의 기준을 만들지 말고 clarificationQuestions로 최소 질문을 반환한다.
         반복 작업의 지점명, 역할명 같은 고정값은 존재하지 않는 sourceField로 가장하지 말고 해당 ai.generate 노드 config.inputDefaults에 [{"field":"필드명","value":"고정값"}] 형식으로 선언한다. inputDefaults의 field는 반드시 해당 Agent inputSchema에 선언된 필드여야 하며, 반복 순번이나 슬롯을 위한 임의 필드를 만들지 않는다. edge sourceField는 상류 출력 또는 사용자 입력 스키마에 실제로 존재하는 필드만 참조한다.

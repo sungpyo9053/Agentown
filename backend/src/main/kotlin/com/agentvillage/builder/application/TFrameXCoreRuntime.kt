@@ -89,7 +89,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         }
         val incomingEdges = graph.edges.groupBy { it.target }
         val nodesById = graph.nodes.associateBy { it.id }
-        fun repeatedObjectFanInFields(node: WorkflowNode): Set<String> {
+        fun repeatedValueFanInFields(node: WorkflowNode): Set<String> {
             if (node.nodeType !in aiTypes) return emptySet()
             val source = definitions[node.config["agentKey"]?.toString()] ?: return emptySet()
             val repeatedTargets = incomingEdges[node.id].orEmpty()
@@ -99,20 +99,33 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 .groupBy({ it.first }, { it.second })
                 .filterValues { sources -> sources.groupingBy { it }.eachCount().values.any { it > 1 } }
                 .keys
+            val parallelTextTargets = incomingEdges[node.id].orEmpty()
+                .filter { nodesById[it.source]?.nodeType in aiTypes }
+                .flatMap { edge -> edge.bindings.map { (target, sourceField) ->
+                    Triple(indexedArrayRoot(target), sourceField, depth[edge.source]) to edge.source
+                } }
+                .groupBy({ it.first }, { it.second })
+                .filterValues { it.distinct().size > 1 }
+                .keys.map { it.first }.toSet()
             return source.inputSchema.filter { field ->
-                field.type.equals("object", true) && field.name in repeatedTargets
+                (field.type.equals("object", true) && field.name in repeatedTargets) ||
+                    (field.type.equals("string", true) && field.name in parallelTextTargets && field.enumValues.isNullOrEmpty())
             }.map { it.name }.toSet()
         }
         fun runtimeAgentDefinition(node: WorkflowNode): AgentDefinition {
             val source = definitions.getValue(node.config.getValue("agentKey").toString())
-            val repeated = repeatedObjectFanInFields(node)
+            val repeated = repeatedValueFanInFields(node)
             if (repeated.isEmpty()) return source
             return source.copy(inputSchema = source.inputSchema.map { field ->
                 if (field.name !in repeated) field else field.copy(
                     type = "array",
                     minItems = 1,
-                    itemType = "object",
+                    itemType = field.type.lowercase(),
                     itemSchema = field.objectSchema,
+                    itemMinLength = field.minLength,
+                    itemFormat = field.format,
+                    minLength = null,
+                    format = null,
                     objectSchema = null,
                 )
             })
@@ -295,7 +308,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     edge.bindings.values.map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
                 }.filterNot { it in setOf("context", "error") }.toSet()
                 val nodeSource = source.copy(
-                    inputSchema = source.inputSchema.filter { it.name in activeInputNames }.ifEmpty { source.inputSchema },
+                    inputSchema = source.inputSchema.filter { it.name in activeInputNames || it.required }.ifEmpty { source.inputSchema },
                     outputSchema = if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) {
                         finalOutputSchema
                     } else source.outputSchema.filter { it.name in activeOutputNames }.ifEmpty { source.outputSchema },
@@ -314,7 +327,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     "systemPrompt" to systemPrompt(
                         runtimeSource, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
                     ),
-                    "tools" to source.toolKeys, "inputSchema" to source.inputSchema, "outputSchema" to runtimeSource.outputSchema,
+                    "tools" to source.toolKeys, "inputSchema" to runtimeSource.inputSchema, "outputSchema" to runtimeSource.outputSchema,
                     "inputBindings" to inputBindings, "inputDefaults" to inputDefaults,
                     "preserveInput" to !isTerminalExecutable(node),
                 )

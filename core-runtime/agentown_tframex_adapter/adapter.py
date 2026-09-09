@@ -815,7 +815,7 @@ def _apply_input_bindings(
         for key, item in value.items():
             if isinstance(item, list) and len(item) == parallel_size:
                 assigned[key] = item[item_index]
-            elif not isinstance(item, list):
+            else:
                 assigned[key] = item
         result["_agentownAssignedInput"] = assigned
     for target_field, default_value in (defaults or {}).items():

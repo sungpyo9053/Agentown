@@ -35,6 +35,9 @@ class LocalOffice:
         ]}
         self.active = set()
         self.failed = set()
+        self.errors = {}
+        self.output_fields = {a["key"]: [f["name"] for f in a.get("outputSchema", [])]
+                              for a in bundle["agentDefinitions"]}
         self.html = (root / "company/index.html").read_bytes()
         self.token = secrets.token_urlsafe(32)
         office = self
@@ -95,17 +98,29 @@ class LocalOffice:
                 if kind == "agent_start":
                     self.active.add(node)
                     self.failed.discard(node)
+                    self.errors.pop(node, None)
                     employee.update(status="RUNNING", output="")
                 else:
                     self.active.discard(node)
                     failed = kind == "agent_error"
                     if failed:
                         self.failed.add(node)
-                    employee.update(status="FAILED" if failed else "SUCCEEDED", output=str(event.get("error" if failed else "output", "")))
-                    if any(self.nodes.get(n) == key for n in self.failed):
-                        employee["status"] = "FAILED"
-                    elif any(self.nodes.get(n) == key for n in self.active):
-                        employee["status"] = "RUNNING"
+                        self.errors[node] = str(event.get("error", "실행 실패"))
+                    output = str(event.get("error" if failed else "output", ""))
+                    if not failed and self.output_fields.get(key):
+                        try:
+                            value = json.loads(output)
+                            if isinstance(value, dict):
+                                output = json.dumps({field: value[field] for field in self.output_fields[key]
+                                                     if field in value}, ensure_ascii=False)
+                        except (ValueError, TypeError):
+                            pass
+                    employee.update(status="FAILED" if failed else "SUCCEEDED", output=output)
+                errors = [self.errors[n] for n in sorted(self.failed) if self.nodes.get(n) == key]
+                if errors:
+                    employee.update(status="FAILED", output="\n".join(errors))
+                elif any(self.nodes.get(n) == key for n in self.active):
+                    employee["status"] = "RUNNING"
 
     def finish(self, status):
         with self.lock:

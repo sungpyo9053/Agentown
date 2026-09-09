@@ -24,7 +24,7 @@ object HostedPackageEntry {
                 <p>사이트에 저장된 최신 설계를 엽니다. 입력 자료와 설계 버전을 확인한 뒤 직접 실행하세요. 파일을 여는 것만으로 실행하거나 결제하지 않습니다.</p>
                 <p>이 파일은 오프라인 실행기가 아닙니다. 로컬 실행이 필요하면 START_HERE.md의 개발자용 실행 안내를 확인하세요.</p></body></html>
             """.trimIndent(),
-            "웹에서_시작하기.txt" to """
+            "WEB_START.txt" to """
                 설치 없이 사용: OPEN_IN_AGENTOWN.html을 열고 링크를 누르세요.
                 링크가 열리지 않으면 브라우저 주소창에 아래 주소를 붙여넣으세요.
                 $url

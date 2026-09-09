@@ -8,6 +8,19 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 class WorkflowInputContractTest {
+    @Test
+    fun `uniqueBy must reference the direct item contract not a nested field`() {
+        val items = listOf(
+            FieldDefinition("documentId", "string", true, "id"),
+            FieldDefinition("findings", "array", true, "nested", itemType = "object", itemSchema = listOf(
+                FieldDefinition("clause", "string", true, "clause"),
+            )),
+        )
+        val field = FieldDefinition("documents", "array", true, "documents", itemType = "object", itemSchema = items, uniqueBy = "clause")
+        assertThat(WorkflowInputContract.schemaIssue(listOf(field))).contains("uniqueBy", "clause", "직접")
+        assertThat(WorkflowInputContract.schemaIssue(listOf(field.copy(uniqueBy = "documentId")))).isNull()
+    }
+
     private val fields = listOf(
         FieldDefinition("warehouses", "array", true, "exactly three warehouse names", minItems = 3, maxItems = 3),
         FieldDefinition("asOfDate", "string", true, "research date"),
