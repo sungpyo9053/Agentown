@@ -310,9 +310,7 @@ class CodexCliRunner(
             outThread.join(); errThread.join()
             if (jobId != null && jobId in cancelled) cancelled()
             if (process.exitValue() != 0) {
-                val safe = sanitize(stderr)
-                val auth = safe.contains("401") || safe.contains("unauthorized", true) || safe.contains("authentication", true)
-                throw MetaAgentExecutionException(if (auth) "BUILDER_CODEX_AUTH_FAILED" else "BUILDER_CODEX_EXEC_FAILED", if (auth) "Authentication" else "CliProcess", !auth, process.exitValue(), safe)
+                throw processFailure(stderr, process.exitValue())
             }
             stdout.trim().takeIf(String::isNotBlank)
                 ?: throw MetaAgentExecutionException("BUILDER_CODEX_EMPTY_OUTPUT", "EmptyOutput", true, process.exitValue(), "Codex가 결과를 반환하지 않았습니다.")
@@ -339,6 +337,20 @@ class CodexCliRunner(
                 "-c", "model_reasoning_effort=\"${validatedReasoningEffort()}\"",
                 "--model", model, "--output-schema", schema.toString(), "--color", "never",
             )
+
+    internal fun processFailure(stderr: String, exitCode: Int): MetaAgentExecutionException {
+        // Classify before redaction/truncation: refresh failures must not be retried.
+        val auth = listOf("401", "unauthorized", "authentication", "refresh_token_reused",
+            "refresh token was already used", "failed to refresh token").any { stderr.contains(it, true) }
+        return MetaAgentExecutionException(
+            if (auth) "BUILDER_CODEX_AUTH_FAILED" else "BUILDER_CODEX_EXEC_FAILED",
+            if (auth) "Authentication" else "CliProcess",
+            !auth,
+            exitCode,
+            if (auth) "AI 제공 서비스의 인증을 갱신하지 못했습니다. 운영자의 AI 계정 재연결이 필요합니다. 입력 내용은 보존됩니다."
+            else "AI 제공 서비스 실행에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+        )
+    }
 
     private fun cancelled(): Nothing = throw BadRequestException("BUILDER_GENERATION_CANCELLED", "사용자가 Codex 설계를 중지했습니다.")
 

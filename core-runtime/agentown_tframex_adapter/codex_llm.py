@@ -19,6 +19,16 @@ def codex_auth_file() -> Path:
     return (Path(configured) if configured else Path.home() / ".codex") / "auth.json"
 
 
+def safe_cli_failure(stderr: bytes) -> str:
+    detail = stderr.decode("utf-8", errors="replace").lower()
+    if any(marker in detail for marker in (
+        "401", "unauthorized", "authentication", "refresh_token_reused",
+        "refresh token was already used", "failed to refresh token",
+    )):
+        return "AI_AUTH_RECONNECT_REQUIRED: AI 제공 계정의 재연결이 필요합니다."
+    return "AI_EXECUTION_FAILED: AI 실행에 실패했습니다. 잠시 후 다시 시도해 주세요."
+
+
 class CodexCliLLMWrapper(BaseLLMWrapper):
     """TFrameX LLM transport backed by the server's authenticated Codex CLI."""
 
@@ -111,8 +121,7 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
                     except FileNotFoundError:
                         pass
         if process.returncode != 0:
-            safe = stderr.decode("utf-8", errors="replace")[-2000:]
-            raise RuntimeError(f"Codex CLI execution failed: {safe}")
+            raise RuntimeError(safe_cli_failure(stderr))
         output = stdout.decode("utf-8", errors="replace").strip()
         if not output:
             raise RuntimeError("Codex CLI returned an empty result")

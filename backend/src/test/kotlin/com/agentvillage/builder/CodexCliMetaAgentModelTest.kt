@@ -21,6 +21,20 @@ import java.util.UUID
 import java.nio.file.Path
 
 class CodexCliMetaAgentModelTest {
+    @Test
+    fun `expired shared authentication is non retryable and never exposes CLI logs`() {
+        val cli = CodexCliRunner("codex", 120, "/unused")
+        for (detail in listOf("refresh_token_reused", "Your refresh token was already used", "Failed to refresh token", "401 Unauthorized")) {
+            val failure = cli.processFailure("ERROR codex_login::auth $detail secret=example-private-value", 1)
+            assertThat(failure.errorCode).isEqualTo("BUILDER_CODEX_AUTH_FAILED")
+            assertThat(failure.retryable).isFalse()
+            assertThat(failure.safeMessage).contains("재연결").doesNotContain("codex_login", "example-private-value", detail)
+        }
+        val other = cli.processFailure("ERROR internal-path secret=example-private-value", 2)
+        assertThat(other.retryable).isTrue()
+        assertThat(other.safeMessage).doesNotContain("internal-path", "example-private-value")
+    }
+
     private val credentials = mock<CredentialDirectory>()
     private val runner = mock<CodexCliRunner>()
     private val model = CodexCliMetaAgentModel(credentials, runner, ObjectMapper(), "gpt-test")

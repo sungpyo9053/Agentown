@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from tframex.models.primitives import Message
 
-from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper, codex_auth_file
+from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper, codex_auth_file, safe_cli_failure
 
 
 class _Process:
@@ -17,6 +17,15 @@ class _Process:
 
 
 class CodexWritableHomeTest(unittest.IsolatedAsyncioTestCase):
+    def test_provider_errors_never_expose_private_logs(self):
+        for marker in ("401", "refresh_token_reused", "refresh token was already used", "Failed to refresh token"):
+            message = safe_cli_failure(f"ERROR private-path {marker} secret=private-value".encode())
+            self.assertIn("AI_AUTH_RECONNECT_REQUIRED", message)
+            self.assertNotIn("private", message)
+        message = safe_cli_failure(b"ERROR private-path secret=private-value")
+        self.assertIn("AI_EXECUTION_FAILED", message)
+        self.assertNotIn("private", message)
+
     def test_default_cli_home_requires_no_extra_environment_variable(self):
         with patch.dict(os.environ, {}, clear=True), patch("pathlib.Path.home", return_value=Path("/test-user")):
             self.assertEqual(codex_auth_file(), Path("/test-user/.codex/auth.json"))
