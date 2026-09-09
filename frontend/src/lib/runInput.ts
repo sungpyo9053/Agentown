@@ -26,17 +26,20 @@ export function buildRunInput(fields: RunInputField[], draft: Record<string, str
     if (field.type === "array") {
       const items = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
       value = items;
-      if (field.minItems !== undefined && items.length < field.minItems) errors.push(`${label}: ${field.minItems}개 이상 입력해 주세요.`);
-      if (field.maxItems !== undefined && items.length > field.maxItems) errors.push(`${label}: ${field.maxItems}개 이하로 입력해 주세요.`);
+      if (field.minItems != null && items.length < field.minItems) errors.push(`${label}: ${field.minItems}개 이상 입력해 주세요.`);
+      if (field.maxItems != null && items.length > field.maxItems) errors.push(`${label}: ${field.maxItems}개 이하로 입력해 주세요.`);
     } else if (field.type === "boolean") {
       if (!["true", "false"].includes(raw)) errors.push(`${label}: 예 또는 아니요를 선택해 주세요.`);
       value = raw === "true";
     } else if (["number", "integer"].includes(field.type)) {
       value = Number(raw);
-      if (!Number.isFinite(value) || (field.type === "integer" && !Number.isInteger(value))) errors.push(`${label}: 올바른 숫자를 입력해 주세요.`);
-      else if ((field.minimum !== undefined && Number(value) < field.minimum) || (field.maximum !== undefined && Number(value) > field.maximum)) errors.push(`${label}: 허용 범위를 확인해 주세요.`);
+      if (!Number.isFinite(value) || (field.type === "integer" && !Number.isInteger(value))) {
+        errors.push(`${label}: 올바른 숫자를 입력해 주세요.`);
+        value = raw;
+      }
+      else if ((field.minimum != null && Number(value) < field.minimum) || (field.maximum != null && Number(value) > field.maximum)) errors.push(`${label}: 허용 범위를 확인해 주세요.`);
     } else {
-      if (field.minLength !== undefined && raw.length < field.minLength) errors.push(`${label}: ${field.minLength}자 이상 입력해 주세요.`);
+      if (field.minLength != null && raw.length < field.minLength) errors.push(`${label}: ${field.minLength}자 이상 입력해 주세요.`);
       if (field.enumValues?.length && !field.enumValues.includes(raw)) errors.push(`${label}: 제공된 선택지에서 골라 주세요.`);
     }
     entries.push([field.name, value]);

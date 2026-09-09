@@ -11,7 +11,8 @@ export function RunInputForm({ fields, pending, initialInput, setInput }: { fiel
     const next = { ...draft, [name]: value };
     setDraft(next); setTouched(true);
     const parsed = buildRunInput(fields, next);
-    setInput(parsed.errors.length ? "" : JSON.stringify(parsed.value));
+    // Keep partial drafts across tab changes; the editor disables execution until valid.
+    setInput(JSON.stringify(parsed.value));
   }
   return <div className="mt-3 space-y-4">
     {fields.map(field => <label key={field.name} className="block text-xs font-semibold">
