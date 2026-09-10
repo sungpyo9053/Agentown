@@ -41,7 +41,17 @@ def _presentation(spec: dict) -> tuple[bytes, dict]:
     from pptx.util import Inches, Pt
 
     title = _text(spec.get("title"), "title", 120)
-    slides = _items(spec.get("slides"), "slides", 30)
+    source_slides = _items(spec.get("slides"), "slides", 30)
+    slides = []
+    for index, data in enumerate(source_slides, 1):
+        if not isinstance(data, dict):
+            raise ArtifactContractError("slide must be an object")
+        # Pagination is a layout operation, not an AI rewrite: preserve every
+        # item, heading and citation in order, while keeping readable slides.
+        bullets = _items(data.get("bullets"), f"slide {index} bullets", 120)
+        slides.extend({**data, "bullets": bullets[offset:offset + 4]}
+                      for offset in range(0, len(bullets), 4))
+    _items(slides, "paginated slides", 30)
     deck = Presentation()
     deck.slide_width, deck.slide_height = Inches(13.333), Inches(7.5)
     deck.core_properties.title = title
@@ -78,7 +88,8 @@ def _presentation(spec: dict) -> tuple[bytes, dict]:
     loaded = Presentation(BytesIO(content))
     if len(loaded.slides) != len(slides):
         raise ArtifactContractError("slide round-trip mismatch")
-    return content, {"slides": len(slides), "visualReview": "REQUIRED"}
+    return content, {"slides": len(slides), "inputSlides": len(source_slides),
+                     "visualReview": "REQUIRED"}
 
 
 def _row_height(values: list, width: int = 28) -> float:

@@ -152,6 +152,33 @@ class LocalArtifactTests(unittest.TestCase):
         self.assertIn("사용자 입력 F1", text)
         self.assertEqual(result["validation"]["visualReview"], "REQUIRED")
 
+    def test_bullet_pagination_preserves_all_content_and_sources_without_mutation(self):
+        from pptx import Presentation
+        bullets = [f"근거 {index}" for index in range(9)]
+        spec = {"format": "pptx", "title": "검토", "slides": [
+            {"title": "확인된 사실", "bullets": bullets, "sourceNote": "출처 S1"}]}
+        before = json.dumps(spec)
+        result = render_artifact(spec, self.root)
+        slides = Presentation(result["path"]).slides
+        self.assertEqual(len(slides), 3)
+        actual = []
+        for slide in slides:
+            texts = [shape.text for shape in slide.shapes if shape.has_text_frame]
+            self.assertEqual(texts[0], "확인된 사실")
+            self.assertIn("출처 S1", texts[-1])
+            actual.extend(texts[1:-1])
+        self.assertEqual(actual, bullets)
+        self.assertEqual(json.dumps(spec), before)
+        self.assertEqual(result["validation"]["inputSlides"], 1)
+
+    def test_pagination_retains_total_slide_bound_and_rejects_empty_items(self):
+        for slides in ([{"title": "과다", "bullets": ["항목"] * 8}] * 16,
+                       [{"title": "누락", "bullets": []}],
+                       [{"title": "빈 항목", "bullets": ["정상"] * 4 + [""]}]):
+            with self.assertRaises(ArtifactContractError):
+                render_artifact({"format": "pptx", "title": "검토", "slides": slides}, self.root)
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_overflow_is_rejected_without_silently_truncating_or_writing(self):
         with self.assertRaises(ArtifactContractError):
             render_artifact({"format": "pptx", "title": "검토", "slides": [
