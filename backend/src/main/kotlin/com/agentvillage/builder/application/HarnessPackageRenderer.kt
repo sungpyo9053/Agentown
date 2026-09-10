@@ -367,13 +367,13 @@ class HarnessPackageRenderer(
             try: output = json.loads(final)
             except json.JSONDecodeError: output = {"result": final}
             print(json.dumps({"status": "SUCCEEDED", "output": output, **result}, ensure_ascii=False, indent=2, default=str))
-            if office: office.finish("SUCCEEDED")
+            if office: office.finish("SUCCEEDED", output=output)
         except ExecutionNotConfigured as error:
-            if office: office.finish("EXECUTION_NOT_CONFIGURED")
+            if office: office.finish("EXECUTION_NOT_CONFIGURED", str(error))
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": "EXECUTION_NOT_CONFIGURED", "message": str(error)}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
         except Exception as error:
-            if office: office.finish("FAILED")
+            if office: office.finish("FAILED", str(error))
             print(json.dumps({"status": "FAILED", "code": "TFRAMEX_EXECUTION_FAILED", "message": str(error)}, ensure_ascii=False, indent=2))
             raise SystemExit(1)
         except KeyboardInterrupt:

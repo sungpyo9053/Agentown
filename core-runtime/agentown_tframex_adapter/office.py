@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import copy
+from hashlib import sha256
 import json
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -21,12 +23,18 @@ class OfficeTrace(list):
 
 class LocalOffice:
     def __init__(self, root: Path):
+        self.results_root = (root / "results").resolve()
+        self.artifact = None
         bundle = json.loads((root / "design-bundle.json").read_text(encoding="utf-8"))
         workflow = json.loads((root / "workflow.json").read_text(encoding="utf-8"))
         self.lock = threading.Lock()
         self.nodes = {}
+        self.step_labels = {}
+        self.running_steps = {}
         for node in workflow["nodes"]:
             key = (node.get("config") or {}).get("agentKey")
+            runtime_key = key or node.get("nodeType", "tool")
+            self.step_labels[f"{runtime_key.replace('.', '-')}__{node['id']}"] = node.get("label") or "실행 단계"
             if key:
                 self.nodes[f"{key.replace('.', '-')}__{node['id']}"] = key
         self.state = {"name": bundle["proposal"]["name"], "status": "IDLE", "employees": [
@@ -55,11 +63,16 @@ class LocalOffice:
                 elif self.path == f"/{office.token}/state":
                     payload = json.dumps(office.snapshot(), ensure_ascii=False).encode("utf-8")
                     content_type = "application/json; charset=utf-8"
+                elif self.path == f"/{office.token}/artifact" and office.artifact is not None:
+                    payload, filename = office.artifact
+                    content_type = "application/octet-stream"
                 else:
                     self.send_error(404)
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
+                if self.path == f"/{office.token}/artifact":
+                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
@@ -84,7 +97,12 @@ class LocalOffice:
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy(self.state)
+            snapshot = copy.deepcopy(self.state)
+            snapshot["activeSteps"] = [{"label": self.step_labels.get(node, "실행 단계"),
+                "elapsedSeconds": max(0, int(time.monotonic() - started))}
+                for node, started in self.running_steps.items()]
+            snapshot["error"] = self.state.get("error") or "\n".join(self.errors.values()) or self.state.get("artifactError", "")
+            return snapshot
 
     def record(self, event):
         kind, node = event.get("kind"), event.get("agent")
@@ -92,20 +110,24 @@ class LocalOffice:
             return
         with self.lock:
             key = self.nodes.get(node)
+            if kind == "agent_start":
+                self.running_steps[node] = time.monotonic()
+                self.active.add(node)
+                self.failed.discard(node)
+                self.errors.pop(node, None)
+            else:
+                self.running_steps.pop(node, None)
+                self.active.discard(node)
+                if kind == "agent_error":
+                    self.failed.add(node)
+                    self.errors[node] = str(event.get("error", "실행 실패"))
             for employee in self.state["employees"]:
                 if employee["key"] != key:
                     continue
                 if kind == "agent_start":
-                    self.active.add(node)
-                    self.failed.discard(node)
-                    self.errors.pop(node, None)
                     employee.update(status="RUNNING", output="")
                 else:
-                    self.active.discard(node)
                     failed = kind == "agent_error"
-                    if failed:
-                        self.failed.add(node)
-                        self.errors[node] = str(event.get("error", "실행 실패"))
                     output = str(event.get("error" if failed else "output", ""))
                     if not failed and self.output_fields.get(key):
                         try:
@@ -122,9 +144,32 @@ class LocalOffice:
                 elif any(self.nodes.get(n) == key for n in self.active):
                     employee["status"] = "RUNNING"
 
-    def finish(self, status):
+    def finish(self, status, error=None, output=None):
         with self.lock:
             self.state["status"] = status
+            self.artifact = None
+            self.state.pop("artifact", None)
+            self.state.pop("artifactError", None)
+            if status == "SUCCEEDED" and isinstance(output, dict) and output.get("artifactPath"):
+                try:
+                    path = Path(output["artifactPath"]).resolve(strict=True)
+                    if not path.is_relative_to(self.results_root) or path.suffix not in {".zip", ".docx", ".pptx", ".xlsx"}:
+                        raise ValueError("Unexpected artifact location")
+                    with path.open("rb") as file:
+                        content = file.read(64 * 1024 * 1024 + 1)
+                    if len(content) > 64 * 1024 * 1024 or len(content) != output.get("artifactBytes") or sha256(content).hexdigest() != output.get("artifactSha256"):
+                        raise ValueError("Artifact integrity mismatch")
+                    filename = "agentown-result" + path.suffix
+                    # Serve only this verified immutable result, never an arbitrary
+                    # path or a file selected through a browser query parameter.
+                    self.artifact = (content, filename)
+                    self.state["artifact"] = {"name": filename, "bytes": len(content)}
+                except (OSError, ValueError, TypeError):
+                    self.state["artifactError"] = "결과 파일을 안전하게 확인하지 못했습니다. 실행기의 results 폴더를 확인해 주세요."
+            if error is not None:
+                self.state["error"] = str(error)[:2000]
+            if status != "RUNNING":
+                self.running_steps.clear()
             for employee in self.state["employees"]:
                 if employee["status"] == "RUNNING" and status != "RUNNING":
                     employee["status"] = "INTERRUPTED"

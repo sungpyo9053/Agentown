@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 import shutil
 import subprocess
 from pathlib import Path
@@ -57,6 +58,7 @@ def office(tmp_path):
     (tmp_path / 'workflow.json').write_text(json.dumps({'nodes': [
         {'id': 'review1', 'config': {'agentKey': 'worker.a'}},
         {'id': 'review2', 'config': {'agentKey': 'worker.a'}},
+        {'id': 'research', 'nodeType': 'local.web.research', 'label': '공개 자료 조사', 'config': {}},
     ]}))
     (tmp_path / 'company').mkdir()
     (tmp_path / 'company/index.html').write_text('<html>Local only</html>')
@@ -77,6 +79,46 @@ def test_real_trace_mapping_and_parallel_failure(office):
     assert len(trace) == 4  # Observer preserves the runtime's original failure trace.
     office.finish('FAILED')
     assert office.snapshot()['status'] == 'FAILED'
+
+
+def test_tool_progress_elapsed_time_and_errors_do_not_fake_employee_activity(office, monkeypatch):
+    monkeypatch.setattr('agentown_tframex_adapter.office.time.monotonic', lambda: 10)
+    office.record({'kind': 'agent_start', 'agent': 'local-web-research__research'})
+    monkeypatch.setattr('agentown_tframex_adapter.office.time.monotonic', lambda: 27)
+    assert office.snapshot()['activeSteps'] == [{'label': '공개 자료 조사', 'elapsedSeconds': 17}]
+    assert office.snapshot()['employees'][0]['status'] == 'IDLE'
+    office.record({'kind': 'agent_error', 'agent': 'local-web-research__research', 'error': 'Sources unavailable'})
+    assert office.snapshot()['activeSteps'] == []
+    assert office.snapshot()['error'] == 'Sources unavailable'
+    office.record({'kind': 'agent_start', 'agent': 'local-web-research__research'})
+    assert office.snapshot()['error'] == ''
+    office.finish('FAILED', 'Execution failed before an agent could start')
+    assert office.snapshot()['activeSteps'] == []
+    assert office.snapshot()['error'] == 'Execution failed before an agent could start'
+
+
+def test_only_verified_final_artifact_is_downloadable_and_bytes_are_immutable(office, tmp_path):
+    result = office.results_root / 'run' / 'result.zip'
+    result.parent.mkdir(parents=True)
+    content = b'generated artifact fixture'
+    result.write_bytes(content)
+    output = {'artifactPath': str(result), 'artifactBytes': len(content), 'artifactSha256': sha256(content).hexdigest()}
+    office.finish('SUCCEEDED', output=output)
+    assert office.snapshot()['artifact'] == {'name': 'agentown-result.zip', 'bytes': len(content)}
+    result.write_bytes(b'changed after completion')
+    with urlopen(office.url + 'artifact') as response:
+        assert response.read() == content
+        assert response.headers['Content-Disposition'] == 'attachment; filename="agentown-result.zip"'
+    outside = tmp_path / 'private.zip'
+    outside.write_bytes(content)
+    result.write_bytes(content)
+    for invalid in ({**output, 'artifactPath': str(outside)}, {**output, 'artifactSha256': 'wrong'}):
+        office.finish('SUCCEEDED', output=invalid)
+        assert 'artifact' not in office.snapshot()
+        assert office.snapshot()['artifactError']
+        with pytest.raises(HTTPError) as error:
+            urlopen(office.url + 'artifact')
+        assert error.value.code == 404
 
 
 def test_unknown_nodes_do_not_animate_employees_and_cancel_is_honest(office):
