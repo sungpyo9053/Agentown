@@ -18,13 +18,17 @@ class WorkflowGraphValidatorTest {
         fun dropped(source: String) = validator.validate(graph(false), requirement, proposal, emptyList(), source).issues
             .filter { it.code == "MEANING_REQUIREMENT_DROPPED" }.map { it.message }
         listOf("외부 검색·Notion·FAQ 연동 없이 제공된 텍스트만 사용합니다.",
-            "Notion/FAQ 연동 없음. Slack 전송 금지.", "Notion은 사용하지 않고 입력 텍스트만 분석").forEach { source ->
+            "Notion/FAQ 연동 없음. Slack 전송 금지.", "Notion은 사용하지 않고 입력 텍스트만 분석",
+            "외부 검색, Notion/FAQ, 예약·구매·외부 전송은 하지 않습니다.",
+            "Slack, Notion, FAQ 연동은 하지 않습니다.").forEach { source ->
             assertThat(dropped(source)).describedAs(source).noneMatch { it.contains("Notion/FAQ") || it.contains("Slack") }
         }
         assertThat(dropped("Notion에서 FAQ를 조회하고 Slack 전송 없이 파일로 반환"))
             .anyMatch { it.contains("Notion/FAQ") }.noneMatch { it.contains("Slack") }
         assertThat(dropped("Notion 연동 없이 Slack으로 전송"))
             .anyMatch { it.contains("Slack") }.noneMatch { it.contains("Notion/FAQ") }
+        assertThat(dropped("Notion에서 FAQ 조회, Slack 전송 금지"))
+            .anyMatch { it.contains("Notion/FAQ") }.noneMatch { it.contains("Slack") }
         val negative = validator.validate(graph(false), requirement.copy(objective = "Notion/FAQ 연동 없이 의견 분석"), proposal, emptyList())
         assertThat(negative.issues).anyMatch { it.code == "MEANING_UNREQUESTED_INTEGRATION" && it.message.contains("Notion/FAQ") }
     }

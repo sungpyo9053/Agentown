@@ -363,10 +363,16 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private fun requestsHumanApproval(source: String): Boolean = requestsRuntimeHumanApproval(source)
 
     private fun requestsIntegration(source: String, vararg names: String): Boolean {
-        val boundary = Regex("[.!?\\n,;]|하지만|대신|한 뒤|한 후|하고")
+        val boundary = Regex("[.!?\\n;]|하지만|대신|한 뒤|한 후|하고")
+        val action = Regex("연동|연결|검색|조회|수집|전송|발송|사용")
         val negativeAction = Regex("(?:연동|연결|검색|조회|수집|전송|발송|사용)\\s*(?:은|는|을|를)?\\s*(?:없이|없음|하지\\s*(?:않|마)|불필요|금지|제외)")
         return names.any { name -> Regex(Regex.escape(name), RegexOption.IGNORE_CASE).findAll(source).any { mention ->
-            val tail = source.substring(mention.range.last + 1).split(boundary, limit = 2).first().take(80)
+            // A comma can enumerate exclusions before their shared predicate. Stop at
+            // a comma only after this mention has its own action, not a bare list item.
+            val clause = source.substring(mention.range.last + 1).split(boundary, limit = 2).first().take(160)
+            val segments = clause.split(',')
+            val actionIndex = segments.indexOfFirst { action.containsMatchIn(it) }
+            val tail = if (actionIndex >= 0) segments.take(actionIndex + 1).joinToString(",") else clause
             !negativeAction.containsMatchIn(tail) && !Regex("^\\s*(?:은|는|을|를)?\\s*(?:없이|없음|제외)").containsMatchIn(tail)
         } }
     }

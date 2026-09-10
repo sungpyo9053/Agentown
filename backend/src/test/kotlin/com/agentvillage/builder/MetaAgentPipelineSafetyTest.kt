@@ -22,6 +22,16 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    @Test fun `internal design errors never become generic user clarification`() {
+        listOf("MEANING_REQUIREMENT_DROPPED", "MEANING_UNREQUESTED_INTEGRATION", "MEANING_AGENT_INPUT_UNBOUND", "WORKFLOW_VALIDATION_FAILED").forEach { code ->
+            assertThat(AgentDevelopmentProblemPolicy.semanticFallback(listOf(ValidationIssue(code, "design error")))).isEmpty()
+        }
+        assertThat(AgentDevelopmentProblemPolicy.semanticFallback(emptyList())).isEmpty()
+        val missingRule = ValidationIssue("MEANING_DECISION_POLICY_UNSPECIFIED", "missing rule")
+        assertThat(AgentDevelopmentProblemPolicy.semanticFallback(listOf(missingRule)).single().field).isEqualTo("decisionPolicy")
+        assertThat(AgentDevelopmentProblemPolicy.semanticFallback(listOf(missingRule, ValidationIssue("MEANING_AGENT_INPUT_UNBOUND", "design error")))).isEmpty()
+    }
+
     @Test
     fun `repair restores only regressed valid tool config and never resurrects removed nodes`() {
         fun bundle(node: WorkflowNodePlan) = MetaAgentDesignBundle(

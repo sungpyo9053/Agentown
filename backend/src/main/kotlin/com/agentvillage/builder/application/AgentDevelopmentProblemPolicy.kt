@@ -85,9 +85,11 @@ object AgentDevelopmentProblemPolicy {
     }
 
     fun semanticFallback(issues: List<ValidationIssue>): List<ClarificationQuestion> =
-        if (issues.isNotEmpty() && issues.all { it.code.startsWith("MEANING_") }) listOf(ClarificationQuestion(
-            id = "problem-scope",
-            field = "problemScope",
-            question = "제가 문제의 범위를 잘못 추정하지 않도록, 해결하려는 실제 문제와 원하는 최종 결과를 조금 더 구체적으로 알려주세요.",
+        // Broken bindings or invented integrations are design errors, not missing
+        // user information. Never spend the question budget asking users to fix them.
+        if (issues.isNotEmpty() && issues.all { it.code == "MEANING_DECISION_POLICY_UNSPECIFIED" }) listOf(ClarificationQuestion(
+            id = "decision-policy",
+            field = "decisionPolicy",
+            question = "합격·승인과 거절을 나누는 정확한 수치 또는 조건을 알려주세요.",
         )) else emptyList()
 }
