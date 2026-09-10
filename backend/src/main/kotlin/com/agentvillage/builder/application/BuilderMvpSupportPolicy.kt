@@ -8,11 +8,12 @@ object BuilderMvpSupportPolicy {
     private const val errorCode = "AUTOMATION_CAPABILITY_REQUIRED"
 
     fun requireSupported(instruction: String, bundle: MetaAgentDesignBundle) {
-        requireSupported(listOf(instruction, requirementText(bundle.requirement)).joinToString("\n"))
+        requireSupported(listOf(instruction, requirementText(bundle.requirement)).joinToString("\n"),
+            allowLocalArtifactDesign = LocalArtifactContract.configured(bundle.proposal))
     }
 
-    fun requireSupported(requirement: AutomationRequirement) {
-        requireSupported(requirementText(requirement))
+    fun requireSupported(requirement: AutomationRequirement, allowLocalArtifactDesign: Boolean = false) {
+        requireSupported(requirementText(requirement), allowLocalArtifactDesign)
     }
 
     internal fun unsupportedCapabilities(text: String): List<String> {
@@ -49,8 +50,8 @@ object BuilderMvpSupportPolicy {
         if (markers.any(text::contains)) add(label)
     }
 
-    internal fun requireSupported(text: String) {
-        val required = unsupportedCapabilities(text)
+    internal fun requireSupported(text: String, allowLocalArtifactDesign: Boolean = false) {
+        val required = unsupportedCapabilities(text).filterNot { allowLocalArtifactDesign && it == "로컬 파일 저장" }
         if (required.isEmpty()) return
         throw BadRequestException(
             errorCode,

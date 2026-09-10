@@ -379,7 +379,7 @@ class BuilderService(
         if (context.workflow.status != WorkflowStatus.WAITING_DESIGN_APPROVAL) throw ConflictException("INVALID_WORKFLOW_STATE", "설계 승인 대기 상태에서만 처리할 수 있습니다.")
         val design = if (approve) storedDesign(context.conversation.id) else null
         val graph = design?.let {
-            BuilderMvpSupportPolicy.requireSupported(it.requirement)
+            BuilderMvpSupportPolicy.requireSupported(it.requirement, LocalArtifactContract.configured(it.proposal))
             compileGraph(workflowId, it.proposal).also { graph -> requireValidDesign(graph, it.requirement, it.proposal, it.agents, cumulativeInstruction(context.conversation.id)) }
         }
         val approval = BuilderApproval(workspaceId = context.workspace.id, workflowId = workflowId, approvalType = ApprovalType.DESIGN, idempotencyKey = idempotencyKey, status = if (approve) ApprovalStatus.APPROVED else ApprovalStatus.REJECTED, decidedBy = ownerId, decidedAt = Instant.now())

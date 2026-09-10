@@ -23,6 +23,26 @@ import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
     @Test
+    fun `repair restores only regressed valid tool config and never resurrects removed nodes`() {
+        fun bundle(node: WorkflowNodePlan) = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", emptyList(), listOf("file"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop",
+                graphPlan = WorkflowGraphPlan(node.id, listOf(node), emptyList())), emptyList(), emptyList())
+        val node = WorkflowNodePlan("render", "local.artifact.render", "Render", mapOf("format" to "xlsx"))
+        val before = bundle(node)
+        val pipeline = pipeline()
+        val regressed = bundle(node.copy(config = mapOf("rendererKey" to "invented")))
+        assertThat(pipeline.preserveValidToolConfig(regressed, before)).isEqualTo(before)
+        val validChange = bundle(node.copy(config = mapOf("format" to "pptx")))
+        assertThat(pipeline.preserveValidToolConfig(validChange, before)).isEqualTo(validChange)
+        assertThat(pipeline.preserveValidToolConfig(regressed, regressed)).isEqualTo(regressed)
+        val replacement = bundle(node.copy(nodeType = "tool.unresolved"))
+        assertThat(pipeline.preserveValidToolConfig(replacement, before)).isEqualTo(replacement)
+        val removed = before.copy(proposal = before.proposal.copy(graphPlan = before.proposal.graphPlan!!.copy(nodes = emptyList())))
+        assertThat(pipeline.preserveValidToolConfig(removed, before)).isEqualTo(removed)
+    }
+
+    @Test
     fun `input contracts survive explicit quality and normalization tool chains`() {
         val source = FieldDefinition("records", "array", true, "source records", minItems = 1,
             itemType = "object", itemSchema = listOf(FieldDefinition("text", "string", true, "original text")))
@@ -716,6 +736,13 @@ class MetaAgentPipelineSafetyTest {
             bundle.proposal.graphPlan!!.edges + WorkflowEdgePlan("c", "report", "render"),
         )))
         assertThat(pipeline.terminalAgentOutputSchema(withTerminalTool)).isEmpty()
+        val withLocalArtifact = withTerminalTool.copy(proposal = withTerminalTool.proposal.copy(
+            graphPlan = withTerminalTool.proposal.graphPlan!!.copy(nodes = withTerminalTool.proposal.graphPlan!!.nodes.map {
+                if (it.id == "render") it.copy(nodeType = "local.artifact.render", config = mapOf("format" to "pptx")) else it
+            }),
+        ))
+        assertThat(pipeline.terminalAgentOutputSchema(withLocalArtifact))
+            .isEqualTo(com.agentvillage.builder.application.LocalArtifactContract.output)
     }
 
     @Test

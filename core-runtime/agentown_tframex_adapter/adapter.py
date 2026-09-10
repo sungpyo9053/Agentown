@@ -203,6 +203,8 @@ class TracingLLMAgent(LLMAgent):
                 )
                 try:
                     self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
+                    for validate_output, options in self.config.get("output_checks") or []:
+                        validate_output(_json_value(result.content or ""), options)
                     _assert_semantic_success(
                         _json_value(result.content or ""), self.config.get("output_schema") or [], "Agent output",
                     )
@@ -441,10 +443,12 @@ class AgentownTFrameXAdapter:
         agent_classes: Optional[Mapping[str, Type[BaseAgent]]] = None,
         tools: Optional[Mapping[str, RegisteredTool | Callable[..., Any]]] = None,
         llm: Optional[BaseLLMWrapper] = None,
+        output_validators: Optional[Mapping[str, Callable[..., Any]]] = None,
     ) -> None:
         self.agent_classes = dict(agent_classes or {})
         self.tools = dict(tools or {})
         self.llm = llm
+        self.output_validators = dict(output_validators or {})
         self.trace: list[dict[str, Any]] = []
 
     async def run(self, definition: Mapping[str, Any]) -> dict[str, Any]:
@@ -523,6 +527,12 @@ class AgentownTFrameXAdapter:
         for item in agents:
             config = {"name": item} if isinstance(item, str) else dict(item)
             name = self._required_string(config, "name")
+            output_checks = []
+            for check in config.get("outputChecks") or []:
+                key = check.get("validator")
+                if key not in self.output_validators:
+                    raise ExecutionNotConfigured(f"Agent '{name}' requires unconfigured output validator: {key}")
+                output_checks.append((self.output_validators[key], dict(check.get("options") or {})))
             agent_class = self.agent_classes.get(name)
             if agent_class is None:
                 if config.get("kind") == "tool":
@@ -550,6 +560,7 @@ class AgentownTFrameXAdapter:
                 trace_sink=self.trace,
                 input_schema=list(config.get("inputSchema") or []),
                 output_schema=list(config.get("outputSchema") or []),
+                output_checks=output_checks,
                 tool_name=config.get("toolName"),
                 input_bindings=list(config.get("inputBindings") or []),
                 input_defaults=dict(config.get("inputDefaults") or {}),

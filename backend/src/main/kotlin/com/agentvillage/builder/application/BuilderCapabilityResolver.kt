@@ -19,7 +19,8 @@ class BuilderCapabilityResolver {
         val uncovered = bindings.filter { it.availability == ResourceAvailability.MISSING }
             .map { it.capabilityKey }
             .distinct()
-        val simulationReady = bindings.none { it.availability == ResourceAvailability.MISSING && !it.simulationOnly }
+        val simulationReady = bindings.none { it.availability == ResourceAvailability.MISSING && !it.simulationOnly } &&
+            plan.nodes.none { it.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName }
         val productionReady = bindings.all {
             it.availability == ResourceAvailability.INSTALLED && !it.simulationOnly && !it.requiresUserAction
         }
@@ -54,6 +55,8 @@ class BuilderCapabilityResolver {
             NodeType.DATA_CSV_COMPARE,
             NodeType.TEMPLATE_RENDER, NodeType.WORKFLOW_END, NodeType.CONDITION_BRANCH -> installed(capability, ResourceKind.TOOL, "builtin.${node.nodeType}", node.label, "Agentown 결정론적 런타임")
             NodeType.AI_CLASSIFY, NodeType.AI_GENERATE -> installed(capability, ResourceKind.TOOL, "platform.structured-ai", "Agentown 제공 AI", "구조화 출력과 호출 한도를 적용한 플랫폼 AI")
+            NodeType.LOCAL_ARTIFACT_RENDER -> ResourceBinding(capability, ResourceKind.TOOL, NodeType.LOCAL_ARTIFACT_RENDER.wireName, "내 PC 파일 제작",
+                ResourceAvailability.INSTALLED, "DOWNLOADED_PACKAGE", "패키지의 로컬 실행기 전용입니다. 파일 제작 도구 설치와 출력 폴더 확인이 필요하며 서버에서는 실행하지 않습니다.", requiresUserAction = true)
             NodeType.HUMAN_APPROVAL -> installed(capability, ResourceKind.TOOL, "builtin.human-approval", "사용자 승인", "승인 전 외부 쓰기를 차단하는 서버 상태 머신")
             NodeType.SLACK_NEW_MESSAGE_MOCK, NodeType.SLACK_REPLY_MOCK, NodeType.SLACK_SEND_MOCK -> mock(capability, "connector.slack.mock", "Slack Mock", "실제 Slack OAuth 연결 전 안전한 시뮬레이션")
             NodeType.NOTION_SEARCH_MOCK, NodeType.NOTION_READ_PAGE_MOCK -> mock(capability, "connector.notion.mock", "Notion Mock", "실제 Notion OAuth 연결 전 안전한 시뮬레이션")

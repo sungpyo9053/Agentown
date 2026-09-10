@@ -3,6 +3,7 @@ package com.agentvillage.builder.presentation
 import com.agentvillage.builder.application.BuilderGenerationService
 import com.agentvillage.builder.application.BuilderService
 import com.agentvillage.builder.application.HostedPackageEntry
+import com.agentvillage.builder.application.LocalArtifactContract
 import com.agentvillage.builder.application.BuilderUsageLimiter
 import com.agentvillage.builder.application.AgentDefinitionUpdate
 import com.agentvillage.builder.application.TFrameXFlowImport
@@ -173,7 +174,8 @@ class AgentDevelopmentController(
     fun downloadPackage(@AuthenticationPrincipal user: AuthenticatedUser, @PathVariable sessionId: UUID): ResponseEntity<ByteArray> {
         service.requireConversationPurpose(user.userId, sessionId, BuilderConversationPurpose.AGENT_DEVELOPMENT)
         val snapshot = service.snapshot(user.userId, sessionId)
-        val files = service.harnessPackage(user.userId, snapshot.workflowId) + HostedPackageEntry.files(publicOrigin, sessionId)
+        val files = service.harnessPackage(user.userId, snapshot.workflowId) + HostedPackageEntry.files(publicOrigin, sessionId,
+            localOnly = snapshot.proposal?.let(LocalArtifactContract::configured) == true)
         val bytes = AgentPackageArchive.create(files)
         return ResponseEntity.ok()
             .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(AgentPackageArchive.FILE_NAME).build().toString())

@@ -7,6 +7,14 @@ import java.util.UUID
 
 class HostedPackageEntryTest {
     @Test
+    fun `local artifact entry never promises hosted execution without installation`() {
+        val files = HostedPackageEntry.files("https://agentown.example", UUID.randomUUID(), localOnly = true)
+        assertTrue(files.getValue("OPEN_IN_AGENTOWN.html").contains("results"))
+        assertTrue(files.getValue("OPEN_IN_AGENTOWN.html").contains("START_HERE.md"))
+        assertFalse(files.getValue("OPEN_IN_AGENTOWN.html").contains("설치 없이"))
+        assertTrue(files.getValue("WEB_START.txt").contains("로컬 실행기 전용"))
+    }
+    @Test
     fun `entry opens owned session without executing or embedding credentials`() {
         val id = UUID.randomUUID()
         val files = HostedPackageEntry.files("https://agentown.example/", id)

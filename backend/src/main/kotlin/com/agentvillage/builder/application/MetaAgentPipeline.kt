@@ -333,12 +333,16 @@ class StructuredMetaAgentPipeline(
             val semanticInstruction = userInstruction ?: instruction
             // Reject known unsupported work before spending an entire model call on its design.
             // Keep the post-generation check too, to catch capabilities invented by the model.
-            BuilderMvpSupportPolicy.requireSupported(semanticInstruction)
+            BuilderMvpSupportPolicy.requireSupported(semanticInstruction,
+                allowLocalArtifactDesign = mode == DesignMode.AGENT_DEVELOPMENT && LocalArtifactContract.requested(semanticInstruction))
             val bundle = structuredGenerationRetry(onRetry = { progress.running(context.jobId, BuilderGenerationStage.RETRYING) }) {
                 val raw = model.generate(context, "builder_design_bundle", input)
                 progress.running(context.jobId, BuilderGenerationStage.STRUCTURE_VALIDATING)
                 val transport = mapper.readValue(raw, LlmMetaAgentDesignDto::class.java)
-                normalize(transport.toDomain(mapper), semanticInstruction, mode).also {
+                val generated = transport.toDomain(mapper)
+                val configSafe = if (validationFeedback.isNotEmpty() && previousBundle != null)
+                    preserveValidToolConfig(generated, previousBundle) else generated
+                normalize(configSafe, semanticInstruction, mode).also {
                     BuilderMvpSupportPolicy.requireSupported(semanticInstruction, it)
                     validate(it)
                 }
@@ -385,6 +389,21 @@ class StructuredMetaAgentPipeline(
 
     fun record(context: PipelineContext, stage: String, inputCount: Int, outputCount: Int) {
         audit.record(context, stage, "SUCCEEDED", mapOf("fieldCount" to inputCount), mapOf("itemCount" to outputCount, "executor" to "server-contract"))
+    }
+
+    /** Repair may change bindings, but must not replace a valid tool config with an invalid one. */
+    internal fun preserveValidToolConfig(repaired: MetaAgentDesignBundle, previous: MetaAgentDesignBundle): MetaAgentDesignBundle {
+        val plan = repaired.proposal.graphPlan ?: return repaired
+        val original = previous.proposal.graphPlan?.nodes?.associateBy { it.id }.orEmpty()
+        val catalog = WorkflowNodeCatalog()
+        val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
+        return repaired.copy(proposal = repaired.proposal.copy(graphPlan = plan.copy(nodes = plan.nodes.map { node ->
+            val before = original[node.id] ?: return@map node
+            if (node.nodeType != before.nodeType || node.nodeType in aiTypes || node.nodeType !in catalog.allowedTypes()) return@map node
+            val contract = catalog.require(node.nodeType)
+            if (contract.validateConfig(before.config).isEmpty() && contract.validateConfig(node.config).isNotEmpty())
+                node.copy(config = before.config) else node
+        })))
     }
 
     private fun validate(bundle: MetaAgentDesignBundle) {
@@ -1062,11 +1081,13 @@ class StructuredMetaAgentPipeline(
         val executableTypes = setOf(
             NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName, NodeType.DATA_CSV_COMPARE.wireName,
             NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName,
+            NodeType.LOCAL_ARTIFACT_RENDER.wireName,
         )
         val terminal = plan.nodes
             .filter { it.nodeType in executableTypes }
             .maxWithOrNull(compareBy<WorkflowNodePlan> { depth[it.id] ?: -1 }.thenBy { it.id })
             ?: return emptyList()
+        if (terminal.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName) return LocalArtifactContract.output
         if (terminal.nodeType !in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)) return emptyList()
         val key = terminal.config["agentKey"]?.toString() ?: return emptyList()
         return bundle.agentDefinitions.firstOrNull { it.key == key }?.outputSchema.orEmpty()

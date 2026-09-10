@@ -78,7 +78,7 @@ class HarnessPackageRenderer(
             )))
             put("runners/python/runner.py", pythonTFrameXRunner())
             put("runtime/pyproject.toml", TFrameXRuntimeResources.read("pyproject.toml"))
-            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py", "office.py").forEach { name ->
+            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py", "office.py", "artifacts.py").forEach { name ->
                 put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
             put("company/index.html", TFrameXRuntimeResources.read("agentown_tframex_adapter/office.html"))
@@ -278,6 +278,10 @@ class HarnessPackageRenderer(
         .venv/bin/python runners/python/runner.py
         ```
 
+        PPTX·XLSX 파일 제작 노드가 포함된 패키지는 `.venv/bin/pip install './runtime[artifacts]'`로 제작 도구를 설치하세요.
+        실제 파일은 패키지의 `results` 아래 매번 새 폴더에 생성합니다. 기존 파일은 덮어쓰지 않습니다.
+        파일 제작은 로컬 실행기 전용이며, 생성 성공이 내용·출처·레이아웃 검토 완료를 뜻하지는 않습니다.
+
         ## 내 PC에서 직원들이 일하는 회사 화면 보기
 
         위 실행 환경을 준비한 뒤 `.venv/bin/python runners/python/runner.py --office`로 실행하세요.
@@ -313,6 +317,9 @@ class HarnessPackageRenderer(
             raise SystemExit(2)
         definition = json.loads((root / "runtime-definition.json").read_text())
         needs_ai = any(item.get("kind") != "tool" for item in definition.get("agents", []))
+        needs_artifacts = any(item.get("toolName") == "local.artifact.render" for item in definition.get("agents", []))
+        if needs_artifacts and any(importlib.util.find_spec(name) is None for name in ("pptx", "openpyxl")):
+            setup_failure("ARTIFACT_TOOLS_MISSING", "파일 제작 도구가 필요합니다. 전용 가상환경에서 pip install './runtime[artifacts]'를 실행하세요.")
         if needs_ai and not shutil.which(os.environ.get("AGENTOWN_CODEX_COMMAND", "codex")):
             setup_failure("CODEX_CLI_MISSING", "Codex CLI를 찾을 수 없습니다. 설치·로그인 후 다시 실행하세요. 이 점검은 자동 설치하지 않습니다.")
         if "--check" in sys.argv:
@@ -336,7 +343,13 @@ class HarnessPackageRenderer(
                 command=os.environ.get("AGENTOWN_CODEX_COMMAND", "codex"),
                 model=os.environ.get("AGENTOWN_CODEX_MODEL", "gpt-5.6-luna"),
             )
-            adapter = AgentownTFrameXAdapter(llm=llm, tools=BUILTIN_TOOLS)
+            tools = dict(BUILTIN_TOOLS)
+            output_validators = {}
+            if needs_artifacts:
+                from agentown_tframex_adapter.artifacts import local_artifact_tools, validate_artifact_output
+                tools.update(local_artifact_tools(root))
+                output_validators["local.artifact.spec"] = validate_artifact_output
+            adapter = AgentownTFrameXAdapter(llm=llm, tools=tools, output_validators=output_validators)
             if office:
                 adapter.trace = OfficeTrace(office)
             return await adapter.run(definition)

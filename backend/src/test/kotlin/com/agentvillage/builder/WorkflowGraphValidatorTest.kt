@@ -153,6 +153,11 @@ class WorkflowGraphValidatorTest {
         )
 
         assertThat(validator.validate(dynamic, requirement, proposal, listOf(agent)).valid).isTrue()
+        val prohibited = requirement.copy(decisions = requirement.decisions + "Notion 및 FAQ 연동은 사용하지 않는다.")
+        assertThat(validator.validate(dynamic, prohibited, proposal, listOf(agent)).valid).isTrue()
+        val requestedSource = prohibited.copy(inputs = prohibited.inputs + "Notion FAQ 자료")
+        assertThat(validator.validate(dynamic, requestedSource, proposal, listOf(agent)).issues.map { it.code })
+            .contains("MEANING_SOURCE_MISSING")
     }
 
     @Test fun `structured requirement cannot add Slack FAQ meaning absent from user request`() {

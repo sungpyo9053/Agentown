@@ -40,7 +40,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
     private val aiTypes = setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)
     private val toolTypes = setOf(
         NodeType.DATA_CSV_COMPARE.wireName, NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName,
-        NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName,
+        NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName, NodeType.LOCAL_ARTIFACT_RENDER.wireName,
     )
     private val patternTypes = setOf(NodeType.CONDITION_BRANCH.wireName)
 
@@ -137,6 +137,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             NodeType.DATA_NORMALIZE.wireName -> "data.normalize"
             NodeType.DATA_DEDUPLICATE.wireName -> "data.deduplicate"
             NodeType.QUALITY_CHECK.wireName -> "quality.check"
+            NodeType.LOCAL_ARTIFACT_RENDER.wireName -> NodeType.LOCAL_ARTIFACT_RENDER.wireName
             NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
                 "table.markdown.v1" -> "template.markdown.table"
                 "plain-text.v1", "plain-text" -> "template.plain-text"
@@ -259,6 +260,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) finalOutputSchema
                     else declared.filter { it.name in bound }.ifEmpty { declared }
                 }
+                node.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName -> LocalArtifactContract.output
                 isTerminalExecutable(node) && finalOutputSchema != null -> finalOutputSchema
                 node.nodeType == NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                     FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
@@ -347,8 +349,16 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     "name" to effectiveByNode.getValue(node.id), "description" to source.role,
                     "systemPrompt" to systemPrompt(
                         runtimeSource, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
-                    ),
+                    ) + outgoing[node.id].orEmpty().mapNotNull { edge ->
+                        nodesById[edge.target]?.takeIf { it.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName }
+                            ?.config?.get("format")?.toString()?.let(LocalArtifactContract::producerInstruction)
+                    }.distinct().joinToString("\n", prefix = "\n"),
                     "tools" to source.toolKeys, "inputSchema" to runtimeSource.inputSchema, "outputSchema" to runtimeSource.outputSchema,
+                    "outputChecks" to outgoing[node.id].orEmpty().mapNotNull { edge ->
+                        nodesById[edge.target]?.takeIf { it.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName }?.let {
+                            mapOf("validator" to "local.artifact.spec", "options" to mapOf("format" to it.config["format"]))
+                        }
+                    }.distinct(),
                     "inputBindings" to inputBindings, "inputDefaults" to inputDefaults,
                     "preserveInput" to !isTerminalExecutable(node),
                 )
@@ -356,6 +366,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 val toolName = toolName(node)
                 val upstreamSchema = upstreamMessageSchema(node)
                 val inputSchema = when (node.nodeType) {
+                    NodeType.LOCAL_ARTIFACT_RENDER.wireName -> LocalArtifactContract.input
                     NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                         FieldDefinition("csvA", "string", true, "comparison baseline CSV"),
                         FieldDefinition("csvB", "string", true, "comparison target CSV"),
@@ -380,6 +391,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 val inputDefaults = (node.config["inputDefaults"] as? Map<*, *>)
                     ?.entries?.associate { it.key.toString() to it.value }.orEmpty().toMutableMap()
                 inputDefaults.putAll(boundWorkflowInputDefaults(node))
+                if (node.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName) {
+                    inputDefaults["artifactFormat"] = node.config["format"]
+                }
                 if (node.nodeType == NodeType.DATA_DEDUPLICATE.wireName) {
                     node.config["key"]?.let { inputDefaults["key"] = it }
                 }

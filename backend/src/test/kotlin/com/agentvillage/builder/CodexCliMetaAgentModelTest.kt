@@ -108,7 +108,7 @@ class CodexCliMetaAgentModelTest {
         model.generate(context, "define_agent_development_problem", mapOf("instruction" to "주제만 넣으면 보고서 ppt 만들어줘"))
         val prompt = argumentCaptor<String>()
         verify(runner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
-        assertThat(prompt.firstValue).contains("PPTX/DOCX/PDF 파일 제작 도구는 아직 연결되어 있지 않다", "분량·대상 같은 세부 질문보다 먼저", "동의하는지 확인", "몰래 바꾸거나")
+        assertThat(prompt.firstValue).contains("로컬 실행기는 PPTX 슬라이드와 XLSX 표 파일을 제작할 수 있다", "DOCX/PDF 보고서 제작 도구는 아직 연결되어 있지 않다", "분량·대상 같은 세부 질문보다 먼저", "동의하는지 확인", "몰래 바꾸거나")
     }
 
     @Test

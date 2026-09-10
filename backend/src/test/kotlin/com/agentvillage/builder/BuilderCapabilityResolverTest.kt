@@ -7,6 +7,14 @@ import org.junit.jupiter.api.Test
 
 class BuilderCapabilityResolverTest {
     private val resolver = BuilderCapabilityResolver()
+    @Test
+    fun `local artifact renderer is installed in package but not hosted simulation ready`() {
+        val result = resolver.resolve(bundle(WorkflowNodePlan("render", "local.artifact.render", "파일 제작", mapOf("format" to "pptx"))))
+        assertThat(result.simulationReady).isFalse()
+        assertThat(result.productionReady).isFalse()
+        assertThat(result.uncoveredCapabilities).isEmpty()
+        assertThat(result.bindings.single { it.capabilityKey == "render" }.requiresUserAction).isTrue()
+    }
 
     @Test
     fun `mock connectors are simulation ready but never production ready`() {

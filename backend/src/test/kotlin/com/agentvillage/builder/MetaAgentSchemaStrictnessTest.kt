@@ -6,6 +6,17 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 class MetaAgentSchemaStrictnessTest {
+    @Test
+    fun `model node catalog and local artifact formats match runtime registration`() {
+        val properties = schema()["properties"]["proposal"]["properties"]["graphPlan"]["properties"]["nodes"]
+            .get("items").get("properties")
+        assertThat(properties["nodeType"]["enum"].map(JsonNode::asText).toSet())
+            .isEqualTo(com.agentvillage.builder.domain.NodeType.entries
+                .filter { it != com.agentvillage.builder.domain.NodeType.PARALLEL_MAP_MOCK }.map { it.wireName }.toSet())
+        val format = properties["config"]["anyOf"].single { it.path("properties").has("format") }
+        assertThat(format["properties"]["format"]["enum"].map(JsonNode::asText).toSet())
+            .isEqualTo(com.agentvillage.builder.application.LocalArtifactContract.formats)
+    }
     private fun schema(): JsonNode = javaClass.getResourceAsStream("/builder/meta-agent-design-bundle.schema.json")!!.use {
         ObjectMapper().readTree(it)
     }

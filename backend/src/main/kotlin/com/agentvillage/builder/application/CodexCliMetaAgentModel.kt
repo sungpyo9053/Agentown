@@ -1,6 +1,7 @@
 package com.agentvillage.builder.application
 
 import com.agentvillage.common.exception.BadRequestException
+import com.agentvillage.builder.domain.NodeType
 import com.agentvillage.llmcredential.application.CredentialDirectory
 import com.agentvillage.llmcredential.domain.LlmProvider
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -70,7 +71,8 @@ class CodexCliMetaAgentModel(
             - 여러 결과가 동시에 필요할 수 있는 질문만 multiple=true로 둔다. 모호한 사용자를 위해 가능한 경우 "아직 모르겠음" 선택지를 포함한다.
             - remainingQuestions보다 많은 질문을 만들지 않는다. remainingQuestions=0이면 CLARIFY를 반환하지 말고 지금까지의 답변과 명시한 안전한 가정으로 PROMPT_ONLY 또는 AGENT_TEAM을 결정한다.
             - 구현 기술, 트리거, Slack/Notion 같은 연동, 승인 방식은 문제 정의에 꼭 필요하지 않으면 묻지 않는다.
-            - 현재 대화형 패키지는 제공된 텍스트를 분석하고 구조화된 텍스트·표를 반환한다. 실제 공개 웹 검색과 PPTX/DOCX/PDF 파일 제작 도구는 아직 연결되어 있지 않다. 이 기능이 필요한 요청은 분량·대상 같은 세부 질문보다 먼저 이 한계를 밝히고, 사용자가 자료를 제공하고 보고서 본문·슬라이드별 원고를 받는 범위에 동의하는지 확인한다. 지원하지 않는 기능과 가능한 대안은 사용자에게 보이는 clarificationQuestions의 question 문장 자체에 명시한다. problemStatement나 rationale에만 숨겨 두지 않는다. 실제 파일 요청을 텍스트 원고로 몰래 바꾸거나 외부 조사를 수행할 수 있다고 약속하지 않는다.
+            - 다운로드한 패키지의 로컬 실행기는 PPTX 슬라이드와 XLSX 표 파일을 제작할 수 있다. 전용 Python 환경·제작 도구 설치와 Codex 로그인이 필요하며 PowerPoint/Excel 앱 설치 자체는 파일 생성에 필수가 아니다. 서버 채팅 실행에서 파일 제작을 완료한다고 약속하지 않는다. 현재 PPTX는 슬라이드당 핵심 문장 4개 이하의 텍스트 구성, XLSX는 원문·숫자 표이며 자동 수식 계산·매크로·차트 제작은 지원하지 않는다.
+            - 실제 공개 웹 검색과 DOCX/PDF 보고서 제작 도구는 아직 연결되어 있지 않다. 이 기능이 필요한 요청은 분량·대상 같은 세부 질문보다 먼저 이 한계를 밝히고 자료 제공 또는 다른 결과 형식에 동의하는지 확인한다. 지원하지 않는 기능과 가능한 대안은 사용자에게 보이는 clarificationQuestions의 question 문장 자체에 명시한다. problemStatement나 rationale에만 숨겨 두지 않는다. 실제 파일 요청을 텍스트 원고로 몰래 바꾸거나 외부 조사를 수행할 수 있다고 약속하지 않는다. 기능이 부족한 것을 이유로 에이전트가 필요 없는 문제라고 판정하지 않는다.
             - 사용자가 말하지 않은 문제, 결과, 사업 규칙을 만들지 않는다. 무해한 대화 기본값만 assumptions에 둔다.
             - readyForDesign=true로 엔진에 넘길 기획서에는 inputs, workflowShape, evidencePolicy, failurePolicy, forbiddenActions를 사용자 대화에서 추출해 채운다. 독립 작업과 전체 완료 후 합류가 명시되면 workflowShape에 보존한다.
             - 입력 개수, 근거 문장, 미확인·충돌 처리, 외부 전송·구매·배포 금지처럼 실행 결과를 좌우하는 조건을 요약에서 버리지 않는다.
@@ -102,6 +104,9 @@ class CodexCliMetaAgentModel(
             원문, 기준, 참고 자료, 지식, 검색이라는 일반 표현만으로 외부 지식 소스가 있다고 가정하지 않는다. 외부 소스가 실제로 필요한데 위치나 접근 방법이 확인되지 않았으면 연결했다고 꾸미지 않는다.
             입력·출력·외부 연동의 기본값이 사용자 요청에 이미 제공되면 다시 질문하지 않는다.
             ${AgentDevelopmentProblemPolicy.PACKAGE_DELIVERY_BOUNDARY}
+            실제 PPTX/XLSX가 필요한 로컬 패키지는 ai.generate로 파일 내용 명세를 만들고 local.artifact.render 노드(config.format=pptx 또는 xlsx)로 실제 제작한다. 이 도구는 로컬 실행기에만 연결되며 서버 실행·가짜 파일 링크로 대체하지 않는다.
+            ${LocalArtifactContract.formats.joinToString("\n") { LocalArtifactContract.producerInstruction(it) }}
+            제작 담당 artifactJson -> local.artifact.render의 artifactJson을 연결하고, 파일 제작 노드에서 workflow.end로 바로 연결한다. 파일 제작 이후 AI가 경로를 새로 작성하지 않는다. 파일 도구 출력과 최종 outputSchema는 다음 계약을 사용한다: ${mapper.writeValueAsString(LocalArtifactContract.output)}. 실제 파일 생성과 내용·시각 검토 완료는 다르다. 요청하지 않은 파일 제작 노드는 추가하지 않는다.
         """.trimIndent() else """
             당신은 Agentown 서버에 고정된 업무 자동화 메타 에이전트 팀이다.
             사용자의 업무 자동화 요구에서 트리거, 자료, 승인, 전달 위치를 정확히 설계한다.
@@ -121,9 +126,7 @@ class CodexCliMetaAgentModel(
         agentDefinitions와 서로 다른 AI 역할은 최대 5개다. 모든 ai.generate/ai.classify의 agentKey를 반드시 이 5개 이내 정의 중 하나와 연결하고, 추가 작성 단계가 필요하면 기존 집계 Agent를 재사용한다.
         5. Guide Designer: graphPlan에 실제로 등장하는 연동과 설정에 대해서만 가이드를 만든다.
 
-        graphPlan에서 사용할 수 있는 노드 타입은 manual.trigger, schedule.trigger, text.input, news.search.mock, knowledge.search.mock, data.csv.compare, data.deduplicate, data.normalize, quality.check, template.render, workflow.end,
-        condition.branch, ai.classify, ai.generate, human.approval, slack.new_message.mock, slack.reply.mock, slack.send.mock,
-        email.send.mock, notion.search.mock, notion.read_page.mock, notion.create_page, flight.search.mock, github.issue.mock, tool.unresolved뿐이다.
+        graphPlan에서 사용할 수 있는 노드 타입은 ${NodeType.entries.filter { it != NodeType.PARALLEL_MAP_MOCK }.joinToString(", ") { it.wireName }}뿐이다.
         서로 독립적인 여러 작업을 병렬로 수행한 뒤 합치는 요청은 parallel.map.mock 한 노드로 축약하지 않는다. 각 작업을 별도 ai.generate Agent 실행 노드로 만들고 시작 노드에서 fan-out한 뒤, 모든 작업 노드가 동일한 집계 Agent 노드로 fan-in하도록 edge를 구성한다.
         병렬 작업 수가 사용자 입력으로 명시됐다면 그 수를 임의로 줄이거나 하드코딩 예시 이름으로 바꾸지 않는다. 각 작업 Agent의 출력 스키마와 집계 Agent의 입력 스키마가 동일한 결과 계약을 공유해야 한다.
         proposal.inputSchema에는 사용자가 실행 시 직접 제공해야 하는 최상위 입력 필드만 선언한다. 사용자가 입력 필드 이름이나 개수를 명시했다면 정확히 그 필드만 사용하고, Agent 사이 내부 전달 필드나 출력·근거 필드를 외부 입력으로 추가하지 않는다.
@@ -168,6 +171,7 @@ class CodexCliMetaAgentModel(
         새 시나리오나 사용자가 요청하지 않은 Agent, 도구, 승인, 외부 연동을 추가하지 않는다.
 
         다음 실행 계약을 반드시 지킨다.
+        - local.artifact.render의 설정은 format=pptx 또는 xlsx다. 정상 format을 rendererKey로 바꾸지 않는다. 이 도구의 출력 계약: ${LocalArtifactContract.outputSummary()}.
         - proposal.inputSchema에는 실행 시 사용자가 제공하는 최상위 입력만 둔다. 내부 전달값은 Agent inputSchema와 edge binding으로 전달한다.
         - MEANING_UNREQUESTED_INTEGRATION이 있으면 해당 연동의 필수 설정을 임의로 채워 통과시키지 않는다. 불필요한 연동 노드와 가이드를 제거하고 원래 사용자 입력을 필요한 Agent에 연결한다. 입력 자료 분석은 ai.generate로 수행하며 외부 검색 결과를 만들지 않는다. 사용자 명시 연동은 삭제하지 않는다.
         - 사용자가 외부 입력 필드 이름을 명시했다면 정확히 그 집합만 유지한다. 추가 외부 입력을 제거할 때는 이를 참조하던 edge와 Agent 입력도 함께 교정하고, 사용자가 지정한 기존 객체 안의 근거를 사용한다.

@@ -86,6 +86,16 @@ class WorkflowNodeCatalog {
         },
         SimpleNodeContract(NodeType.SCHEDULE_TRIGGER, requiredConfig = setOf("cron", "timezone")) { config, input -> NodeSimulation(input + mapOf("scheduledFor" to config["cron"], "timezone" to config["timezone"])) },
         SimpleNodeContract(NodeType.TEXT_INPUT) { _, input -> NodeSimulation(input) },
+        object : WorkflowNodeContract {
+            override val type = NodeType.LOCAL_ARTIFACT_RENDER
+            override val requiredPermissions = setOf("artifact.write.local")
+            override fun validateConfig(config: Map<String, Any?>) =
+                if (config["format"] in LocalArtifactContract.formats) emptyList() else listOf("로컬 제작 형식은 pptx 또는 xlsx여야 합니다.")
+            override fun validateInput(input: Map<String, Any?>) =
+                if (input["artifactJson"] is String && input["artifactJson"].toString().isNotBlank()) emptyList() else listOf("artifactJson 파일 내용 명세가 필요합니다.")
+            override fun simulate(config: Map<String, Any?>, input: Map<String, Any?>): NodeSimulation =
+                throw BadRequestException("LOCAL_EXECUTION_REQUIRED", "다운로드한 패키지의 로컬 실행기에서 파일을 제작하세요. 서버 시뮬레이션으로 파일 제작 성공을 표시하지 않습니다.")
+        },
         SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query", "lookbackHours")) { config, input ->
             NodeSimulation(input + ("newsItems" to listOf(
                 mapOf("title" to "주요 시장 뉴스", "summary" to "검증용 시장 뉴스 요약", "url" to "https://example.com/mock-news", "publishedAt" to "2026-08-26T08:00:00+09:00", "source" to config["source"]),
@@ -381,6 +391,12 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             requirement.decisions.joinToString(" "),
         ).joinToString(" ").lowercase()
         val outputAndSteps = listOf(requirement.objective, requirement.outputs.joinToString(" "), requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
+        // Decision/failure rules can explicitly forbid an integration. Their mere
+        // mention must not create a positive source requirement. Actual sources
+        // belong in objective, trigger, inputs, outputs, or execution steps.
+        val integrationRequested = listOf(requirement.objective, requirement.trigger,
+            requirement.inputs.joinToString(" "), requirement.outputs.joinToString(" "),
+            requirement.steps.joinToString(" ")).joinToString(" ").lowercase()
         val deliveryOutputsAndSteps = requirement.outputs + requirement.steps
         val types = graph.nodes.map { it.nodeType }.toSet()
         val hasSlackTrigger = NodeType.SLACK_NEW_MESSAGE_MOCK.wireName in types
@@ -395,13 +411,13 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         val hasClassification = NodeType.AI_CLASSIFY.wireName in types
         val hasGeneration = NodeType.AI_GENERATE.wireName in types
         val hasManualTrigger = types.any { it == NodeType.MANUAL_TRIGGER.wireName || it == NodeType.TEXT_INPUT.wireName }
-        val requestsSlack = containsAny(requested, "slack", "슬랙")
-        val mentionsNotion = containsAny(requested, "notion", "노션")
+        val requestsSlack = containsAny(integrationRequested, "slack", "슬랙")
+        val mentionsNotion = containsAny(integrationRequested, "notion", "노션")
         val requestsNotionWrite = mentionsNotion && containsAny(outputAndSteps, "저장", "발행", "페이지 생성", "페이지로", "기록", "올려", "create", "publish", "save")
-        val requestsNotionRead = containsAny(requested, "faq", "데이터베이스") ||
-            (mentionsNotion && containsAny(requested, "검색", "조회", "읽", "참고", "자료에서", "search", "read"))
+        val requestsNotionRead = containsAny(integrationRequested, "faq", "데이터베이스") ||
+            (mentionsNotion && containsAny(integrationRequested, "검색", "조회", "읽", "참고", "자료에서", "search", "read"))
         val requestsNotion = requestsNotionRead || requestsNotionWrite
-        val requestsNews = containsAny(requested, "뉴스", "기사", "news", "rss")
+        val requestsNews = containsAny(integrationRequested, "뉴스", "기사", "news", "rss")
         val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
         val requestsSlackOutbound = deliveryOutputsAndSteps.any { item ->
             val normalized = item.lowercase()

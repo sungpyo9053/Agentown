@@ -18,6 +18,32 @@ class TFrameXDefinitionCompilerTest {
     private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
+    fun `local artifact producer receives tool format and final output is actual file metadata`() {
+        val contract = com.agentvillage.builder.application.LocalArtifactContract
+        val producer = AgentDefinition("producer", "Producer", "Prepare evidence", emptyList(), contract.input,
+            emptyList(), emptyList(), emptyList())
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "prepare", nodes = listOf(
+            WorkflowNode("prepare", "ai.generate", "Prepare", NodePosition(0.0, 0.0), mapOf("agentKey" to "producer")),
+            WorkflowNode("render", "local.artifact.render", "Render", NodePosition(0.0, 0.0), mapOf("format" to "pptx")),
+            WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("a", "prepare", "render", bindings = mapOf("artifactJson" to "artifactJson")),
+            WorkflowEdge("b", "render", "end", bindings = contract.output.associate { it.name to it.name }),
+        ))
+        val compiled = compiler.compile("artifact", graph, listOf(producer), emptyMap(), contract.output)
+        val agents = compiled["agents"] as List<Map<String, Any?>>
+        val render = agents.single { it["toolName"] == "local.artifact.render" }
+        assertThat(render["inputSchema"]).isEqualTo(contract.input)
+        assertThat(render["inputDefaults"] as Map<String, Any?>).containsEntry("artifactFormat", "pptx")
+        assertThat(render["outputSchema"]).isEqualTo(contract.output)
+        assertThat(agents.single { it["name"] == "producer__prepare" }["systemPrompt"].toString())
+            .contains(contract.producerInstruction("pptx"))
+        assertThat(agents.single { it["name"] == "producer__prepare" }["outputChecks"])
+            .isEqualTo(listOf(mapOf("validator" to "local.artifact.spec", "options" to mapOf("format" to "pptx"))))
+        assertThat(compiled["finalOutputSchema"]).isEqualTo(contract.output)
+    }
+
+    @Test
     fun `intermediate quality checks require only the current stage of a reused agent`() {
         val fields = listOf("draft", "finalReport").map { FieldDefinition(it, "string", true, it) }
         val writer = AgentDefinition("writer", "Writer", "Write and finalize", emptyList(), fields,

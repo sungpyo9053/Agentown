@@ -9,12 +9,12 @@ import { api, ApiError } from "@/lib/api";
 import { AgentResultView } from "@/components/AgentResultView";
 import { AgentWorkProgress } from "@/components/AgentWorkProgress";
 import { clarificationDraftKey, readClarificationDraft } from "@/lib/clarificationDraft";
-import { packageNavigation } from "@/lib/packageNavigation";
+import { packageNavigation, requiresLocalPackage } from "@/lib/packageNavigation";
 import { RunInputEditor } from "@/components/RunInputEditor";
 import { RunInputField } from "@/lib/runInput";
 
 type Agent = { key: string; name: string; role: string; behaviorRules: string[]; forbiddenRules: string[]; evidenceRequirements: string[]; toolKeys: string[]; skillKeys: string[]; memoryScope: string };
-type Resource = { resourceKind: "TOOL" | "SKILL" | "CONNECTOR" | "MEMORY"; resourceKey: string; label: string; availability: string; reason: string; requiresUserAction: boolean };
+type Resource = { resourceKind: "TOOL" | "SKILL" | "CONNECTOR" | "MEMORY"; resourceKey: string; source?: string; label: string; availability: string; reason: string; requiresUserAction: boolean };
 type GraphNode = { id: string; nodeType: string; label: string; position: { x: number; y: number }; config: Record<string, unknown> };
 type Graph = { nodes: GraphNode[]; edges: Array<{ id: string; source: string; target: string }> };
 type ClarificationQuestion = { id: string; field: string; question: string; required?: boolean; options?: string[]; multiple?: boolean; customPlaceholder?: string };
@@ -175,7 +175,7 @@ export default function AgentDevelopmentPage() {
 
       <main className="flex min-h-0 min-w-0 flex-col bg-white">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-hairline px-4"><div className="min-w-0"><p className="truncate text-sm font-semibold">{snapshot?.proposal?.name ?? sessions.data?.find(item => item.conversationId === sessionId)?.title ?? "새 AI 에이전트"}</p><p className="text-[11px] text-mute">{koStatus(snapshot?.status ?? "DRAFT")}</p></div><div className="flex gap-2 lg:hidden"><button onClick={() => setMobileInspector(true)} title="에이전트 상세" aria-label="에이전트 상세" className="flex h-9 w-9 items-center justify-center rounded-md border border-hairline"><PanelRight className="h-4 w-4" /></button><button onClick={newSession} className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 text-xs"><Plus className="h-3.5 w-3.5" />새로 만들기</button></div></header>
-        <NextAction status={snapshot?.status} hasVersion={Boolean(snapshot?.currentVersionId)} run={run} open={nextPanel => { setPanel(nextPanel); setMobileInspector(true); }} />
+        <NextAction status={snapshot?.status} hasVersion={Boolean(snapshot?.currentVersionId)} localOnly={requiresLocalPackage(snapshot?.proposal?.resourcePlan?.bindings)} run={run} open={nextPanel => { setPanel(nextPanel); setMobileInspector(true); }} />
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-4 py-6 md:px-8">
           <div className="mx-auto max-w-3xl space-y-5">
             {!snapshot?.messages.length && <div className="py-6"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-6 w-6" /></div><h1 className="mt-5 text-center text-2xl font-semibold">코딩하지 말고, 업무를 네 칸으로 알려주세요</h1><p className="mx-auto mt-2 max-w-lg text-center text-sm leading-6 text-mute">{starter}</p>
@@ -266,6 +266,12 @@ function ReadinessBox({ label, status }: { label: string; status: string }) { co
 function VersionsPanel({ snapshot, pending, restore }: { snapshot?: Snapshot; pending: boolean; restore: (versionId: string) => void }) { return <div className="space-y-2">{snapshot?.versions.length ? snapshot.versions.map(version => <article key={version.id} className="rounded-md border border-hairline bg-white p-3"><div className="flex items-center justify-between"><p className="text-sm font-medium">Version {version.versionNo}</p>{version.approved && <CheckCircle2 className="h-4 w-4 text-emerald-600" />}</div><p className="mt-2 text-xs leading-5 text-mute">{version.changeSummary}</p>{version.id !== snapshot.currentVersionId && <button disabled={pending} onClick={() => restore(version.id)} className="mt-3 flex items-center gap-1 text-[11px] font-medium disabled:opacity-35"><RotateCcw className="h-3 w-3" />이 버전 복원</button>}</article>) : <Empty icon={History} text="완성된 설계 버전이 여기에 쌓입니다." />}</div>; }
 function OutputPanel({ snapshot, run, input, setInput, pending, simulate, decide }: { snapshot?: Snapshot; run?: Run; input: string; setInput: (value: string) => void; pending: boolean; simulate: () => void; decide: (approve: boolean) => void }) {
   if (!snapshot?.currentVersionId) return <Empty icon={TestTube2} text="설계를 승인하면 실제 버전에 대한 샘플 테스트를 실행할 수 있습니다." />;
+  if (requiresLocalPackage(snapshot.proposal?.resourcePlan?.bindings)) return <div className="space-y-3 rounded-md border border-hairline bg-white p-4">
+    <h3 className="text-sm font-semibold">내 PC에서 파일 만들기</h3>
+    <p className="text-xs leading-6">이 팀의 파일 제작 도구는 다운로드한 패키지에서 실행됩니다. 패키지를 풀고 START_HERE.md의 전용 실행 환경 설치·점검 안내를 따라 주세요.</p>
+    <p className="text-xs leading-6 text-mute">실제 입력은 examples/sample-input.json에 넣고 실행합니다. 결과 파일은 results 폴더에 저장됩니다. 파일 생성 성공과 내용·출처 검토 완료는 다르므로 결과를 확인해 주세요.</p>
+    <PackageDownloadButton conversationId={snapshot.conversationId} />
+  </div>;
   const sample = JSON.stringify(defaultTestInput(snapshot), null, 2);
   return <div className="space-y-3"><RunInputEditor key={`${snapshot.conversationId}:${snapshot.currentVersionId}`} fields={snapshot.externalInputSchema ?? []} sample={sample} input={input} setInput={setInput} pending={pending} simulate={simulate} />{run && <div className="rounded-md border border-hairline bg-white p-3"><div className="flex items-center justify-between"><p className="text-xs font-semibold">실행 결과</p><span className="text-[10px] text-mute">{run.status}</span></div>{run.status === "SUCCEEDED" && run.requirementMatched === true && <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-[11px] font-semibold text-emerald-800">입력 자료의 실행·출력 검증이 완료되었습니다.</div>}{run.failureMessage && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] leading-5 text-amber-900"><p className="font-semibold">{run.failureCode ?? run.status}</p><p className="mt-1">{run.failureMessage}</p></div>}<div className="mt-3 space-y-1">{run.steps.map(step => <div key={`${step.sequenceNo}-${step.nodeId}`} className="flex items-center justify-between border-b border-hairline py-1.5 text-[11px]"><span>{step.sequenceNo}. {step.nodeType}</span><span className="text-mute">{step.status}</span></div>)}</div>{run.status === "WAITING_APPROVAL" && <div className="mt-3 grid grid-cols-2 gap-2"><button onClick={() => decide(false)} className="rounded-md border border-hairline py-2 text-xs">거절</button><button onClick={() => decide(true)} className="rounded-md bg-ink py-2 text-xs text-white">계속 실행</button></div>}<AgentResultView output={run.output ?? {}} /></div>}</div>;
 }
@@ -327,11 +333,12 @@ function ClarificationForm({ conversationId, questions, pending, submit }: { con
     <button type="button" disabled={!complete || pending} onClick={startDesign} className="flex w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">이 조건으로 설계 시작 <ChevronRight className="h-4 w-4" /></button>
   </section>;
 }
-function NextAction({ status, hasVersion, run, open }: { status?: string; hasVersion: boolean; run?: Run; open: (panel: "team" | "output") => void }) {
+function NextAction({ status, hasVersion, localOnly, run, open }: { status?: string; hasVersion: boolean; localOnly: boolean; run?: Run; open: (panel: "team" | "output") => void }) {
   let text = "1. 만들 업무를 적고 요청문을 보내세요.";
   let action: { label: string; panel: "team" | "output" } | undefined;
   if (status === "WAITING_DESIGN_APPROVAL") { text = "2. 팀 역할과 결과·실패 규칙을 확인한 뒤 설계를 승인하세요."; action = { label: "팀 확인", panel: "team" }; }
   else if (status === "NEEDS_CLARIFICATION") { text = "판정 기준처럼 임의로 정할 수 없는 정보에 답해 주세요."; }
+  else if (hasVersion && localOnly) { text = "3. 패키지를 내려받아 내 PC에서 실행하세요."; action = { label: "로컬 실행 안내", panel: "output" }; }
   else if (hasVersion && run?.status !== "SUCCEEDED") { text = "3. 입력 예시를 실제 자료로 바꾼 뒤 실행하세요."; action = { label: "테스트 열기", panel: "output" }; }
   else if (run?.status === "SUCCEEDED" && run.requirementMatched === true) { text = "4. 검증 완료. 팀 탭에서 패키지를 내려받아 사용할 수 있습니다."; action = { label: "패키지 받기", panel: "team" }; }
   return <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline bg-amber-50 px-4 py-2.5 text-xs"><p><b className="mr-2">지금 할 일</b>{text}</p>{action && <button type="button" onClick={() => open(action.panel)} className="shrink-0 rounded-md bg-white px-3 py-1.5 font-semibold shadow-sm">{action.label}</button>}</div>;
