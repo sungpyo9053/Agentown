@@ -77,6 +77,7 @@ class StructuredParallelPattern(BasePattern):
         self.success_fields = list(success_fields or [])
 
     async def execute(self, flow_ctx: FlowContext, engine: Engine, agent_call_kwargs=None) -> FlowContext:
+        upstream = _json_object(flow_ctx.current_message.content) or {}
         result = await self.delegate.execute(flow_ctx, engine, agent_call_kwargs=agent_call_kwargs)
         artifacts = result.shared_data.get(f"{self.pattern_name}_results", [])
         failures = []
@@ -145,6 +146,7 @@ class StructuredParallelPattern(BasePattern):
             raise RuntimeError(f"Parallel pattern '{self.pattern_name}' failed: {'; '.join(failures)}")
         initial = result.shared_data.get("_agentown_initial_input")
         envelope = dict(initial) if isinstance(initial, dict) else {}
+        envelope.update(upstream)
         envelope.setdefault("request", initial if isinstance(initial, dict) else {})
         if joined:
             envelope.update(joined)

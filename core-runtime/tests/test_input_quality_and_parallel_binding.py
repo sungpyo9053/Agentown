@@ -1,4 +1,9 @@
 import json
+import pytest
+import asyncio
+from tframex.flows.flow_context import FlowContext
+from tframex.models.primitives import Message
+from agentown_tframex_adapter.adapter import StructuredParallelPattern
 import unittest
 
 from agentown_tframex_adapter.adapter import DefinitionError, _apply_input_bindings, _assert_semantic_success, _evaluate_branch_expression, _output_correction_message, _set_parallel_field
@@ -20,6 +25,26 @@ RECORDS_CONTRACT = [
         ],
     }
 ]
+
+
+def test_parallel_join_preserves_pre_split_analysis_but_not_unbound_branch_mutations():
+    class Engine:
+        async def call_agent(self, name, message, **kwargs):
+            return Message(role="assistant", content=json.dumps({"part": name, "priorAnalysis": "unbound mutation"}))
+
+    original = {"source": "original"}
+    context = FlowContext(Message(role="assistant", content=json.dumps({
+        "request": original, "priorAnalysis": {"evidence": "verified before split"},
+    })), shared_data={"_agentown_initial_input": original})
+    pattern = StructuredParallelPattern("split", ["a", "b"], task_result_bindings={
+        name: [{"sourceField": "part", "targetField": name, "aggregationMode": "SET_FIELD"}]
+        for name in ("a", "b")
+    })
+    result = asyncio.run(pattern.execute(context, Engine()))
+    value = json.loads(result.current_message.content)
+    assert value["priorAnalysis"] == {"evidence": "verified before split"}
+    assert value["request"] == original
+    assert (value["a"], value["b"]) == ("a", "b")
 
 
 def test_parallel_scope_preserves_unpartitioned_lists_when_worker_count_differs():
@@ -201,6 +226,39 @@ def test_plain_text_renderer_accepts_structured_bound_fields():
     result = template_plain_text(analysis={"items": ["a"]}, review={"status": "ok"})
 
     assert json.loads(result["renderedResponse"]) == {"analysis": {"items": ["a"]}, "review": {"status": "ok"}}
+
+
+def test_consumer_plain_text_scopes_declared_fields_and_formats_without_context_leak():
+    result = template_plain_text(
+        analysis={"근거": ["원문 A", "원문 B"]}, review="추가 확인 필요",
+        request={"private_input": "not a final deliverable"}, _agentownParallelIndex=1,
+        agentownRenderFields=["analysis", "review"], agentownHumanReadable=True,
+    )
+    assert result["renderedResponse"] == "analysis\n근거\n1. 원문 A\n2. 원문 B\n\nreview\n추가 확인 필요"
+    assert "request" not in result["renderedResponse"]
+    with pytest.raises(ValueError, match="bound input is missing"):
+        template_plain_text(request="unbound", agentownRenderFields=["answer"], agentownHumanReadable=True)
+    typed = template_plain_text(
+        report={"summary": "원문 근거"}, review="검수 완료", content="unbound old content",
+        agentownRenderFields=["report", "review"], agentownHumanReadable=True,
+        agentownOutputContract=[
+            {"name": "renderedResponse", "type": "string", "required": True},
+            {"name": "report", "type": "object", "required": True,
+             "objectSchema": [{"name": "summary", "type": "string", "required": True}]},
+        ],
+    )
+    assert "unbound" not in typed["renderedResponse"]
+    assert "원문 근거" in typed["renderedResponse"]
+    assert typed["report"] == {"summary": "원문 근거"}
+    labeled = template_plain_text(
+        findings=[{"id": "C1", "evidence": "원문"}], agentownRenderFields=["findings"],
+        agentownHumanReadable=True, agentownInputContract=[{
+            "name": "findings", "description": "검토 결과", "itemSchema": [
+                {"name": "id", "description": "대상 번호"}, {"name": "evidence", "description": "근거 문장"},
+            ],
+        }],
+    )
+    assert labeled["renderedResponse"] == "검토 결과\n1. 대상 번호\n   C1\n   \n   근거 문장\n   원문"
 
 
 def test_plain_text_renderer_serializes_structured_named_content():

@@ -365,6 +365,12 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName || toolName == "template.plain-text") {
                     inputDefaults["agentownOutputContract"] = outputSchema
                 }
+                if (toolName == "template.plain-text") {
+                    inputDefaults["agentownHumanReadable"] = true
+                    inputDefaults["agentownInputContract"] = inputSchema
+                    inputDefaults["agentownRenderFields"] = inputBindings.map { it.getValue("targetField") }
+                        .filterNot { it == "context" }.distinct().ifEmpty { inputSchema.map { it.name } }
+                }
                 if (node.nodeType == NodeType.QUALITY_CHECK.wireName) {
                     inputDefaults["agentownInputContract"] = inputSchema
                     val hasExplicitRouter = outgoing[node.id].orEmpty().any { edge ->
@@ -651,7 +657,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         nodeInstruction?.let { appendLine("현재 단계 지시: $it") }
         parallelScope?.let { (index, size) ->
             appendLine("병렬 작업 인덱스: $index / $size")
-            appendLine("런타임이 _agentownAssignedInput에 배정한 ${index}번째 항목만 처리하고 다른 배열 항목의 결과를 대신 만들지 않는다.")
+            appendLine("런타임이 _agentownAssignedInput에 배정한 입력만 처리한다. 배정된 값이 배열이면 그 배열 전체가 처리 범위이며 병렬 작업 인덱스로 다시 한 항목만 고르지 않는다.")
         }
         appendLine("행동 규칙:")
         agent.behaviorRules.forEach { appendLine("- $it") }

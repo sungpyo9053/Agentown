@@ -202,28 +202,68 @@ def quality_check(
     return _contract_result({**context, "qualityPassed": passed}, agentownOutputContract)
 
 
+def _readable_text(value: Any, fields: list[dict[str, Any]] | None = None) -> str:
+    if isinstance(value, dict):
+        definitions = {field["name"]: field for field in fields or []}
+        sections = []
+        for key, item in value.items():
+            field = definitions.get(key, {})
+            title = field.get("description") or key
+            nested = field.get("itemSchema") if isinstance(item, list) else field.get("objectSchema")
+            sections.append(f"{title}\n{_readable_text(item, nested)}")
+        return "\n\n".join(sections)
+    if isinstance(value, list):
+        return "\n".join(f"{index}. " + _readable_text(item, fields).replace("\n", "\n   ")
+                         for index, item in enumerate(value, 1)) or "없음"
+    if value is None:
+        return "미확인"
+    if isinstance(value, bool):
+        return "예" if value else "아니오"
+    return str(value)
+
+
 def template_plain_text(
     content: Any = None,
     report: Any = None,
     response: Any = None,
     agentownOutputContract: list[dict[str, Any]] | None = None,
+    agentownInputContract: list[dict[str, Any]] | None = None,
+    agentownRenderFields: list[str] | None = None,
+    agentownHumanReadable: bool = False,
     **context: Any,
 ):
     selected = "content" if content is not None else "report" if report is not None else "response" if response is not None else None
     rendered = content if content is not None else report if report is not None else response
+    if agentownRenderFields is not None:
+        available = {**context, **{key: item for key, item in
+                     (("content", content), ("report", report), ("response", response)) if item is not None}}
+        scoped = {key: available[key] for key in agentownRenderFields if key in available}
+        if not scoped:
+            raise ValueError("Plain-text renderer bound input is missing")
+        if selected not in scoped:
+            selected = None
+        rendered = scoped[selected] if selected in scoped and len(scoped) == 1 else scoped
     if rendered is None and context:
         rendered = context
     if rendered is None:
         raise ValueError("Plain-text renderer input is missing")
     original = rendered
-    if not isinstance(rendered, str):
+    if agentownHumanReadable:
+        rendered = _readable_text(rendered, agentownInputContract)
+    elif not isinstance(rendered, str):
         rendered = json.dumps(rendered, ensure_ascii=False, sort_keys=True)
     values = {**context, "rendered": rendered, "renderedResponse": rendered}
+    if agentownRenderFields is not None:
+        values.update({key: item for key, item in scoped.items() if key in {"content", "report", "response"}})
     if selected is not None:
         selected_contract = next(
             (field for field in (agentownOutputContract or []) if field.get("name") == selected), None,
         )
-        values[selected] = rendered if selected_contract and selected_contract.get("type") == "string" else original
+        selected_original = {"content": content, "report": report, "response": response}[selected]
+        selected_text = _readable_text(selected_original) if agentownHumanReadable else (
+            selected_original if isinstance(selected_original, str) else json.dumps(selected_original, ensure_ascii=False, sort_keys=True)
+        )
+        values[selected] = selected_text if selected_contract and selected_contract.get("type") == "string" else selected_original
     for field in agentownOutputContract or []:
         name = field.get("name")
         if field.get("required") and name not in values and _matches_contract(original, field):

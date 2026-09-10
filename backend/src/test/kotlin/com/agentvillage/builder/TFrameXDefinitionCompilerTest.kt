@@ -700,6 +700,9 @@ class TFrameXDefinitionCompilerTest {
             assertThat((renderer["inputSchema"] as List<FieldDefinition>).map { it.name }).containsExactly(sourceField)
             assertThat((renderer["outputSchema"] as List<FieldDefinition>).map { it.name })
                 .containsExactly(sourceField, "renderedResponse")
+            val defaults = renderer["inputDefaults"] as Map<String, Any?>
+            assertThat(defaults["agentownHumanReadable"]).isEqualTo(true)
+            assertThat(defaults["agentownRenderFields"]).isEqualTo(listOf(sourceField))
         }
     }
 
