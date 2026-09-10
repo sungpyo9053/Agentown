@@ -382,6 +382,20 @@ class MetaAgentPipelineSafetyTest {
         assertThat(redirected.source).isEqualTo("input")
         assertThat(redirected.target).isEqualTo("review")
         assertThat(redirected.bindings).containsExactly(WorkflowFieldBinding("interviews", "interviews"))
+
+        val missing = bundle.copy(proposal = bundle.proposal.copy(graphPlan = plan.copy(edges = plan.edges.map { edge ->
+            if (edge.id == "c") edge.copy(bindings = edge.bindings.filterNot { it.sourceField == "interviews" }) else edge
+        })))
+        val repaired = pipeline().normalizeBoundAgentSchemas(missing)
+        assertThat(repaired.proposal.graphPlan!!.edges.single { it.id == "external-input-review-interviews" }.bindings)
+            .containsExactly(WorkflowFieldBinding("interviews", "interviews"))
+        assertThat(pipeline().normalizeBoundAgentSchemas(repaired)).isEqualTo(repaired)
+        val ambiguous = missing.copy(agentDefinitions = listOf(analyst.copy(outputSchema = analyst.outputSchema + interviews), synthesizer, reviewer))
+        assertThat(pipeline().normalizeBoundAgentSchemas(ambiguous).proposal.graphPlan!!.edges)
+            .noneMatch { it.id == "external-input-review-interviews" }
+        val undeclared = missing.copy(proposal = missing.proposal.copy(inputSchema = emptyList()))
+        assertThat(pipeline().normalizeBoundAgentSchemas(undeclared).proposal.graphPlan!!.edges)
+            .noneMatch { it.id == "external-input-review-interviews" }
     }
 
     @Test

@@ -46,6 +46,21 @@ class WorkflowGraphValidatorTest {
 
     @Test fun `valid workflow graph is accepted`() = assertThat(validator.validate(graph()).valid).isTrue()
 
+    @Test fun `unused sibling AI output cannot be shipped as a valid joined workflow`() {
+        val start = WorkflowNode("start", "manual.trigger", "시작", NodePosition(0.0, 0.0))
+        val worker = WorkflowNode("worker", "ai.generate", "분석", NodePosition(1.0, 0.0), mapOf("instruction" to "분석"))
+        val orphan = worker.copy(id = "orphan", label = "사용되지 않는 분류")
+        val end = WorkflowNode("end", "workflow.end", "완료", NodePosition(2.0, 0.0))
+        fun edge(id: String, source: String, target: String) = WorkflowEdge(id, source, target, bindings = mapOf("content" to "content"))
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "start", nodes = listOf(start, worker, orphan, end),
+            edges = listOf(edge("a", "start", "worker"), edge("b", "start", "orphan"), edge("c", "worker", "end")))
+        assertThat(validator.validate(graph).issues).anyMatch { it.code == "UNUSED_AI_OUTPUT" && it.nodeId == "orphan" }
+        assertThat(validator.validate(graph.copy(edges = graph.edges + edge("d", "orphan", "end"))).issues)
+            .noneMatch { it.code == "UNUSED_AI_OUTPUT" }
+        assertThat(validator.validate(graph.copy(nodes = listOf(start, worker), edges = listOf(edge("a", "start", "worker")))).issues)
+            .noneMatch { it.code == "UNUSED_AI_OUTPUT" }
+    }
+
     @Test fun `evaluation and independent review are valid AI tasks without the word generate`() {
         listOf("지원자별 독립 평가와 근거 검수", "제안서 검토와 비교", "independent evaluation and review").forEach { task ->
             val requirement = AutomationRequirement(task, "수동", listOf("원문"), listOf("결과"), listOf(task), emptyList(), emptyList(), false)
@@ -160,6 +175,20 @@ class WorkflowGraphValidatorTest {
         )
         assertThat(result.issues.filter { it.message.contains("Notion/FAQ") }.map { it.nodeId })
             .contains("search")
+    }
+
+    @Test fun `category input does not imply a new classification operation`() {
+        val requirement = AutomationRequirement("고객 의견을 분석한다", "수동", listOf("원문", "사용자가 제공하는 분류 기준(선택)"),
+            listOf("분석 결과"), listOf("원문 분석"), emptyList(), emptyList(), false)
+        val proposal = AutomationProposal("분석", "분석", listOf("분석"), emptyList(), emptyList(), "중단")
+        val dynamic = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "manual", nodes = listOf(
+            WorkflowNode("manual", "manual.trigger", "입력", NodePosition(0.0, 0.0)),
+            WorkflowNode("analyze", "ai.generate", "분석", NodePosition(1.0, 0.0), mapOf("instruction" to "원문 분석")),
+        ), edges = listOf(WorkflowEdge("e", "manual", "analyze")))
+        fun codes(value: AutomationRequirement) = validator.validate(dynamic, value, proposal, emptyList()).issues.map { it.code }
+        assertThat(codes(requirement)).doesNotContain("MEANING_DECISION_MISSING")
+        assertThat(codes(requirement.copy(steps = listOf("원문을 카테고리별로 분류한다")))).contains("MEANING_DECISION_MISSING")
+        assertThat(codes(requirement.copy(outputs = listOf("분류 결과")))).contains("MEANING_DECISION_MISSING")
     }
 
     @Test fun `dynamic manual classification graph matches its requirement`() {

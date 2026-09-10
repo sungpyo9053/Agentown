@@ -1,10 +1,51 @@
 import json
+import shutil
+import subprocess
+from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 import pytest
 
 from agentown_tframex_adapter.office import LocalOffice, OfficeTrace
+
+
+def test_office_tables_preserve_text_and_never_interpret_html():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for the shipped office renderer test')
+    html = (Path(__file__).parents[1] / 'agentown_tframex_adapter/office.html').read_text()
+    renderer = html.split('function tableCells', 1)[1].split("document.querySelector('#save')", 1)[0]
+    script = r'''
+const assert = require('node:assert/strict');
+class Element {
+ constructor(tag) { this.tag=tag; this.children=[]; this.dataset={}; this.textContent=''; }
+ append(...children) { this.children.push(...children); }
+ replaceChildren() { this.children=[]; }
+ set innerHTML(value) { throw Error('Untrusted HTML must never be interpreted'); }
+}
+const document={createElement:tag=>new Element(tag)};
+''' + 'function tableCells' + renderer + r'''
+const target=new Element('div');
+const raw='Summary\n| Candidate | Cost |\n| --- | ---: |\n| A | 180000 |\n| B | <img src=x onerror=alert(1)> |\n\nUnknown';
+renderOutput(target,raw);
+assert.equal(target.dataset.raw,raw);
+assert.deepEqual(target.children.map(item=>item.tag),['pre','table','pre']);
+assert.equal(target.children[1].children[1].children[1].children[1].textContent,'<img src=x onerror=alert(1)>');
+assert.equal(target.children[1].children[0].children[0].children[0].scope,'col');
+const table=target.children[1];renderOutput(target,raw);assert.equal(target.children[1],table);
+for(const raw of ['plain <script>alert(1)</script>', '| A | B |\n| --- | --- |\n| broken |', '| A | B |\n| --- | --- |', '| A \\| B | C |\n| --- | --- |\n| a | b |']) {
+ renderOutput(target,raw);
+ assert.equal(target.dataset.raw,raw);
+ assert.equal(target.children.length,1);
+ assert.equal(target.children[0].tag,'pre');
+ assert.equal(target.children[0].textContent,raw);
+}
+renderOutput(target,'');
+assert.equal(target.children.length,1);
+assert.equal(target.children[0].textContent,'');
+'''
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
 
 
 @pytest.fixture

@@ -236,6 +236,16 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (hasCycle(graph)) issues += ValidationIssue("CYCLE", "MVP 워크플로우에는 순환을 허용하지 않습니다.")
         val reachable = reachableFrom(graph, graph.entryNodeId)
         graph.nodes.filter { it.id !in reachable }.forEach { issues += ValidationIssue("UNREACHABLE_NODE", "시작점에서 도달할 수 없습니다.", it.id) }
+        if (graph.nodes.any { it.nodeType == NodeType.WORKFLOW_END.wireName }) {
+            val conditionalPaths = graph.nodes.filter { it.nodeType == NodeType.CONDITION_BRANCH.wireName }
+                .flatMap { reachableFrom(graph, it.id) }.toSet()
+            graph.nodes.filter { node ->
+                node.nodeType in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName) &&
+                    node.id !in conditionalPaths && graph.edges.none { it.source == node.id }
+            }.forEach { node ->
+                issues += ValidationIssue("UNUSED_AI_OUTPUT", "완료 경로와 별도로 끝나는 AI 출력이 있습니다. 다른 담당자 또는 완료 노드에 명시적으로 연결해야 합니다.", node.id)
+            }
+        }
         graph.nodes.filter { it.nodeType in setOf(NodeType.SLACK_REPLY_MOCK.wireName, NodeType.SLACK_SEND_MOCK.wireName, NodeType.EMAIL_SEND_MOCK.wireName, NodeType.NOTION_CREATE_PAGE.wireName) }.forEach { reply ->
             if (pathExistsWithoutApproval(graph, graph.entryNodeId, reply.id)) {
                 issues += ValidationIssue("WRITE_REQUIRES_APPROVAL", "Slack 답변 전 모든 경로에 담당자 승인이 필요합니다.", reply.id)
@@ -385,10 +395,10 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     ): List<ValidationIssue> {
         val issues = mutableListOf<ValidationIssue>()
         val trigger = requirement.trigger.lowercase()
-        val requested = listOf(
+        // An input such as an existing category or optional classification rubric
+        // does not request an additional classification operation.
+        val classificationRequested = listOf(
             requirement.objective,
-            requirement.trigger,
-            requirement.inputs.joinToString(" "),
             requirement.outputs.joinToString(" "),
             requirement.steps.joinToString(" "),
             requirement.decisions.joinToString(" "),
@@ -428,7 +438,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                 containsAny(normalized, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
         }
         val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
-        val requestsClassification = containsAny(requested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
+        val requestsClassification = containsAny(classificationRequested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
         val deterministicOnly = NodeType.DATA_CSV_COMPARE.wireName in types && !hasGeneration
         val requestsGeneration = !deterministicOnly && if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
 

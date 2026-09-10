@@ -811,7 +811,27 @@ class StructuredMetaAgentPipeline(
             }
             edge.copy(bindings = kept.ifEmpty { listOf(WorkflowFieldBinding("context", "context")) })
         }
-        val plan = originalPlan.copy(edges = (edges + redirected).distinctBy { it.id })
+        val boundEdges = edges + redirected
+        val externalBindings = if (entryNode?.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) {
+            val producedNames = bundle.agentDefinitions.flatMap { it.outputSchema }.map { it.name }.toSet()
+            originalPlan.nodes.flatMap { node ->
+                val agent = node.config["agentKey"]?.toString()?.let(originalAgents::get)
+                val incoming = boundEdges.filter { it.target == node.id }
+                if (agent == null || node.id == originalPlan.entryNodeId || incoming.isEmpty()) return@flatMap emptyList()
+                val bound = incoming.flatMap { it.bindings }.map { it.targetField.substringBefore('.').substringBefore('[') }.toSet()
+                val defaults = (node.config["inputDefaults"] as? Map<*, *>)?.keys.orEmpty()
+                agent.inputSchema.filter { field ->
+                    field.required && field.name !in bound && field.name !in defaults && field.name !in producedNames &&
+                        bundle.proposal.inputSchema.any { it.name == field.name && it.type.equals(field.type, true) }
+                }.map { field ->
+                    // Both contracts already declare this original input. Make its
+                    // omitted binding explicit; never invent data or choose a producer.
+                    WorkflowEdgePlan("external-input-${node.id}-${field.name}", originalPlan.entryNodeId, node.id,
+                        condition = "inputAvailable=true", bindings = listOf(WorkflowFieldBinding(field.name, field.name)))
+                }.filter { edge -> boundEdges.none { it.id == edge.id } }
+            }
+        } else emptyList()
+        val plan = originalPlan.copy(edges = (boundEdges + externalBindings).distinctBy { it.id })
         val nodesById = plan.nodes.associateBy { it.id }
         val agentKeyByNode = plan.nodes.mapNotNull { node ->
             node.config["agentKey"]?.toString()?.let { node.id to it }
