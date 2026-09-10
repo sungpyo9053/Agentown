@@ -175,7 +175,7 @@ export default function AgentDevelopmentPage() {
   const error = create.error || send.error || patch.error || decideDesign.error || updateAgent.error || simulate.error || decideRun.error || restoreVersion.error || snapshotQuery.error || (job.data?.status === "FAILED" ? new Error(job.data.errorMessage ?? "에이전트 생성에 실패했습니다.") : null);
   if (snapshotQuery.error instanceof ApiError && snapshotQuery.error.status === 401 && sessionId) {
     const next = `/develop?session=${sessionId}&panel=output`;
-    return <AppShell kicker="DEVELOP" title="내 에이전트 열기"><div className="mx-auto max-w-lg rounded-lg border border-hairline bg-white p-6"><h1 className="text-lg font-semibold">에이전트를 만든 계정으로 로그인하세요</h1><p className="mt-3 text-sm text-mute">추가 프로그램이나 별도 AI 로그인 없이 웹에서 실행합니다. 로그인 후 이 에이전트로 돌아옵니다.</p><a href={`/login?next=${encodeURIComponent(next)}`} className="mt-5 inline-block rounded-md bg-ink px-4 py-3 text-sm text-white">로그인하고 에이전트 열기</a></div></AppShell>;
+    return <AppShell kicker="DEVELOP" title="내 에이전트 열기"><div className="mx-auto max-w-lg rounded-lg border border-hairline bg-white p-6"><h1 className="text-lg font-semibold">에이전트를 만든 계정으로 로그인하세요</h1><p className="mt-3 text-sm text-mute">로그인 후 이 에이전트와 실행 방법을 확인할 수 있습니다. 패키지에 따라 내 PC에 도구 설치와 AI 서비스 로그인이 필요합니다.</p><a href={`/login?next=${encodeURIComponent(next)}`} className="mt-5 inline-block rounded-md bg-ink px-4 py-3 text-sm text-white">로그인하고 에이전트 열기</a></div></AppShell>;
   }
   return <AppShell kicker="DEVELOP" title="에이전트 개발" workspace>
     <div className="relative grid h-full min-h-0 bg-[#f5f5f2] lg:grid-cols-[250px_minmax(420px,1fr)_360px]">

@@ -11,6 +11,30 @@ import java.util.UUID
 class WorkflowGraphValidatorTest {
     private val validator = WorkflowGraphValidator(WorkflowNodeCatalog(), jacksonObjectMapper())
 
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "AGENTOWN_VALIDATION_BUNDLE", matches = ".+")
+    fun `validate a captured operational design without running tools`() {
+        val bundle = jacksonObjectMapper().readValue(java.io.File(System.getenv("AGENTOWN_VALIDATION_BUNDLE")), MetaAgentDesignBundle::class.java)
+        val source = System.getenv("AGENTOWN_VALIDATION_SOURCE")?.let { java.io.File(it).readText() }
+        val graph = com.agentvillage.builder.application.WorkflowGraphTranslator(WorkflowNodeCatalog()).translate(UUID.randomUUID(), bundle.proposal)
+        val result = validator.validate(graph, bundle.requirement, bundle.proposal, bundle.agentDefinitions, source)
+        assertThat(result.issues).isEmpty()
+    }
+
+    @Test fun `public web lookup must be explicitly requested and never simulated as a real read`() {
+        val node = WorkflowNode("lookup", "local.web.research", "공개 웹 검색", NodePosition(0.0, 0.0))
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "lookup", nodes = listOf(node), edges = emptyList())
+        val requirement = AutomationRequirement("공개 웹 검색", "요청", listOf("검색 질문"), listOf("원문"), listOf("본문 조회"), emptyList(), emptyList(), false)
+        val proposal = AutomationProposal("조사", "공개 자료 조회", listOf("조회"), emptyList(), emptyList(), "중단")
+        assertThat(validator.validate(graph, requirement, proposal, emptyList(), "제공된 원문만 분석. 웹 검색 없이 진행").issues)
+            .anyMatch { it.code == "MEANING_UNREQUESTED_INTEGRATION" }
+        assertThat(validator.validate(graph, requirement, proposal, emptyList(), "공개 웹 검색에 동의한다").issues)
+            .noneMatch { it.code == "MEANING_UNREQUESTED_INTEGRATION" }
+        val contract = WorkflowNodeCatalog().require("local.web.research")
+        org.assertj.core.api.Assertions.assertThatThrownBy { contract.simulate(emptyMap(), mapOf("researchQuery" to "public evidence")) }
+            .hasMessageContaining("다운로드한 패키지")
+    }
+
     @Test fun `excluded integrations are not required but positive requests still are`() {
         val requirement = AutomationRequirement("입력 의견을 분석한다", "수동", listOf("의견"), listOf("표"),
             listOf("분석"), emptyList(), emptyList(), false)
@@ -20,6 +44,8 @@ class WorkflowGraphValidatorTest {
         listOf("외부 검색·Notion·FAQ 연동 없이 제공된 텍스트만 사용합니다.",
             "Notion/FAQ 연동 없음. Slack 전송 금지.", "Notion은 사용하지 않고 입력 텍스트만 분석",
             "외부 검색, Notion/FAQ, 예약·구매·외부 전송은 하지 않습니다.",
+            "Notion/FAQ 연동, 계정 로그인, 구매, 이메일 및 외부 서비스 전송은 수행하지 않는다.",
+            "Slack 연결, Notion 조회, 외부 전송을 진행하지 않는다.",
             "Slack, Notion, FAQ 연동은 하지 않습니다.").forEach { source ->
             assertThat(dropped(source)).describedAs(source).noneMatch { it.contains("Notion/FAQ") || it.contains("Slack") }
         }
@@ -189,6 +215,11 @@ class WorkflowGraphValidatorTest {
         assertThat(codes(requirement)).doesNotContain("MEANING_DECISION_MISSING")
         assertThat(codes(requirement.copy(steps = listOf("원문을 카테고리별로 분류한다")))).contains("MEANING_DECISION_MISSING")
         assertThat(codes(requirement.copy(outputs = listOf("분류 결과")))).contains("MEANING_DECISION_MISSING")
+        listOf("지점 식별이 불가능하면 임의 분류하지 않고 문제로 표시한다.", "분류 금지", "Do not classify unknown records").forEach { prohibition ->
+            val restricted = requirement.copy(decisions = listOf(prohibition))
+            assertThat(codes(restricted)).describedAs(prohibition).doesNotContain("MEANING_DECISION_MISSING", "MEANING_UNREQUESTED_GENERATION")
+            assertThat(codes(restricted.copy(steps = listOf("확인된 원문을 분류한다")))).contains("MEANING_DECISION_MISSING")
+        }
     }
 
     @Test fun `dynamic manual classification graph matches its requirement`() {
@@ -216,6 +247,15 @@ class WorkflowGraphValidatorTest {
         )
 
         assertThat(validator.validate(dynamic, requirement, proposal, listOf(agent)).valid).isTrue()
+        listOf("분석 결과", "검증 결과", "검토 결과", "검수 결과").forEach { output ->
+            val withAnalysis = dynamic.copy(nodes = nodes + WorkflowNode("analyze", "ai.generate", "독립 분석", NodePosition(2.0, 0.0)),
+                edges = dynamic.edges + WorkflowEdge("analyze-edge", "classify", "analyze"))
+            val requested = requirement.copy(outputs = requirement.outputs + output)
+            assertThat(validator.validate(withAnalysis, requested, proposal, listOf(agent)).issues.map { it.code })
+                .describedAs(output).doesNotContain("MEANING_UNREQUESTED_GENERATION")
+            assertThat(validator.validate(withAnalysis, requirement, proposal, listOf(agent)).issues.map { it.code })
+                .contains("MEANING_UNREQUESTED_GENERATION")
+        }
         val prohibited = requirement.copy(decisions = requirement.decisions + "Notion 및 FAQ 연동은 사용하지 않는다.")
         assertThat(validator.validate(dynamic, prohibited, proposal, listOf(agent)).valid).isTrue()
         val requestedSource = prohibited.copy(inputs = prohibited.inputs + "Notion FAQ 자료")

@@ -5,6 +5,7 @@ import java.math.BigInteger
 
 internal object WorkflowInputContract {
     private val supportedTypes = setOf("string", "array", "object", "boolean", "number", "integer")
+    private val unknownAlternative = Regex("(?i)(?:또는|없으면|\\bor\\s+)\\s*['\"]?(?:미확인|미정|unknown|unconfirmed|n/a)")
 
     fun schemaIssue(fields: List<FieldDefinition>): String? = schemaIssue(fields, "외부 입력")
 
@@ -62,6 +63,9 @@ internal object WorkflowInputContract {
         }
         fields.firstOrNull { it.format != null && (!it.type.equals("string", true) || it.format !in setOf("date", "date-time", "uri")) }?.let {
             return "$path 필드 '${it.name}'의 format이 유효하지 않습니다."
+        }
+        fields.firstOrNull { it.required && it.format in setOf("date", "date-time", "uri") && unknownAlternative.containsMatchIn(it.description) }?.let {
+            return "$path 필드 '${it.name}'은 ${it.format} 형식을 필수로 요구하면서 미확인 문자열도 허용하여 모순됩니다. 확인된 값만 선택 필드에 넣고 미확인 상태는 별도 상태 필드나 본문에 표현하세요. 임의 날짜나 주소를 만들지 마세요."
         }
         fields.firstOrNull { it.enumValues != null && !it.type.equals("string", true) }?.let {
             return "$path 필드 '${it.name}'의 enumValues는 string 타입에만 사용할 수 있습니다."

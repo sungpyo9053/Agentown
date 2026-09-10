@@ -41,6 +41,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
     private val toolTypes = setOf(
         NodeType.DATA_CSV_COMPARE.wireName, NodeType.DATA_NORMALIZE.wireName, NodeType.DATA_DEDUPLICATE.wireName,
         NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName, NodeType.LOCAL_ARTIFACT_RENDER.wireName,
+        NodeType.LOCAL_WEB_RESEARCH.wireName,
     )
     private val patternTypes = setOf(NodeType.CONDITION_BRANCH.wireName)
 
@@ -138,6 +139,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             NodeType.DATA_DEDUPLICATE.wireName -> "data.deduplicate"
             NodeType.QUALITY_CHECK.wireName -> "quality.check"
             NodeType.LOCAL_ARTIFACT_RENDER.wireName -> NodeType.LOCAL_ARTIFACT_RENDER.wireName
+            NodeType.LOCAL_WEB_RESEARCH.wireName -> NodeType.LOCAL_WEB_RESEARCH.wireName
             NodeType.TEMPLATE_RENDER.wireName -> when (node.config["rendererKey"]) {
                 "table.markdown.v1" -> "template.markdown.table"
                 "plain-text.v1", "plain-text" -> "template.plain-text"
@@ -269,6 +271,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     else declared.filter { it.name in bound }.ifEmpty { declared }
                 }
                 node.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName -> LocalArtifactContract.output
+                node.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName -> LocalResearchContract.output
                 isTerminalExecutable(node) && finalOutputSchema != null -> finalOutputSchema
                 node.nodeType == NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                     FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
@@ -347,6 +350,11 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 // Parallel roles may each review the complete collection. Execution
                 // topology must not silently replace their declared output bounds.
                 val runtimeSource = nodeSource
+                val immutableEvidenceNames = if (graph.nodes.any { it.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName })
+                    LocalResearchContract.output.map { it.name }.toSet() else emptySet()
+                val preserveOutputFields = runtimeSource.outputSchema.map { it.name }.filter { name ->
+                    name in immutableEvidenceNames && runtimeSource.inputSchema.any { it.name == name }
+                }
                 parallelScopeByNode[node.id]?.let { (index, size) ->
                     inputDefaults["_agentownParallelIndex"] = index
                     inputDefaults["_agentownParallelSize"] = size
@@ -354,12 +362,14 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 mapOf(
                     "name" to effectiveByNode.getValue(node.id), "description" to source.role,
                     "systemPrompt" to systemPrompt(
-                        runtimeSource, node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
+                        runtimeSource.copy(outputSchema = runtimeSource.outputSchema.filterNot { it.name in preserveOutputFields }),
+                        node.label, node.config["instruction"]?.toString(), parallelScopeByNode[node.id],
                     ) + outgoing[node.id].orEmpty().mapNotNull { edge ->
                         nodesById[edge.target]?.takeIf { it.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName }
                             ?.config?.get("format")?.toString()?.let(LocalArtifactContract::producerInstruction)
                     }.distinct().joinToString("\n", prefix = "\n"),
                     "tools" to source.toolKeys, "inputSchema" to runtimeSource.inputSchema, "outputSchema" to runtimeSource.outputSchema,
+                    "preserveOutputFields" to preserveOutputFields,
                     "outputChecks" to outgoing[node.id].orEmpty().mapNotNull { edge ->
                         nodesById[edge.target]?.takeIf { it.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName }?.let {
                             mapOf("validator" to "local.artifact.spec", "options" to mapOf("format" to it.config["format"]))
@@ -373,6 +383,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 val upstreamSchema = upstreamMessageSchema(node)
                 val inputSchema = when (node.nodeType) {
                     NodeType.LOCAL_ARTIFACT_RENDER.wireName -> LocalArtifactContract.input
+                    NodeType.LOCAL_WEB_RESEARCH.wireName -> LocalResearchContract.input
                     NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                         FieldDefinition("csvA", "string", true, "comparison baseline CSV"),
                         FieldDefinition("csvB", "string", true, "comparison target CSV"),

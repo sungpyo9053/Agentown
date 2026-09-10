@@ -41,9 +41,66 @@ class TFrameXDefinitionCompilerTest {
         assertThat(agents.single { it["name"] == "writer__final" }["inputSchema"]).isEqualTo(listOf(review))
     }
 
-  @Test
+    @Test
+    fun `public research tool preserves registered evidence contract and query binding`() {
+        val contract = com.agentvillage.builder.application.LocalResearchContract
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "input", nodes = listOf(
+            WorkflowNode("input", "text.input", "Input", NodePosition(0.0, 0.0)),
+            WorkflowNode("research", "local.web.research", "Public research", NodePosition(0.0, 0.0)),
+            WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("a", "input", "research", bindings = mapOf("researchQuery" to "researchQuery")),
+            WorkflowEdge("b", "research", "end", bindings = contract.output.associate { it.name to it.name }),
+        ))
+        val definition = compiler.compile("research", graph, emptyList(), mapOf("researchQuery" to "official public evidence"), contract.output, contract.input)
+        val tools = definition["agents"] as List<Map<String, Any?>>
+        val tool = tools.single { it["toolName"] == "local.web.research" }
+        assertThat(tool["inputSchema"]).isEqualTo(contract.input)
+        assertThat(tool["outputSchema"]).isEqualTo(contract.output)
+        assertThat(tool["kind"]).isEqualTo("tool")
+    }
+
+    @Test
+    fun `research evidence forwarded by analyst is excluded from model output contract`() {
+        val contract = com.agentvillage.builder.application.LocalResearchContract
+        val analysis = FieldDefinition("analysis", "string", true, "independent interpretation")
+        val analyst = AgentDefinition("analyst", "Analyst", "Analyze evidence", contract.output,
+            contract.output + analysis, emptyList(), emptyList(), emptyList())
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "input", nodes = listOf(
+            WorkflowNode("input", "text.input", "Input", NodePosition(0.0, 0.0)),
+            WorkflowNode("research", "local.web.research", "Public research", NodePosition(0.0, 0.0)),
+            WorkflowNode("analyze", "ai.generate", "Analyze", NodePosition(0.0, 0.0), mapOf("agentKey" to "analyst")),
+            WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("a", "input", "research", bindings = mapOf("researchQuery" to "researchQuery")),
+            WorkflowEdge("b", "research", "analyze", bindings = contract.output.associate { it.name to it.name }),
+            WorkflowEdge("c", "analyze", "end", bindings = (contract.output + analysis).associate { it.name to it.name }),
+        ))
+        val compiled = compiler.compile("research-forward", graph, listOf(analyst), emptyMap(), contract.output + analysis, contract.input)
+        val agents = compiled["agents"] as List<Map<String, Any?>>
+        val agent = agents.single { it["name"] == "analyst__analyze" }
+        assertThat(agent["preserveOutputFields"]).isEqualTo(contract.output.map { it.name })
+        assertThat(agent["outputSchema"]).isEqualTo(contract.output + analysis)
+    }
+
+    @Test
     fun `local artifact producer receives tool format and final output is actual file metadata`() {
         val contract = com.agentvillage.builder.application.LocalArtifactContract
+        assertThat(contract.runtimeModules.keys).isEqualTo(contract.formats)
+        assertThat(contract.runtimeModules["pptx"]).containsExactly("pptx")
+        assertThat(contract.runtimeModules["xlsx"]).containsExactly("openpyxl")
+        assertThat(contract.runtimeModules["docx"]).containsExactly("docx")
+        assertThat(contract.runtimeModules["bundle"]).containsExactlyInAnyOrder("pptx", "openpyxl", "docx")
+        val aliasPlan = WorkflowGraphPlan("render", listOf(WorkflowNodePlan("render", "local.artifact.render", "파일", mapOf("rendererKey" to "bundle"))), emptyList())
+        val normalized = contract.normalizeGeneratedConfig(aliasPlan)
+        assertThat(normalized.nodes.single().config).containsEntry("format", "bundle").doesNotContainKey("rendererKey")
+        assertThat(contract.normalizeGeneratedConfig(normalized)).isEqualTo(normalized)
+        listOf(mapOf("rendererKey" to "pdf"), mapOf("format" to "pptx", "rendererKey" to "bundle"), mapOf("format" to null, "rendererKey" to "bundle")).forEach { config ->
+            val explicit = aliasPlan.copy(nodes = listOf(aliasPlan.nodes.single().copy(config = config)))
+            assertThat(contract.normalizeGeneratedConfig(explicit)).isEqualTo(explicit)
+        }
+        val otherTool = aliasPlan.copy(nodes = listOf(aliasPlan.nodes.single().copy(nodeType = "template.render")))
+        assertThat(contract.normalizeGeneratedConfig(otherTool)).isEqualTo(otherTool)
         val producer = AgentDefinition("producer", "Producer", "Prepare evidence", emptyList(), contract.input,
             emptyList(), emptyList(), emptyList())
         val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "prepare", nodes = listOf(
@@ -407,6 +464,7 @@ class TFrameXDefinitionCompilerTest {
             .isEqualTo(workers.first().outputSchema.single())
         assertThat(runtimeAgents.first { it["name"] == "collector__collect" }["systemPrompt"].toString())
             .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다", "결과물 품질 기준:")
+            .contains("부재 사실로 바꾸려면 원문의 명시적 근거가 필요하다")
         assertThat(definition["workflowInputSchema"]).isEqualTo(workflowInputs)
     }
 

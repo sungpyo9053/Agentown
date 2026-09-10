@@ -11,6 +11,61 @@ from agentown_tframex_adapter import AgentownTFrameXAdapter, ExecutionNotConfigu
 
 @unittest.skipUnless(importlib.util.find_spec("pptx") and importlib.util.find_spec("openpyxl"), "optional artifact tools not installed")
 class LocalArtifactTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("docx"), "optional report tools not installed")
+    def test_docx_preserves_report_structure_and_requires_visual_review(self):
+        from docx import Document
+        spec = {"format": "docx", "title": "대출 연장 화면 시험 결과",
+                "summary": "도서관 운영팀이 다음 시험의 확인 항목을 결정하기 위한 보고서다.",
+                "sections": [{"heading": "관찰 결과", "paragraphs": [
+                    "회원 12명 중 9명은 도움 없이 신청했고 3명은 대출 번호 위치를 찾는 데 도움을 받았다.",
+                    "처리 시간은 측정하지 않았다. 만족도 측정 여부는 자료에 없다."]}],
+                "sources": []}
+        result = render_artifact(spec, self.root)
+        report = Document(result["path"])
+        self.assertEqual(report.paragraphs[0].style.name, "Title")
+        self.assertFalse(report.styles["Title"].element.xpath("./w:pPr/w:pBdr"))
+        self.assertTrue(report.styles["Normal"].paragraph_format.widow_control)
+        self.assertEqual(report.styles["Normal"].paragraph_format.line_spacing, 1.15)
+        self.assertEqual(report.paragraphs[0].text, spec["title"])
+        self.assertIn("만족도 측정 여부는 자료에 없다.", report.paragraphs[-1].text)
+        self.assertEqual(result["validation"]["sections"], 1)
+        self.assertEqual(result["validation"]["pageCount"], "RENDER_REQUIRED")
+        self.assertEqual(result["contentQuality"], "NOT_ASSESSED")
+        self.assertEqual(report.core_properties.author, "")
+        long_title = "소상공인 고객 응대 생성형 AI 도입 검토 보고서"
+        long_report = Document(render_artifact(spec | {"title": long_title}, self.root)["path"])
+        self.assertEqual(long_report.core_properties.title, long_title)
+        self.assertEqual(long_report.paragraphs[0].text.replace("\n", " "), long_title)
+        self.assertGreater(len(long_report.paragraphs[0].text.splitlines()), 1)
+        self.assertTrue(long_report.paragraphs[0].text.splitlines()[-1].endswith("보고서"))
+        self.assertGreater(len(long_report.paragraphs[0].text.splitlines()[-1]), 5)
+        with self.assertRaises(ArtifactContractError):
+            render_artifact(spec | {"sections": []}, self.root)
+
+    @unittest.skipUnless(importlib.util.find_spec("docx"), "optional report tools not installed")
+    def test_bundle_contains_actual_files_and_checksums_not_claimed_download_links(self):
+        from hashlib import sha256
+        from zipfile import ZipFile
+        spec = {"format": "bundle", "title": "검토 결과", "artifacts": [
+            {"format": "docx", "title": "검토 결과", "summary": "확인된 내용을 정리한다.",
+             "sections": [{"heading": "근거", "paragraphs": ["원문에 없는 수치는 확인되지 않았다."]}]},
+            {"format": "pptx", "title": "검토 결과", "slides": [
+                {"title": "근거", "bullets": ["원문에 없는 수치는 미확인으로 남긴다."]}]}]}
+        result = render_artifact(spec, self.root)
+        with ZipFile(result["path"]) as archive:
+            self.assertEqual(set(archive.namelist()), {"result-1.docx", "result-2.pptx", "manifest.json"})
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["contentQuality"], "NOT_ASSESSED")
+            for item in manifest["artifacts"]:
+                self.assertEqual(item["sha256"], sha256(archive.read(item["name"])).hexdigest())
+                self.assertEqual(item["bytes"], len(archive.read(item["name"])))
+        before = set(self.root.iterdir())
+        with self.assertRaises(ArtifactContractError):
+            render_artifact(spec | {"artifacts": [spec, spec["artifacts"][0]]}, self.root)
+        with self.assertRaises(ArtifactContractError):
+            render_artifact(spec | {"artifacts": [spec["artifacts"][0], spec["artifacts"][0]]}, self.root)
+        self.assertEqual(set(self.root.iterdir()), before)
+
     def test_invalid_file_spec_retries_only_the_producer_once_without_writing_files(self):
         from tframex.models.primitives import Message
         from tframex.util.llms import BaseLLMWrapper

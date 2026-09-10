@@ -90,11 +90,19 @@ class WorkflowNodeCatalog {
             override val type = NodeType.LOCAL_ARTIFACT_RENDER
             override val requiredPermissions = setOf("artifact.write.local")
             override fun validateConfig(config: Map<String, Any?>) =
-                if (config["format"] in LocalArtifactContract.formats) emptyList() else listOf("로컬 제작 형식은 pptx 또는 xlsx여야 합니다.")
+                if (config["format"] in LocalArtifactContract.formats) emptyList() else listOf("지원하는 로컬 제작 형식: ${LocalArtifactContract.formats.joinToString()}")
             override fun validateInput(input: Map<String, Any?>) =
                 if (input["artifactJson"] is String && input["artifactJson"].toString().isNotBlank()) emptyList() else listOf("artifactJson 파일 내용 명세가 필요합니다.")
             override fun simulate(config: Map<String, Any?>, input: Map<String, Any?>): NodeSimulation =
                 throw BadRequestException("LOCAL_EXECUTION_REQUIRED", "다운로드한 패키지의 로컬 실행기에서 파일을 제작하세요. 서버 시뮬레이션으로 파일 제작 성공을 표시하지 않습니다.")
+        },
+        object : WorkflowNodeContract {
+            override val type = NodeType.LOCAL_WEB_RESEARCH
+            override val requiredPermissions = setOf("web.read.public")
+            override fun validateConfig(config: Map<String, Any?>) = if (config.isEmpty()) emptyList() else listOf("공개 웹 조사 도구는 임의 설정을 받지 않습니다.")
+            override fun validateInput(input: Map<String, Any?>) = if ((input["researchQuery"] as? String)?.trim()?.length?.let { it in 1..1000 } == true) emptyList() else listOf("1000자 이하 researchQuery가 필요합니다.")
+            override fun simulate(config: Map<String, Any?>, input: Map<String, Any?>): NodeSimulation =
+                throw BadRequestException("LOCAL_EXECUTION_REQUIRED", "공개 웹 조사는 다운로드한 패키지에서 실행하세요. 실제 본문을 조회하지 않으면 성공으로 표시하지 않습니다.")
         },
         SimpleNodeContract(NodeType.NEWS_SEARCH_MOCK, requiredConfig = setOf("source", "query", "lookbackHours")) { config, input ->
             NodeSimulation(input + ("newsItems" to listOf(
@@ -278,7 +286,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else explicitArrayItemTypeIssues(source, proposal) } +
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else inputCardinalityIssues(source, proposal) } +
             sourceInstruction?.takeIf(String::isNotBlank).orEmpty().let { source -> if (source.isBlank()) emptyList() else decisionPolicyIssues(source, proposal) } +
-            semanticIssues(graph, requirement, proposal, agents)
+            semanticIssues(graph, requirement, proposal, agents, sourceInstruction)
         return structural.copy(valid = issues.isEmpty(), issues = issues)
     }
 
@@ -372,16 +380,31 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
 
     private fun requestsHumanApproval(source: String): Boolean = requestsRuntimeHumanApproval(source)
 
+    private fun requestsClassificationOperation(source: String): Boolean {
+        val terms = "분류|카테고리|유형 판단|classify|classification|category"
+        // A prohibition in the decision policy is not a requested operation.
+        // Remove only the negated mention, preserving positive mentions elsewhere.
+        val negative = Regex("(?i)(?:\\b(?:do not|don't|without|no)\\s+(?:$terms)\\b|(?:$terms)\\s*(?:은|는|을|를)?\\s*(?:하지\\s*(?:않|마)|금지|불필요|제외|없이|없음))")
+        return Regex("(?i)(?:$terms)").containsMatchIn(source.replace(negative, ""))
+    }
+
     private fun requestsIntegration(source: String, vararg names: String): Boolean {
         val boundary = Regex("[.!?\\n;]|하지만|대신|한 뒤|한 후|하고")
-        val action = Regex("연동|연결|검색|조회|수집|전송|발송|사용")
-        val negativeAction = Regex("(?:연동|연결|검색|조회|수집|전송|발송|사용)\\s*(?:은|는|을|를)?\\s*(?:없이|없음|하지\\s*(?:않|마)|불필요|금지|제외)")
+        val action = "(?:연동|연결|검색|조회|수집|전송|발송|사용)\\s*(?:은|는|을|를)?\\s*(?:(?:수행|진행)\\s*)?"
+        val predicate = Regex("$action(?:하|해|했|한|없이|없음|불필요|금지|제외)")
+        val localStatus = Regex("$action(?:없음|불필요|금지|제외)")
+        val negativeAction = Regex("$action(?:없이|없음|하지\\s*(?:않|마)|불필요|금지|제외)")
         return names.any { name -> Regex(Regex.escape(name), RegexOption.IGNORE_CASE).findAll(source).any { mention ->
             // A comma can enumerate exclusions before their shared predicate. Stop at
-            // a comma only after this mention has its own action, not a bare list item.
+            // a comma only after this mention has its own predicate. An action
+            // noun ('연동, 구매, 전송은 수행하지 않는다') is still a list item.
             val clause = source.substring(mention.range.last + 1).split(boundary, limit = 2).first().take(160)
             val segments = clause.split(',')
-            val actionIndex = segments.indexOfFirst { action.containsMatchIn(it) }
+            // A local status ('FAQ 조회, Slack 전송 금지') applies to that
+            // action, unlike a shared verb ('조회, 전송은 하지 않는다').
+            val actionIndex = if (segments.indexOfFirst { localStatus.containsMatchIn(it) } > 0)
+                segments.indexOfFirst { Regex(action).containsMatchIn(it) }
+            else segments.indexOfFirst { predicate.containsMatchIn(it) }
             val tail = if (actionIndex >= 0) segments.take(actionIndex + 1).joinToString(",") else clause
             !negativeAction.containsMatchIn(tail) && !Regex("^\\s*(?:은|는|을|를)?\\s*(?:없이|없음|제외)").containsMatchIn(tail)
         } }
@@ -392,6 +415,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         requirement: AutomationRequirement,
         proposal: AutomationProposal,
         agents: List<AgentDefinition>,
+        sourceInstruction: String?,
     ): List<ValidationIssue> {
         val issues = mutableListOf<ValidationIssue>()
         val trigger = requirement.trigger.lowercase()
@@ -431,6 +455,9 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             (mentionsNotion && containsAny(integrationRequested, "검색", "조회", "읽", "참고", "자료에서", "search", "read"))
         val requestsNotion = requestsNotionRead || requestsNotionWrite
         val requestsNews = requestsIntegration(integrationRequested, "뉴스", "기사", "news", "rss")
+        val hasPublicResearch = NodeType.LOCAL_WEB_RESEARCH.wireName in types
+        val requestsPublicResearch = requestsIntegration(sourceInstruction ?: integrationRequested,
+            "웹 검색", "웹 조사", "공개 웹", "인터넷 검색", "web research", "web search")
         val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
         val requestsSlackOutbound = deliveryOutputsAndSteps.any { item ->
             val normalized = item.lowercase()
@@ -438,7 +465,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                 containsAny(normalized, "전송", "회신", "답변", "보내", "게시", "reply", "send", "post")
         }
         val requestsManualTrigger = containsAny(trigger, "수동", "사용자 입력", "필요할 때", "manual", "on demand")
-        val requestsClassification = containsAny(classificationRequested, "분류", "카테고리", "유형 판단", "classify", "classification", "category")
+        val requestsClassification = requestsClassificationOperation(classificationRequested)
         val deterministicOnly = NodeType.DATA_CSV_COMPARE.wireName in types && !hasGeneration
         val requestsGeneration = !deterministicOnly && if (requestsClassification) requestsExplicitGeneration(outputAndSteps) else requestsGeneration(outputAndSteps)
 
@@ -450,7 +477,8 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (requestsSlackOutbound && !hasSlackReply) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Slack 결과 전달 단계가 그래프에 없습니다.")
         if (requestsNotionRead && !hasNotionRead) mismatch("MEANING_SOURCE_MISSING", "요구사항의 Notion/FAQ 자료 조회 단계가 그래프에 없습니다.")
         if (requestsNotionWrite && !hasNotionWrite) mismatch("MEANING_OUTPUT_MISSING", "요구사항의 Notion 페이지 저장 단계가 그래프에 없습니다.")
-        if (requestsNews && !hasNews) mismatch("MEANING_SOURCE_MISSING", "요구사항의 뉴스 자료 수집 단계가 그래프에 없습니다.")
+        if (requestsNews && !hasNews && !hasPublicResearch) mismatch("MEANING_SOURCE_MISSING", "요구사항의 뉴스 자료 수집 단계가 그래프에 없습니다.")
+        if (hasPublicResearch && !requestsPublicResearch) mismatch("MEANING_UNREQUESTED_INTEGRATION", "공개 웹 검색에 대한 사용자 동의가 없는 요청에 웹 조사 단계가 추가되었습니다.")
         if (requirement.humanApprovalRequired && !hasApproval) mismatch("MEANING_APPROVAL_MISSING", "요구사항의 사람 승인 단계가 그래프에 없습니다.")
         if (!requirement.humanApprovalRequired && hasApproval) mismatch("MEANING_UNREQUESTED_APPROVAL", "요구하지 않은 사람 승인 단계가 그래프에 추가되었습니다.")
         if (requestsManualTrigger && !hasManualTrigger) mismatch("MEANING_TRIGGER_MISSING", "요구사항의 수동 시작 조건이 그래프에 없습니다.")
@@ -535,6 +563,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                             sourceNode.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName) ->
                                 proposal.inputSchema.firstOrNull { it.name == sourceRoot }
                             sourceAgent != null -> sourceAgent.outputSchema.firstOrNull { it.name == sourceRoot }
+                            sourceNode.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName -> LocalResearchContract.output.firstOrNull { it.name == sourceRoot }
                             else -> null
                         }
                         val targetField = targetAgent?.inputSchema?.firstOrNull { it.name == targetRoot }
@@ -712,6 +741,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private fun requestsExplicitGeneration(value: String) = containsAny(
         value,
         "초안", "답변", "요약", "작성", "생성", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "기획서", "제시", "릴리스 노트",
+        "분석 결과", "검증 결과", "검토 결과", "검수 결과",
         "draft", "answer", "summary", "generate", "write", "extract", "translate", "proofread", "report", "release note",
     )
 

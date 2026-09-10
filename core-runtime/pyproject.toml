@@ -20,7 +20,7 @@ dependencies = [
 agentown-tframex-runtime = "agentown_tframex_adapter.server:main"
 
 [project.optional-dependencies]
-artifacts = ["python-pptx==1.0.2", "openpyxl==3.1.5"]
+artifacts = ["python-pptx==1.0.2", "openpyxl==3.1.5", "python-docx==1.2.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

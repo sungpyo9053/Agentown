@@ -14,6 +14,7 @@ import re
 import unicodedata
 from tempfile import mkdtemp
 from typing import Any
+from zipfile import ZipFile, ZIP_DEFLATED
 
 
 class ArtifactContractError(ValueError):
@@ -155,23 +156,127 @@ def _workbook(spec: dict) -> tuple[bytes, dict]:
     return content, {"sheets": len(sheets), "dataCells": total, "formulas": "LITERAL_ONLY", "visualReview": "REQUIRED"}
 
 
+def _report_title_lines(text: str, width: int = 40) -> str:
+    """Balance long titles at spaces without reducing type size or losing words."""
+    units = lambda value: sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in value)
+    length = units(text)
+    spaces = [i for i, char in enumerate(text) if char == " " and 0 < i < len(text) - 1]
+    if length <= width or not spaces or "\n" in text:
+        return text
+    target = length / math.ceil(length / width)
+    split = min(spaces, key=lambda index: abs(units(text[:index]) - target))
+    return text[:split] + "\n" + _report_title_lines(text[split + 1:], width)
+
+
+def _document(spec: dict) -> tuple[bytes, dict]:
+    from docx import Document
+    from docx.oxml.ns import qn
+    from docx.shared import Inches, Pt, RGBColor
+
+    title = _text(spec.get("title"), "title", 120)
+    summary = _text(spec.get("summary"), "report summary", 2000)
+    sections = _items(spec.get("sections"), "report sections", 30)
+    document = Document()
+    page = document.sections[0]
+    page.page_width, page.page_height = Inches(8.5), Inches(11)
+    page.top_margin = page.bottom_margin = Inches(.8)
+    page.left_margin = page.right_margin = Inches(.9)
+    for name, size in (("Normal", 11), ("Title", 24), ("Heading 1", 16), ("Heading 2", 13)):
+        style = document.styles[name]
+        style.font.name, style.font.size = "Arial", Pt(size)
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        style.font.underline = False
+        borders = style.element.get_or_add_pPr().find(qn("w:pBdr"))
+        if borders is not None:
+            borders.getparent().remove(borders)
+        style.element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "맑은 고딕")
+        style.paragraph_format.space_after = Pt(6 if name == "Normal" else 10)
+        style.paragraph_format.line_spacing = 1.15
+        style.paragraph_format.widow_control = True
+        if name != "Normal":
+            style.paragraph_format.keep_with_next = True
+    document.core_properties.title = title
+    document.core_properties.author = ""
+    display_title = _report_title_lines(title)
+    document.add_paragraph(display_title, "Title")
+    document.add_paragraph(summary)
+    total = len(summary)
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            raise ArtifactContractError("report section must be an object")
+        heading = _text(section.get("heading"), "report heading", 120)
+        paragraphs = [_text(text, "report paragraph", 2000) for text in _items(section.get("paragraphs"), "section paragraphs", 10)]
+        total += sum(map(len, paragraphs))
+        if total > 100000:
+            raise ArtifactContractError("report exceeds 100000 characters")
+        if section.get("newPage") is True:
+            document.add_page_break()
+        document.add_heading(heading, level=1)
+        for text in paragraphs:
+            document.add_paragraph(text)
+    sources = spec.get("sources", [])
+    if not isinstance(sources, list) or len(sources) > 30:
+        raise ArtifactContractError("report sources must contain at most 30 items")
+    if sources:
+        document.add_heading("참고 자료", level=1)
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ArtifactContractError("report source must be an object")
+            label = _text(source.get("label"), "source label", 300)
+            url = _text(source.get("url"), "source URL", 2048)
+            if not re.match(r"^https?://[^\s]+$", url):
+                raise ArtifactContractError("source requires an absolute HTTP URL")
+            document.add_paragraph(label)
+            document.add_paragraph(url)
+    stream = BytesIO()
+    document.save(stream)
+    content = stream.getvalue()
+    loaded = Document(BytesIO(content))
+    if loaded.paragraphs[0].text != display_title or loaded.core_properties.title != title:
+        raise ArtifactContractError("report round-trip mismatch")
+    return content, {"sections": len(sections), "sources": len(sources), "pageCount": "RENDER_REQUIRED", "visualReview": "REQUIRED"}
+
+
+def _bundle(spec: dict) -> tuple[bytes, dict]:
+    _text(spec.get("title"), "title", 120)
+    artifacts = _items(spec.get("artifacts"), "bundle artifacts", 3)
+    if len(artifacts) < 2:
+        raise ArtifactContractError("bundle requires at least two artifacts")
+    stream, entries, formats = BytesIO(), [], set()
+    with ZipFile(stream, "w", ZIP_DEFLATED) as archive:
+        for index, artifact in enumerate(artifacts, 1):
+            kind = artifact.get("format") if isinstance(artifact, dict) else None
+            if kind not in {"docx", "pptx", "xlsx"} or kind in formats:
+                raise ArtifactContractError("bundle requires distinct docx/pptx/xlsx formats; nested archives are forbidden")
+            formats.add(kind)
+            content, details = _WRITERS[kind][0](artifact)
+            name = f"result-{index}.{kind}"
+            archive.writestr(name, content)
+            entries.append({"name": name, "sha256": sha256(content).hexdigest(), "bytes": len(content), "validation": details})
+        archive.writestr("manifest.json", json.dumps({"artifacts": entries, "contentQuality": "NOT_ASSESSED"}, ensure_ascii=False))
+    return stream.getvalue(), {"artifacts": entries, "visualReview": "REQUIRED"}
+
+
 _WRITERS = {
     "pptx": (_presentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
     "xlsx": (_workbook, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "docx": (_document, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "bundle": (_bundle, "application/zip"),
 }
 
 
 def render_artifact(spec: dict, output_directory: Path) -> dict:
     """Validate/render in memory, then create a unique file under caller-owned output."""
     if not isinstance(spec, dict) or spec.get("format") not in _WRITERS:
-        raise ArtifactContractError("supported artifact formats: pptx, xlsx")
+        raise ArtifactContractError("supported artifact formats: " + ", ".join(_WRITERS))
     kind = spec["format"]
     writer, media_type = _WRITERS[kind]
     content, details = writer(spec)
     root = Path(output_directory).resolve(strict=True)
     if not root.is_dir():
         raise ArtifactContractError("output directory must exist")
-    target = Path(mkdtemp(prefix="agentown-result-", dir=root)) / f"result.{kind}"
+    extension = "zip" if kind == "bundle" else kind
+    target = Path(mkdtemp(prefix="agentown-result-", dir=root)) / f"result.{extension}"
     with target.open("xb") as stream:
         stream.write(content)
     return {"path": str(target), "mediaType": media_type, "bytes": len(content),

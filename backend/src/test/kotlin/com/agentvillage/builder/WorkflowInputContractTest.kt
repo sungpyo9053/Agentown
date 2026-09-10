@@ -9,6 +9,20 @@ import org.junit.jupiter.api.Test
 
 class WorkflowInputContractTest {
     @Test
+    fun `required formatted values cannot simultaneously require unknown text`() {
+        val date = FieldDefinition("dueDate", "string", true, "원문에 있는 기한 또는 미확인", format = "date")
+        assertThat(WorkflowInputContract.schemaIssue(listOf(date))).contains("dueDate", "모순")
+        assertThat(WorkflowInputContract.schemaIssue(listOf(date.copy(required = false, description = "원문에 있는 경우에만 기한")))).isNull()
+        assertThat(WorkflowInputContract.schemaIssue(listOf(date.copy(description = "확인된 기한")))).isNull()
+        assertThat(WorkflowInputContract.schemaIssue(listOf(date.copy(format = null)))).isNull()
+        val nested = FieldDefinition("records", "array", true, "rows", itemType = "object", itemSchema = listOf(date))
+        assertThat(WorkflowInputContract.schemaIssue(listOf(nested))).contains("records[]", "dueDate", "모순")
+        assertThat(WorkflowInputContract.schemaIssue(listOf(date.copy(name = "url", format = "uri", description = "URL or unknown")))).contains("모순")
+        assertThat(WorkflowInputContract.valueIssue(listOf(date.copy(required = false, description = "확인된 경우만")), mapOf("dueDate" to "미확인")))
+            .contains("날짜 형식")
+    }
+
+    @Test
     fun `uniqueBy must reference the direct item contract not a nested field`() {
         val items = listOf(
             FieldDefinition("documentId", "string", true, "id"),

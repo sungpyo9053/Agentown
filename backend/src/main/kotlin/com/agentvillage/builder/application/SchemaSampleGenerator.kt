@@ -52,7 +52,7 @@ internal object SchemaSampleGenerator {
         field.format == "date" -> "2026-09-05"
         field.format == "date-time" -> "2026-09-05T09:00:00+09:00"
         field.format == "uri" -> "https://example.com/evidence-${index + 1}"
-        contains("date", true) || endsWith("At") -> "2026-09-05"
+        equals("date", true) || endsWith("Date") || endsWith("_date", true) || endsWith("At") -> "2026-09-05"
         contains("url", true) -> "https://example.com/evidence-${index + 1}"
         contains("status", true) -> "READY"
         else -> "${field.description.ifBlank { field.name }} 예시 ${index + 1}"

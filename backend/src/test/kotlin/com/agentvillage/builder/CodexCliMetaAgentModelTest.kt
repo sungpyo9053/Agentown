@@ -102,13 +102,16 @@ class CodexCliMetaAgentModelTest {
     }
 
     @Test
-    fun `intake discloses unavailable research and document tools before detailed planning`() {
+    fun `intake discloses local research consent and actual document capability boundaries`() {
         whenever(runner.hasSharedAuth()).thenReturn(true)
         whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")
         model.generate(context, "define_agent_development_problem", mapOf("instruction" to "주제만 넣으면 보고서 ppt 만들어줘"))
         val prompt = argumentCaptor<String>()
         verify(runner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
-        assertThat(prompt.firstValue).contains("로컬 실행기는 PPTX 슬라이드와 XLSX 표 파일을 제작할 수 있다", "DOCX/PDF 보고서 제작 도구는 아직 연결되어 있지 않다", "분량·대상 같은 세부 질문보다 먼저", "동의하는지 확인", "몰래 바꾸거나")
+        assertThat(prompt.firstValue).contains("로컬 실행기는 PPTX 슬라이드와 XLSX 표 파일을 제작할 수 있다",
+            "공개 검색에 동의하는지 확인", "최대 5개 출처", "로그인 자료·PDF 원문·접근이 차단된 페이지는 지원하지 않는다",
+            "DOCX 보고서와 PPTX/XLSX 파일을 실제 제작", "PDF 제작은 아직 지원하지 않는다",
+            "분량·대상 같은 세부 질문보다 먼저", "몰래 바꾸거나", "파일 생성 성공은 내용·시각 품질 검수 완료가 아니다")
     }
 
     @Test

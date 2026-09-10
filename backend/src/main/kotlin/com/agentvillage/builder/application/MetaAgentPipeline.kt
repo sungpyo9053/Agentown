@@ -478,6 +478,7 @@ class StructuredMetaAgentPipeline(
         val runtimeApprovalExplicit = requestsRuntimeHumanApproval(instruction)
         val generatedGraph = contractSafe.proposal.graphPlan
             ?.let(::normalizeGeneratedInputDefaults)
+            ?.let(LocalArtifactContract::normalizeGeneratedConfig)
             ?.let(::normalizeUnresolvedToolConfig)
             ?.let { removeUndeclaredAgentInputDefaults(it, contractSafe.agentDefinitions) }
             ?.let { normalizeEntryBindings(it, contractSafe.proposal.inputSchema) }
@@ -844,6 +845,7 @@ class StructuredMetaAgentPipeline(
             val node = nodesById[nodeId] ?: return null
             val key = agentKeyByNode[nodeId]
             if (key != null) return agents[key]?.outputSchema?.firstOrNull { it.name == fieldName }
+            if (node.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName) return LocalResearchContract.output.firstOrNull { it.name == fieldName }
             if (node.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) {
                 return bundle.proposal.inputSchema.firstOrNull { it.name == fieldName }
             }
@@ -1156,12 +1158,14 @@ class StructuredMetaAgentPipeline(
             NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName, NodeType.DATA_CSV_COMPARE.wireName,
             NodeType.QUALITY_CHECK.wireName, NodeType.TEMPLATE_RENDER.wireName,
             NodeType.LOCAL_ARTIFACT_RENDER.wireName,
+            NodeType.LOCAL_WEB_RESEARCH.wireName,
         )
         val terminal = plan.nodes
             .filter { it.nodeType in executableTypes }
             .maxWithOrNull(compareBy<WorkflowNodePlan> { depth[it.id] ?: -1 }.thenBy { it.id })
             ?: return emptyList()
         if (terminal.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName) return LocalArtifactContract.output
+        if (terminal.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName) return LocalResearchContract.output
         if (terminal.nodeType !in setOf(NodeType.AI_GENERATE.wireName, NodeType.AI_CLASSIFY.wireName)) return emptyList()
         val key = terminal.config["agentKey"]?.toString() ?: return emptyList()
         return bundle.agentDefinitions.firstOrNull { it.key == key }?.outputSchema.orEmpty()

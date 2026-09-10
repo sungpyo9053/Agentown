@@ -307,6 +307,9 @@ class RealAmbiguousProductE2ETest {
 
     private fun writePackage(id: String, files: Map<String, String>): Path {
         val root = Path.of("build/reports/real-ambiguous-product-packages", id).toAbsolutePath()
+        // Keep prior evidence, but never put stale agents, run output or bytecode
+        // from an earlier attempt into the newly generated acceptance ZIP.
+        if (Files.exists(root)) Files.move(root, root.resolveSibling("$id-previous-${UUID.randomUUID()}"))
         files.forEach { (relative, content) ->
             val target = root.resolve(relative)
             Files.createDirectories(target.parent)

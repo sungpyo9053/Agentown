@@ -32,10 +32,12 @@ def safe_cli_failure(stderr: bytes) -> str:
 class CodexCliLLMWrapper(BaseLLMWrapper):
     """TFrameX LLM transport backed by the server's authenticated Codex CLI."""
 
-    def __init__(self, command: str = "codex", model: str = "gpt-5.6-luna", timeout_seconds: int = 120):
+    def __init__(self, command: str = "codex", model: str = "gpt-5.6-luna", timeout_seconds: int = 120, *, web_search: bool = False):
         super().__init__(model_id=model)
         self.command = command
         self.timeout_seconds = timeout_seconds
+        self.web_search = web_search
+        self.searches_performed = 0
 
     async def chat_completion(
         self, messages: List[Message], stream: bool = False, **kwargs: Any
@@ -67,7 +69,7 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
             "--disable",
             "shell_tool",
             "-c",
-            "tools.web_search=false",
+            "tools.web_search=true" if self.web_search else "tools.web_search=false",
             "-c",
             "agents.enabled=false",
             "-c",
@@ -79,6 +81,8 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
             "--color",
             "never",
         ]
+        if self.web_search:
+            command_args.extend(["-c", 'web_search="live"', "--json"])
         if output_schema:
             schema_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", encoding="utf-8", delete=False)
             try:
@@ -123,6 +127,17 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
         if process.returncode != 0:
             raise RuntimeError(safe_cli_failure(stderr))
         output = stdout.decode("utf-8", errors="replace").strip()
+        if self.web_search:
+            # An answer about research is not proof of a search. Require completed
+            # provider events; never treat a started or failed search as evidence.
+            events = [json.loads(line) for line in output.splitlines() if line.strip()]
+            completed = [event.get("item", {}) for event in events if event.get("type") == "item.completed"]
+            self.searches_performed = len({item.get("id") for item in completed
+                if item.get("id") and item.get("type") == "web_search" and item.get("action", {}).get("type") == "search"})
+            answers = [item.get("text", "") for item in completed if item.get("type") == "agent_message"]
+            if self.searches_performed < 1 or not answers:
+                raise RuntimeError("WEB_RESEARCH_NOT_PERFORMED: 실제 검색과 최종 조사 결과를 확인하지 못했습니다.")
+            output = answers[-1].strip()
         if not output:
             raise RuntimeError("Codex CLI returned an empty result")
         return Message(role="assistant", content=output)

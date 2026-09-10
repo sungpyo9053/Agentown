@@ -30,6 +30,7 @@ enum class NodeType(val wireName: String, val riskLevel: String) {
     QUALITY_CHECK("quality.check", "LOW"),
     TEMPLATE_RENDER("template.render", "LOW"),
     LOCAL_ARTIFACT_RENDER("local.artifact.render", "MEDIUM"),
+    LOCAL_WEB_RESEARCH("local.web.research", "MEDIUM"),
     WORKFLOW_END("workflow.end", "LOW"),
     CONDITION_BRANCH("condition.branch", "LOW"),
     AI_CLASSIFY("ai.classify", "MEDIUM"),

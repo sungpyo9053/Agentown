@@ -5,10 +5,61 @@ from tframex.flows.flow_context import FlowContext
 from tframex.models.primitives import Message
 from agentown_tframex_adapter.adapter import StructuredParallelPattern
 import unittest
+from types import SimpleNamespace
 
 from agentown_tframex_adapter.adapter import DefinitionError, _apply_input_bindings, _assert_semantic_success, _evaluate_branch_expression, _output_correction_message, _set_parallel_field
 from agentown_tframex_adapter.capabilities import _matches_contract, data_deduplicate, data_normalize, quality_check, template_plain_text
 from agentown_tframex_adapter.codex_llm import _json_schema
+
+
+@pytest.mark.parametrize("echo", [False, True])
+def test_retrieved_evidence_is_passed_through_without_model_rewriting(monkeypatch, echo):
+    from agentown_tframex_adapter.adapter import TracingLLMAgent, LLMAgent
+    source = {"name": "researchSources", "type": "array", "required": True, "itemType": "string"}
+    analysis = {"name": "analysis", "type": "string", "required": True}
+    calls = []
+
+    async def model_run(self, message, **kwargs):
+        calls.append(kwargs["output_schema"])
+        assert json.loads(message.content)["researchSources"] == ["Original evidence 原文"]
+        output = {"analysis": "A separate interpretation"}
+        if echo:
+            output["researchSources"] = ["A shortened or invented source"]
+        return Message(role="assistant", content=json.dumps(output))
+
+    monkeypatch.setattr(LLMAgent, "run", model_run)
+    agent = TracingLLMAgent("review", llm=SimpleNamespace(model_id="fake"), engine=object(), input_schema=[source],
+                            output_schema=[source, analysis], preserve_output_fields=["researchSources"])
+    result = asyncio.run(agent.run(Message(role="user", content=json.dumps({"researchSources": ["Original evidence 原文"]}))))
+    assert json.loads(result.content) == {"analysis": "A separate interpretation", "researchSources": ["Original evidence 原文"]}
+    assert calls == [[analysis]]
+
+
+def test_passthrough_only_skips_llm_and_invalid_preservation_fails_closed(monkeypatch):
+    from agentown_tframex_adapter.adapter import TracingLLMAgent, LLMAgent
+    field = {"name": "researchQuery", "type": "string", "required": True}
+
+    async def unexpected_call(*args, **kwargs):
+        pytest.fail("Passthrough or invalid configuration must not call the LLM")
+
+    monkeypatch.setattr(LLMAgent, "run", unexpected_call)
+    agent = TracingLLMAgent("forward", llm=SimpleNamespace(model_id="fake"), engine=object(), input_schema=[field],
+                            output_schema=[field], preserve_output_fields=["researchQuery"])
+    result = asyncio.run(agent.run(Message(role="user", content='{"researchQuery":"original topic"}')))
+    assert json.loads(result.content) == {"researchQuery": "original topic"}
+    agent.config["preserve_output_fields"] = ["undeclared"]
+    with pytest.raises(ValueError, match="declared and available"):
+        asyncio.run(agent.run(Message(role="user", content='{"researchQuery":"original topic"}')))
+
+
+def test_explicit_zero_item_contract_overrides_name_based_nonempty_heuristic():
+    field = {"name": "unavailableSources", "type": "array", "required": True, "minItems": 0, "itemType": "string"}
+    _assert_semantic_success({"unavailableSources": []}, [field], "Tool output")
+    for value in ({}, {"unavailableSources": None}, {"unavailableSources": [""]}):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _assert_semantic_success(value, [field], "Tool output")
+    with pytest.raises(ValueError, match="must not be empty"):
+        _assert_semantic_success({"unavailableSources": []}, [{**field, "minItems": 1}], "Tool output")
 
 
 def test_later_parallel_consumers_collect_all_bound_items_without_stale_results():

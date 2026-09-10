@@ -412,7 +412,7 @@ class BuilderService(
         val version = saveVersion(context.workflow, approvedGraph, "최초 승인 설계 컴파일", approved = true)
         context.workflow.approvedVersionId = version.id
         transition(context.workflow, WorkflowStatus.READY_TO_SIMULATE)
-        val nextStep = if (LocalArtifactContract.configured(approvedDesign.proposal))
+        val nextStep = if (LocalArtifactContract.configured(approvedDesign.proposal) || approvedDesign.proposal.graphPlan?.nodes?.any { it.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName } == true)
             "설계 승인이 완료되었습니다. 패키지를 내려받아 START_HERE.md 안내에 따라 내 PC에서 실행하고 결과 파일을 확인해 주세요."
         else "설계 승인이 완료되었습니다. 캔버스에서 구조를 확인하고 샘플 실행으로 서버 검증을 진행해 주세요."
         messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = nextStep, workflowVersionId = version.id))

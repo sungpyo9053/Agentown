@@ -188,6 +188,13 @@ class TracingLLMAgent(LLMAgent):
                 content, self.config.get("input_schema") or [], "input", exact=False,
             )
             model_input = _json_object(content)
+            output_schema = self.config.get("output_schema") or []
+            preserved_names = set(self.config.get("preserve_output_fields") or [])
+            allowed_preserved = {field['name'] for field in output_schema} & {field['name'] for field in self.config.get("input_schema") or []}
+            if not preserved_names <= allowed_preserved or not preserved_names <= set(model_input or {}):
+                raise ValueError("Preserved output fields must be declared and available inputs")
+            preserved = {key: model_input[key] for key in preserved_names}
+            model_schema = [field for field in output_schema if field['name'] not in preserved_names]
             model_content = json.dumps({key: value for key, value in model_input.items()
                                         if key != "_agentownTaskOutputs"}, ensure_ascii=False) if model_input is not None else content
             bound_message = Message(
@@ -198,10 +205,15 @@ class TracingLLMAgent(LLMAgent):
             for attempt in range(2):
                 result = await super().run(
                     bound_message,
-                    output_schema=self.config.get("output_schema") or [],
+                    output_schema=model_schema,
                     **kwargs,
-                )
+                ) if model_schema or not preserved_names else Message(role="assistant", content="{}")
                 try:
+                    produced = _json_object(result.content or "")
+                    if preserved_names and produced is not None:
+                        # Evidence passthrough is deterministic. Model summaries or
+                        # altered source text never replace the retrieved originals.
+                        result = Message(role=result.role, content=json.dumps({**produced, **preserved}, ensure_ascii=False))
                     self._validate_json_contract(result.content or "", self.config.get("output_schema") or [], "output")
                     for validate_output, options in self.config.get("output_checks") or []:
                         validate_output(_json_value(result.content or ""), options)
@@ -560,6 +572,7 @@ class AgentownTFrameXAdapter:
                 trace_sink=self.trace,
                 input_schema=list(config.get("inputSchema") or []),
                 output_schema=list(config.get("outputSchema") or []),
+                preserve_output_fields=list(config.get("preserveOutputFields") or []),
                 output_checks=output_checks,
                 tool_name=config.get("toolName"),
                 input_bindings=list(config.get("inputBindings") or []),
@@ -755,7 +768,8 @@ def _assert_semantic_success(
             child = item.get(name)
             child_path = f"{path}.{name}"
             if field.get("required") and _requires_nonempty_semantic_value(name):
-                if name not in item or _has_empty_semantic_item(child):
+                explicitly_empty_array = child == [] and field.get("type") == "array" and field.get("minItems") == 0
+                if name not in item or (_has_empty_semantic_item(child) and not explicitly_empty_array):
                     failures.append(f"{child_path} is required and must not be empty")
             nested_contract = field.get("itemSchema")
             if not isinstance(nested_contract, list) or child is None:
