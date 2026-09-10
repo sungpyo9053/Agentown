@@ -148,6 +148,11 @@ class BuilderService(
         if (context.workflow.status == WorkflowStatus.FAILED) transition(context.workflow, WorkflowStatus.DRAFT)
         messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey)?.let { return snapshot(ownerId, conversationId) }
         val workflow = context.workflow
+        // A pre-publication chat correction is a draft revision, not an approval.
+        if (workflow.status == WorkflowStatus.WAITING_DESIGN_APPROVAL && workflow.currentVersionId == null &&
+            context.conversation.purpose == BuilderConversationPurpose.AGENT_DEVELOPMENT) {
+            transition(workflow, WorkflowStatus.DRAFT)
+        }
         val message = messages.save(BuilderMessage(conversationId = conversationId, role = "USER", content = instruction.trim(), workflowVersionId = workflow.currentVersionId, idempotencyKey = idempotencyKey))
         if (workflow.currentVersionId != null && (
                 isOutputTemplatePatch(instruction) ||
@@ -407,7 +412,10 @@ class BuilderService(
         val version = saveVersion(context.workflow, approvedGraph, "최초 승인 설계 컴파일", approved = true)
         context.workflow.approvedVersionId = version.id
         transition(context.workflow, WorkflowStatus.READY_TO_SIMULATE)
-        messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = "설계 승인이 완료되었습니다. 캔버스에서 구조를 확인하고 샘플 실행으로 서버 검증을 진행해 주세요.", workflowVersionId = version.id))
+        val nextStep = if (LocalArtifactContract.configured(approvedDesign.proposal))
+            "설계 승인이 완료되었습니다. 패키지를 내려받아 START_HERE.md 안내에 따라 내 PC에서 실행하고 결과 파일을 확인해 주세요."
+        else "설계 승인이 완료되었습니다. 캔버스에서 구조를 확인하고 샘플 실행으로 서버 검증을 진행해 주세요."
+        messages.save(BuilderMessage(conversationId = context.conversation.id, role = "ASSISTANT", content = nextStep, workflowVersionId = version.id))
         return snapshot(ownerId, context.conversation.id)
     }
 

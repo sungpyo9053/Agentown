@@ -36,7 +36,7 @@ type Job = { id: string; conversationId: string; status: "QUEUED" | "RUNNING" | 
 type Run = { id: string; status: string; currentNodeId?: string; output?: Record<string, unknown>; requirementMatched?: boolean; pendingApprovalId?: string; failureCode?: string; failureMessage?: string; steps: Array<{ nodeId: string; nodeType: string; sequenceNo: number; status: string; output?: Record<string, unknown>; errorMessage?: string }> };
 
 const storageKey = "agentown.agent-development.session.v1";
-const starter = "어떤 AI 에이전트를 만들고 싶으신가요? 역할과 원하는 결과를 자연스럽게 설명해 주세요.";
+const starter = "‘신발을 만들고 싶어’, ‘앱을 만들고 싶어’처럼 아래에 한 줄만 적어 주세요. 필요한 조건은 질문으로 함께 정리합니다.";
 const examples = [
   "계약서 파일을 받아 위험 조항과 근거 문장을 찾고, 확인할 수 없는 내용은 담당자 검토로 넘겨줘.",
   "회의록을 받아 결정사항과 담당자별 할 일을 정리하고, 담당자가 없는 항목은 미지정으로 표시해줘.",
@@ -105,6 +105,11 @@ export default function AgentDevelopmentPage() {
     queryClient.invalidateQueries({ queryKey: ["agent-development-sessions"] });
   }
   useEffect(() => {
+    if (job.data?.status === "FAILED" || job.data?.status === "CANCELLED") {
+      void queryClient.invalidateQueries({ queryKey: ["agent-development", job.data.conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-development-sessions"] });
+      return;
+    }
     if (job.data?.status !== "SUCCEEDED") return;
     api<Snapshot>(`/agent-development/sessions/${job.data.conversationId}`).then(next => { store(next); setJobId(undefined); setMessage(""); setPanel("team"); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,9 +183,9 @@ export default function AgentDevelopmentPage() {
         <NextAction status={snapshot?.status} hasVersion={Boolean(snapshot?.currentVersionId)} localOnly={requiresLocalPackage(snapshot?.proposal?.resourcePlan?.bindings)} run={run} open={nextPanel => { setPanel(nextPanel); setMobileInspector(true); }} />
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-4 py-6 md:px-8">
           <div className="mx-auto max-w-3xl space-y-5">
-            {!snapshot?.messages.length && <div className="py-6"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-6 w-6" /></div><h1 className="mt-5 text-center text-2xl font-semibold">코딩하지 말고, 업무를 네 칸으로 알려주세요</h1><p className="mx-auto mt-2 max-w-lg text-center text-sm leading-6 text-mute">{starter}</p>
+            {!snapshot?.messages.length && <div className="py-6"><div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md bg-ink text-white"><Bot className="h-6 w-6" /></div><h1 className="mt-5 text-center text-2xl font-semibold">어떤 문제를 해결하고 싶으세요?</h1><p className="mx-auto mt-2 max-w-lg text-center text-sm leading-6 text-mute">{starter}</p>
               <section className="mt-7 rounded-xl border border-hairline bg-cloud p-4 md:p-5" aria-labelledby="guided-request-title">
-                <div className="flex items-start justify-between gap-3"><div><h2 id="guided-request-title" className="text-sm font-semibold">처음이라면 여기만 채우세요</h2><p className="mt-1 text-xs leading-5 text-mute">짧게 적어도 Agentown이 역할·그래프·입출력 규칙으로 바꿉니다.</p></div><span className="rounded-pill bg-white px-3 py-1 text-[10px] font-semibold">초보자 추천</span></div>
+                <div className="flex items-start justify-between gap-3"><div><h2 id="guided-request-title" className="text-sm font-semibold">조건이 정해졌다면 더 자세히 적어 주세요</h2><p className="mt-1 text-xs leading-5 text-mute">선택 사항입니다. 아직 모르겠다면 이 칸은 건너뛰고 아래에 원하는 것만 적어 주세요.</p></div><span className="rounded-pill bg-white px-3 py-1 text-[10px] font-semibold">선택 입력</span></div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <GuideField number="1" label="무엇을 받나요?" placeholder="예: 고객 질문과 사내 FAQ" value={guidedDraft.input} onChange={input => setGuidedDraft(current => ({ ...current, input }))} />
                   <GuideField number="2" label="어떻게 처리하나요?" placeholder="예: FAQ를 검색하고 근거를 확인" value={guidedDraft.work} onChange={work => setGuidedDraft(current => ({ ...current, work }))} />

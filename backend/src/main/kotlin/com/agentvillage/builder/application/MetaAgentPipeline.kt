@@ -475,8 +475,7 @@ class StructuredMetaAgentPipeline(
             if (!hasApproval) add(ClarificationQuestion("approval-policy", "approvalPolicy", if (writingAutomation) "작성된 글을 바로 저장할까요, 담당자가 검토하고 승인한 뒤 저장할까요?" else "완성된 결과를 바로 실행할까요, 담당자 검토와 승인 후 실행할까요?"))
             if (!hasDestination) add(ClarificationQuestion("destination", "destination", if (writingAutomation && wordFormatOnly) "Word 문서는 어느 서비스나 폴더에 저장하거나 누구에게 전달할까요?" else if (writingAutomation) "완성된 글은 어느 서비스의 어느 위치에 저장하거나 발행할까요?" else "완성된 결과는 어느 서비스의 어느 위치로 전달하거나 저장할까요?"))
         }
-        val runtimeApprovalExplicit = Regex("(승인|담당자.{0,12}(검토|확인)|관리자.{0,12}(검토|확인)|사람.{0,12}(검토|확인)|사용자.{0,12}(검토|확인))")
-            .containsMatchIn(instruction)
+        val runtimeApprovalExplicit = requestsRuntimeHumanApproval(instruction)
         val generatedGraph = contractSafe.proposal.graphPlan
             ?.let(::normalizeGeneratedInputDefaults)
             ?.let(::normalizeUnresolvedToolConfig)
@@ -860,7 +859,13 @@ class StructuredMetaAgentPipeline(
                         agents = agents + (sourceAgent.key to sourceAgent.copy(outputSchema = sourceAgent.outputSchema + sourceField))
                     }
                     sourceField ?: return@forEach
-                    val replacement = sourceField.copy(name = targetName)
+                    val parallelSources = plan.edges.filter { it.target == edge.target }.flatMap { incoming ->
+                        incoming.bindings.filter { it.targetField == targetName }.mapNotNull { bound ->
+                            boundSourceField(incoming.source, bound.sourceField.removePrefix("request."))
+                        }
+                    }
+                    val replacement = ((if (parallelSources.size > 1) unionBoundContracts(parallelSources) else null)
+                        ?: sourceField).copy(name = targetName)
                     inputs = if (inputs.any { it.name == targetName }) {
                         inputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
                     } else inputs + replacement.copy(required = targetKey !in reused)
@@ -894,6 +899,36 @@ class StructuredMetaAgentPipeline(
                     if (agent.key in reused) agent.copy(inputSchema = agent.inputSchema.map { it.copy(required = false) }) else agent
                 }
             },
+        )
+    }
+
+    /** A fan-in accepts every producer's fields without requiring another producer's private fields. */
+    private fun unionBoundContracts(fields: List<FieldDefinition>): FieldDefinition? {
+        val first = fields.first()
+        if (fields.any { !it.type.equals(first.type, true) || it.itemType != first.itemType || it.format != first.format || it.itemFormat != first.itemFormat }) return null
+        fun children(select: (FieldDefinition) -> List<FieldDefinition>?): List<FieldDefinition>? {
+            val schemas = fields.map { select(it) ?: return null }
+            return schemas.flatten().map { it.name }.distinct().map { name ->
+                val present = schemas.mapNotNull { schema -> schema.firstOrNull { it.name == name } }
+                val merged = unionBoundContracts(present) ?: return null
+                merged.copy(required = present.size == fields.size && present.all { it.required })
+            }
+        }
+        val objects = if (first.type.equals("object", true)) children { it.objectSchema } ?: return null else null
+        val items = if (first.type.equals("array", true) && first.itemType.equals("object", true))
+            children { it.itemSchema } ?: return null else null
+        return first.copy(
+            required = fields.all { it.required },
+            enumValues = if (fields.any { it.enumValues.isNullOrEmpty() }) null else fields.flatMap { it.enumValues.orEmpty() }.distinct(),
+            objectSchema = objects, itemSchema = items,
+            minLength = fields.map { it.minLength }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
+            minItems = fields.map { it.minItems }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
+            maxItems = fields.map { it.maxItems }.let { if (it.any { value -> value == null }) null else it.filterNotNull().maxOrNull() },
+            minimum = fields.map { it.minimum }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
+            maximum = fields.map { it.maximum }.let { if (it.any { value -> value == null }) null else it.filterNotNull().maxOrNull() },
+            itemMinLength = fields.map { it.itemMinLength }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
+            uniqueItems = fields.all { it.uniqueItems == true }.takeIf { it },
+            uniqueBy = first.uniqueBy.takeIf { value -> fields.all { it.uniqueBy == value } },
         )
     }
 

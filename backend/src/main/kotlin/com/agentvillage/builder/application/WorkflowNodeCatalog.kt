@@ -321,11 +321,11 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             if (rejectAddition && !sourceHas && structuredHas) issues += ValidationIssue("MEANING_REQUIREMENT_ADDED", "사용자가 요청하지 않은 '$label' 의미가 구조화 요구사항에 추가되었습니다.")
         }
 
-        compareFacet("Slack", containsAny(source, "slack", "슬랙"), containsAny(structured, "slack", "슬랙"), rejectAddition = true)
+        compareFacet("Slack", requestsIntegration(source, "slack", "슬랙"), requestsIntegration(structured, "slack", "슬랙"), rejectAddition = true)
         compareFacet(
             "Notion/FAQ",
-            containsAny(source, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
-            containsAny(structured, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
+            requestsIntegration(source, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
+            requestsIntegration(structured, "notion", "노션", "faq", "도움말", "지원 문서", "지식 문서"),
             rejectAddition = true,
         )
         compareFacet("분류", containsAny(source, "분류", "카테고리", "classify", "classification"), containsAny(structured, "분류", "카테고리", "classify", "classification"))
@@ -360,18 +360,15 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         ))
     }
 
-    private fun requestsHumanApproval(source: String): Boolean {
-        if (containsAny(source, "승인 없이", "검토 없이", "승인 불필요")) return false
-        if (containsAny(source, "승인", "approval")) return true
+    private fun requestsHumanApproval(source: String): Boolean = requestsRuntimeHumanApproval(source)
 
-        // An Agent reviewing data is ordinary workflow work, not a runtime human gate.
-        // Only treat review/confirmation wording as approval when the request names a
-        // human actor who performs that review before the workflow may continue.
-        return Regex(
-            "(?:(?:사람|사용자|담당자|관리자|운영자|승인자)" +
-                "(?:(?:가|이|은|는|에게)\\s*[^,.!?\\n]{0,20}|(?:의)?\\s*)|(?:human|operator)\\b\\s*)" +
-                "(검토|확인)\\s*(후|하고|한 뒤|를 거쳐|가 끝나면|완료 후)",
-        ).containsMatchIn(source)
+    private fun requestsIntegration(source: String, vararg names: String): Boolean {
+        val boundary = Regex("[.!?\\n,;]|하지만|대신|한 뒤|한 후|하고")
+        val negativeAction = Regex("(?:연동|연결|검색|조회|수집|전송|발송|사용)\\s*(?:은|는|을|를)?\\s*(?:없이|없음|하지\\s*(?:않|마)|불필요|금지|제외)")
+        return names.any { name -> Regex(Regex.escape(name), RegexOption.IGNORE_CASE).findAll(source).any { mention ->
+            val tail = source.substring(mention.range.last + 1).split(boundary, limit = 2).first().take(80)
+            !negativeAction.containsMatchIn(tail) && !Regex("^\\s*(?:은|는|을|를)?\\s*(?:없이|없음|제외)").containsMatchIn(tail)
+        } }
     }
 
     private fun semanticIssues(
@@ -411,13 +408,13 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         val hasClassification = NodeType.AI_CLASSIFY.wireName in types
         val hasGeneration = NodeType.AI_GENERATE.wireName in types
         val hasManualTrigger = types.any { it == NodeType.MANUAL_TRIGGER.wireName || it == NodeType.TEXT_INPUT.wireName }
-        val requestsSlack = containsAny(integrationRequested, "slack", "슬랙")
-        val mentionsNotion = containsAny(integrationRequested, "notion", "노션")
+        val requestsSlack = requestsIntegration(integrationRequested, "slack", "슬랙")
+        val mentionsNotion = requestsIntegration(integrationRequested, "notion", "노션")
         val requestsNotionWrite = mentionsNotion && containsAny(outputAndSteps, "저장", "발행", "페이지 생성", "페이지로", "기록", "올려", "create", "publish", "save")
-        val requestsNotionRead = containsAny(integrationRequested, "faq", "데이터베이스") ||
+        val requestsNotionRead = requestsIntegration(integrationRequested, "faq", "데이터베이스") ||
             (mentionsNotion && containsAny(integrationRequested, "검색", "조회", "읽", "참고", "자료에서", "search", "read"))
         val requestsNotion = requestsNotionRead || requestsNotionWrite
-        val requestsNews = containsAny(integrationRequested, "뉴스", "기사", "news", "rss")
+        val requestsNews = requestsIntegration(integrationRequested, "뉴스", "기사", "news", "rss")
         val requestsSlackInbound = containsAny(trigger, "slack", "슬랙")
         val requestsSlackOutbound = deliveryOutputsAndSteps.any { item ->
             val normalized = item.lowercase()
@@ -735,4 +732,19 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private companion object {
         val RESERVED_BINDING_FIELDS = setOf("context", "request", "result", "results", "output", "success")
     }
+}
+
+/** Shared by design normalization and validation; a draft label is not an execution gate. */
+internal fun requestsRuntimeHumanApproval(instruction: String): Boolean {
+    val source = Regex("미승인|승인(?:되지|받지)\\s*않은|\\bunapproved\\b", RegexOption.IGNORE_CASE)
+        .replace(instruction, "초안")
+    if (listOf("승인 없이", "검토 없이", "승인 불필요").any(source::contains) ||
+        Regex("승인\\s*(?:단계(?:는|가)?\\s*)?필요\\s*없").containsMatchIn(source)) return false
+    if (source.contains("승인") || source.contains("approval", ignoreCase = true)) return true
+    // Review by an AI agent is not human approval. Preserve explicit human review gates.
+    return Regex(
+        "(?:(?:사람|사용자|담당자|관리자|운영자|승인자)" +
+            "(?:(?:가|이|은|는|에게)\\s*[^,.!?\\n]{0,20}|(?:의)?\\s*)|(?:human|operator)\\b\\s*)" +
+            "(검토|확인)\\s*(후|하고|한 뒤|를 거쳐|가 끝나면|완료 후)",
+    ).containsMatchIn(source)
 }

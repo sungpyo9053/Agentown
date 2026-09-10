@@ -11,6 +11,24 @@ import java.util.UUID
 class WorkflowGraphValidatorTest {
     private val validator = WorkflowGraphValidator(WorkflowNodeCatalog(), jacksonObjectMapper())
 
+    @Test fun `excluded integrations are not required but positive requests still are`() {
+        val requirement = AutomationRequirement("입력 의견을 분석한다", "수동", listOf("의견"), listOf("표"),
+            listOf("분석"), emptyList(), emptyList(), false)
+        val proposal = AutomationProposal("분석", "분석", listOf("분석"), emptyList(), emptyList(), "중단")
+        fun dropped(source: String) = validator.validate(graph(false), requirement, proposal, emptyList(), source).issues
+            .filter { it.code == "MEANING_REQUIREMENT_DROPPED" }.map { it.message }
+        listOf("외부 검색·Notion·FAQ 연동 없이 제공된 텍스트만 사용합니다.",
+            "Notion/FAQ 연동 없음. Slack 전송 금지.", "Notion은 사용하지 않고 입력 텍스트만 분석").forEach { source ->
+            assertThat(dropped(source)).describedAs(source).noneMatch { it.contains("Notion/FAQ") || it.contains("Slack") }
+        }
+        assertThat(dropped("Notion에서 FAQ를 조회하고 Slack 전송 없이 파일로 반환"))
+            .anyMatch { it.contains("Notion/FAQ") }.noneMatch { it.contains("Slack") }
+        assertThat(dropped("Notion 연동 없이 Slack으로 전송"))
+            .anyMatch { it.contains("Slack") }.noneMatch { it.contains("Notion/FAQ") }
+        val negative = validator.validate(graph(false), requirement.copy(objective = "Notion/FAQ 연동 없이 의견 분석"), proposal, emptyList())
+        assertThat(negative.issues).anyMatch { it.code == "MEANING_UNREQUESTED_INTEGRATION" && it.message.contains("Notion/FAQ") }
+    }
+
     private fun graph(approval: Boolean = true): WorkflowGraph {
         val nodes = mutableListOf(
             WorkflowNode("trigger", "slack.new_message.mock", "trigger", NodePosition(0.0, 0.0)),
@@ -253,12 +271,16 @@ class WorkflowGraphValidatorTest {
             "사용자 불편 분석, 제품 후보 제안, 독립 검토 후 종합하는 에이전트 팀",
             "사용자 요구를 분석하고 독립 검토 후 종합한다.",
             "담당자 의견 수집, 에이전트 확인 후 결과를 반환한다.",
+            "승인되지 않은 제안은 확정 사실과 구분합니다.",
+            "미승인 권고안으로 표시하고 독립 검수해서 파일로 만들어줘.",
+            "Label suggestions as unapproved drafts.",
+            "사람의 실행 승인 단계는 필요 없습니다. 미승인 제안으로 표시합니다.",
         ).forEach { source ->
             assertThat(validator.validate(graph(approval = false), requirement, proposal, emptyList(), source).issues)
                 .describedAs(source)
                 .noneMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }
         }
-        listOf("담당자 검토 후 진행", "사용자의 확인 후 진행", "관리자가 결과를 검토한 뒤 진행", "human review approval", "operator 확인 후 진행").forEach { source ->
+        listOf("담당자 검토 후 진행", "사용자의 확인 후 진행", "관리자가 결과를 검토한 뒤 진행", "human review approval", "operator 확인 후 진행", "미승인 제안으로 작성한 뒤 담당자 승인 후 발송").forEach { source ->
             assertThat(validator.validate(graph(approval = false), requirement, proposal, emptyList(), source).issues)
                 .describedAs(source)
                 .anyMatch { it.code == "MEANING_REQUIREMENT_DROPPED" && it.message.contains("사람 승인") }

@@ -18,6 +18,25 @@ class AgentDevelopmentFlowRoundTripIntegrationTest : IntegrationTestSupport() {
     @Autowired lateinit var identities: IdentityService
 
     @Test
+    fun `chat correction of an unapproved design remains an unpublished reviewable draft`() {
+        val suffix = UUID.randomUUID().toString().take(8)
+        val owner = identities.register(RegisterUserCommand("revise-$suffix@example.com", "password123", "revise_$suffix", "수정 검증"))
+        val created = service.createConversation(owner.id, "revise-session-$suffix", BuilderConversationPurpose.AGENT_DEVELOPMENT)
+        val original = service.sendMessage(owner.id, created.conversationId,
+            "사용자 입력을 분석해 구조화된 요약을 반환하는 에이전트를 만들어줘.", "revise-design-$suffix")
+        assertThat(original.currentVersionId).isNull()
+        assertThat(original.status).isEqualTo(com.agentvillage.builder.domain.WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        val corrected = service.sendMessage(owner.id, created.conversationId,
+            "기존 팀을 유지하되 사람 승인 없이 제공된 원문 근거와 제안을 구분해서 반환해줘.", "revise-message-$suffix")
+        assertThat(corrected.currentVersionId).isNull()
+        assertThat(corrected.status).isEqualTo(com.agentvillage.builder.domain.WorkflowStatus.WAITING_DESIGN_APPROVAL)
+        assertThat(corrected.messages.map { it.content }).anyMatch { it.contains("원문 근거와 제안을 구분") }
+        val approved = service.decideDesign(owner.id, corrected.workflowId, true, "revise-approve-$suffix")
+        assertThat(approved.currentVersionId).isNotNull()
+        assertThat(approved.versions).hasSize(1)
+    }
+
+    @Test
     fun `exported TFrameX flow imports as a validated immutable version`() {
         val suffix = UUID.randomUUID().toString().take(8)
         val owner = identities.register(RegisterUserCommand("flow-$suffix@example.com", "password123", "flow_$suffix", "Flow 검증"))

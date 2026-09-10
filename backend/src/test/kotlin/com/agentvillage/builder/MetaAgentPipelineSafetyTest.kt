@@ -539,6 +539,7 @@ class MetaAgentPipelineSafetyTest {
         )
         fun result(value: String) = FieldDefinition("results", "array", true, "results", itemType = "object", itemSchema = listOf(
             FieldDefinition("reviewType", "string", true, "type", enumValues = listOf(value)),
+            FieldDefinition("${value}Evidence", "string", true, "producer-specific evidence"),
         ))
         fun agent(key: String, input: List<FieldDefinition>, output: List<FieldDefinition>) = AgentDefinition(
             key, key, key, input, output, listOf("work"), listOf("do not invent"), listOf("evidence"),
@@ -567,8 +568,21 @@ class MetaAgentPipelineSafetyTest {
 
         val normalized = pipeline.normalizeBoundAgentSchemas(bundle)
 
-        assertThat(normalized.agentDefinitions.last().inputSchema.single().itemSchema!!.single().enumValues)
+        val joined = normalized.agentDefinitions.last().inputSchema.single().itemSchema!!
+        assertThat(joined.first { it.name == "reviewType" }.enumValues)
             .containsExactlyInAnyOrder("first", "second")
+        assertThat(joined.map { it.name }).containsExactlyInAnyOrder("reviewType", "firstEvidence", "secondEvidence")
+        assertThat(joined.filter { it.name.endsWith("Evidence") }).allMatch { !it.required }
+        assertThat(normalized.agentDefinitions.first().outputSchema.single().itemSchema)
+            .isEqualTo(bundle.agentDefinitions.first().outputSchema.single().itemSchema)
+
+        val objectBundle = bundle.copy(agentDefinitions = bundle.agentDefinitions.map { definition ->
+            fun asObject(field: FieldDefinition) = field.copy(type = "object", objectSchema = field.itemSchema, itemType = null, itemSchema = null)
+            definition.copy(inputSchema = definition.inputSchema.map(::asObject), outputSchema = definition.outputSchema.map(::asObject))
+        })
+        val objectFields = pipeline.normalizeBoundAgentSchemas(objectBundle).agentDefinitions.last().inputSchema.single().objectSchema!!
+        assertThat(objectFields.map { it.name }).containsExactlyInAnyOrder("reviewType", "firstEvidence", "secondEvidence")
+        assertThat(objectFields.filter { it.name.endsWith("Evidence") }).allMatch { !it.required }
     }
 
     @Test
@@ -755,7 +769,7 @@ class MetaAgentPipelineSafetyTest {
         val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
 
         val result = pipeline.generateDesign(
-            context, "세 입력을 각각 검토 후 통합해줘", StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
+            context, "세 입력을 각각 검토 후 통합해줘. 승인되지 않은 제안은 미승인 권고안이라고 표시해줘.", StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
         )
 
         assertThat(result.proposal.graphPlan!!.nodes).noneMatch { it.nodeType == "human.approval" }

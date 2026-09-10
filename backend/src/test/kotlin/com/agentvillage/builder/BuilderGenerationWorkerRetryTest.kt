@@ -73,6 +73,21 @@ class BuilderGenerationWorkerRetryTest {
         verify(builder, never()).recordGenerationFailure(any(), any(), any(), any(), any())
     }
 
+    @Test
+    fun `inapplicable requests fail the job without destroying a valid workflow`() {
+        val ownerId = UUID.randomUUID()
+        val job = job()
+        whenever(progress.requireJob(job.id)).thenReturn(job)
+        whenever(builder.sendMessage(ownerId, job.conversationId, job.instruction, job.idempotencyKey, job.id))
+            .thenThrow(com.agentvillage.common.exception.ConflictException("BUILDER_MESSAGE_NOT_APPLICABLE", "현재 단계에서는 처리할 수 없습니다."))
+
+        BuilderGenerationWorker(builder, progress, usageLimiter).execute(BuilderGenerationRequested(ownerId, job.id))
+
+        verify(progress).fail(job.id, "BUILDER_MESSAGE_NOT_APPLICABLE", "현재 단계에서는 처리할 수 없습니다.")
+        verify(builder, never()).recordGenerationFailure(any(), any(), any(), any(), any())
+        verify(progress, never()).complete(any())
+    }
+
     private fun job() = BuilderGenerationJob(
         workspaceId = UUID.randomUUID(),
         conversationId = UUID.randomUUID(),

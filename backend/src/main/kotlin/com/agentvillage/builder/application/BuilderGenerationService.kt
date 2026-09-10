@@ -151,7 +151,9 @@ class BuilderGenerationWorker(
                 if (code == "BUILDER_GENERATION_CANCELLED") progress.cancel(event.jobId)
                 else {
                     usageLimiter.releaseFailedClaim(event.ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
-                    builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
+                    if (code !in setOf("BUILDER_MESSAGE_NOT_APPLICABLE", "INVALID_WORKFLOW_STATE", "WORKFLOW_STOPPED")) {
+                        builder.recordGenerationFailure(event.ownerId, job.conversationId, job.instruction, job.idempotencyKey, exception.message ?: "업무 분석에 실패했습니다.")
+                    }
                     progress.fail(event.jobId, code, exception.message ?: "업무 분석에 실패했습니다.")
                 }
                 return
