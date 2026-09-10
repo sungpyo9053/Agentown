@@ -6,7 +6,7 @@ import ts from "typescript";
 const source = readFileSync(new URL("../src/lib/packageNavigation.ts", import.meta.url), "utf8");
 const fixtureModule = { exports: {} };
 new Function("exports", ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText)(fixtureModule.exports);
-const { packageNavigation, requiresLocalPackage } = fixtureModule.exports;
+const { packageNavigation, requiresLocalPackage, selectedSessionSearch } = fixtureModule.exports;
 test("local-only execution is selected by capability source and leaves hosted packages unchanged", () => {
   assert.equal(requiresLocalPackage(), false);
   assert.equal(requiresLocalPackage([{ source: "SERVER_CATALOG" }]), false);
@@ -19,4 +19,13 @@ test("downloaded entry chooses the explicit session and output panel", () => {
 });
 test("untrusted navigation cannot choose an arbitrary API path", () => {
   for (const value of ["", "?session=../../admin", "?session=https://evil.example", "?session=bad"]) assert.equal(packageNavigation(value), undefined);
+});
+test("switching or creating a session cannot reopen the previous package after reload", () => {
+  const previous = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const search = selectedSessionSearch(`?session=${previous}&panel=output&source=package`, id);
+  assert.deepEqual(packageNavigation(search), { sessionId: id, output: false });
+  assert.equal(new URLSearchParams(search).get("source"), "package");
+  assert.equal(packageNavigation(selectedSessionSearch(search)), undefined);
+  assert.deepEqual(packageNavigation(selectedSessionSearch(`?session=${id}&panel=output`, id)), { sessionId: id, output: true });
+  assert.throws(() => selectedSessionSearch("", "../../admin"));
 });

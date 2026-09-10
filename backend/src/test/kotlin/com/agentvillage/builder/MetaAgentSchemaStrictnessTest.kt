@@ -33,12 +33,38 @@ class MetaAgentSchemaStrictnessTest {
 
     @Test
     fun `field definitions expose integer and optional array cardinality constraints`() {
-        val field = schema()["\$defs"]["fields"]["items"]
+        val variants = schema()["\$defs"]["fields"]["items"]["anyOf"]
+        val field = variants.single { it["properties"]["type"]["enum"].any { type -> type.asText() == "array" } }
 
-        assertThat(field["properties"]["type"]["enum"].map(JsonNode::asText)).contains("integer")
+        assertThat(variants.flatMap { it["properties"]["type"]["enum"].map(JsonNode::asText) })
+            .containsExactlyInAnyOrder("string", "boolean", "number", "integer", "object", "array")
         assertThat(field["properties"].fieldNames().asSequence().toList()).contains("minItems", "maxItems", "itemType", "itemSchema")
         assertThat(field["required"].map(JsonNode::asText)).contains("minItems", "maxItems", "itemType", "itemSchema")
         assertThat(field["properties"]["itemSchema"]["anyOf"].first()["\$ref"].asText()).isEqualTo("#/\$defs/fields")
+    }
+
+    @Test
+    fun `typed field contracts omit irrelevant nulls without dropping applicable constraints`() {
+        val variants = schema()["\$defs"]["fields"]["items"]["anyOf"]
+        val expected = mapOf(
+            "string" to setOf("format", "enumValues", "minLength"), "boolean" to emptySet(),
+            "number" to setOf("minimum", "maximum"), "integer" to setOf("minimum", "maximum"),
+            "object" to setOf("objectSchema"),
+            "array" to setOf("minItems", "maxItems", "itemType", "itemSchema", "itemFormat", "itemMinLength", "uniqueItems", "uniqueBy"),
+        )
+        variants.forEach { variant ->
+            variant["properties"]["type"]["enum"].forEach { type ->
+                assertThat(variant["properties"].fieldNames().asSequence().toSet())
+                    .isEqualTo(setOf("name", "type", "required", "description") + expected.getValue(type.asText()))
+            }
+        }
+        val parsed = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper().readValue(
+            """{"name":"sourceText","type":"string","required":true,"description":"원문","format":null,"enumValues":null,"minLength":1}""",
+            com.agentvillage.builder.domain.FieldDefinition::class.java,
+        )
+        assertThat(parsed.minLength).isEqualTo(1)
+        assertThat(parsed.minItems).isNull()
+        assertThat(parsed.itemSchema).isNull()
     }
 
     @Test

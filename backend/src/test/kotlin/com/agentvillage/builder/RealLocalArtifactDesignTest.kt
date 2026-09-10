@@ -38,19 +38,26 @@ class RealLocalArtifactDesignTest {
         val instruction = "사용자가 제공한 고객 의견을 분석하고 독립 검수한 뒤 $deliverable 을 만드는 반복용 팀을 다운로드해 로컬에서 실행하고 싶다. " +
             "대상은 제품 의사결정자다. 입력은 sourceText 문자열 하나. 웹 조사, 외부 전송, Notion/FAQ 연동은 하지 않는다. " +
             "근거 없는 빈도·인과·수치를 만들지 않고 제안과 사실을 구분한다. 실제 파일 제작 노드는 local.artifact.render(format=$format)을 사용한다."
+        val started = System.nanoTime()
         var bundle = pipeline.generateDesign(context, instruction, StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT, userInstruction = instruction)
+        val initialMillis = (System.nanoTime() - started) / 1_000_000
         fun validate() = validator.validate(translator.translate(context.workflowId, bundle.proposal), bundle.requirement,
             bundle.proposal, bundle.agentDefinitions, instruction)
         var validation = validate()
-        val root = Path.of("build/reports/real-local-artifact-design/$format")
+        val root = Path.of(System.getenv("REAL_LOCAL_ARTIFACT_REPORT") ?: "build/reports/real-local-artifact-design/$format")
         Files.createDirectories(root)
         mapper.writerWithDefaultPrettyPrinter().writeValue(root.resolve("initial.json").toFile(), bundle)
-        if (!validation.valid) {
+        val initialValid = validation.valid
+        if (!initialValid) {
             bundle = pipeline.generateDesign(context, instruction, StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT,
                 validation.issues, bundle, instruction)
             validation = validate()
         }
         mapper.writerWithDefaultPrettyPrinter().writeValue(root.resolve("validation.json").toFile(), validation)
+        mapper.writerWithDefaultPrettyPrinter().writeValue(root.resolve("timing.json").toFile(), mapOf(
+            "initialMillis" to initialMillis, "totalMillis" to (System.nanoTime() - started) / 1_000_000,
+            "initialValid" to initialValid, "finalValid" to validation.valid,
+        ))
         mapper.writerWithDefaultPrettyPrinter().writeValue(root.resolve("design-bundle.json").toFile(), bundle)
         assertThat(validation.issues).isEmpty()
         assertThat(bundle.clarificationQuestions).isEmpty()
