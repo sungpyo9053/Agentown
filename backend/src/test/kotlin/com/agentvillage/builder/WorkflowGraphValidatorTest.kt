@@ -124,6 +124,8 @@ class WorkflowGraphValidatorTest {
             "MEANING_DECISION_MISSING",
             "MEANING_UNREQUESTED_INTEGRATION",
         )
+        assertThat(result.issues.filter { it.message.contains("Notion/FAQ") }.map { it.nodeId })
+            .contains("search")
     }
 
     @Test fun `dynamic manual classification graph matches its requirement`() {

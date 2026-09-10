@@ -23,6 +23,34 @@ import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
     @Test
+    fun `input contracts survive explicit quality and normalization tool chains`() {
+        val source = FieldDefinition("records", "array", true, "source records", minItems = 1,
+            itemType = "object", itemSchema = listOf(FieldDefinition("text", "string", true, "original text")))
+        val wrong = FieldDefinition("record", "array", true, "records to evaluate", minItems = 1, maxItems = 1, itemType = "string")
+        val worker = AgentDefinition("worker", "Worker", "Evaluate records", listOf(wrong),
+            listOf(FieldDefinition("result", "string", true, "result")), emptyList(), emptyList(), emptyList())
+        val plan = WorkflowGraphPlan("input", listOf(
+            WorkflowNodePlan("input", "manual.trigger", "Input"),
+            WorkflowNodePlan("normalize", "data.normalize", "Normalize"),
+            WorkflowNodePlan("quality", "quality.check", "Quality"),
+            WorkflowNodePlan("worker", "ai.generate", "Worker", mapOf("agentKey" to "worker")),
+        ), listOf(
+            WorkflowEdgePlan("a", "input", "normalize", bindings = listOf(WorkflowFieldBinding("records", "records"))),
+            WorkflowEdgePlan("b", "normalize", "quality", bindings = listOf(WorkflowFieldBinding("records", "validatedRecords"))),
+            WorkflowEdgePlan("c", "quality", "worker", bindings = listOf(WorkflowFieldBinding("validatedRecords", "record"))),
+        ))
+        val bundle = MetaAgentDesignBundle(
+            AutomationRequirement("work", "manual", listOf("records"), listOf("result"), listOf("work"), emptyList(), emptyList(), false),
+            emptyList(), AutomationProposal("work", "work", listOf("work"), emptyList(), emptyList(), "stop", graphPlan = plan, inputSchema = listOf(source)),
+            listOf(worker), emptyList(),
+        )
+        val normalized = pipeline().normalizeBoundAgentSchemas(bundle)
+        assertThat(normalized.agentDefinitions.single().inputSchema.single())
+            .isEqualTo(source.copy(name = "record", description = wrong.description))
+        assertThat(normalized.proposal.graphPlan).isEqualTo(plan)
+    }
+
+    @Test
     fun `known unavailable file writes fail before any model generation`() {
         val model = mock<MetaAgentModel>()
         val mapper = jacksonObjectMapper()

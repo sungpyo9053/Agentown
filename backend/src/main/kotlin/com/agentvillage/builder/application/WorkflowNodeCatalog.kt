@@ -428,7 +428,12 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (requestsClassification && !hasClassification) mismatch("MEANING_DECISION_MISSING", "요구사항의 분류 판단 단계가 그래프에 없습니다.")
         if (requestsGeneration && !hasGeneration) mismatch("MEANING_GENERATION_MISSING", "요구사항의 생성 단계가 그래프에 없습니다.")
         if (!requestsSlack && (hasSlackTrigger || hasSlackReply)) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Slack 연동이 그래프에 추가되었습니다.")
-        if (!requestsNotion && hasNotion) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Notion/FAQ 연동이 그래프에 추가되었습니다.")
+        if (!requestsNotion && hasNotion) graph.nodes.filter { it.nodeType in setOf(
+            NodeType.NOTION_SEARCH_MOCK.wireName, NodeType.NOTION_READ_PAGE_MOCK.wireName,
+            NodeType.NOTION_CREATE_PAGE.wireName, NodeType.KNOWLEDGE_SEARCH_MOCK.wireName,
+        ) }.forEach { node ->
+            mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 Notion/FAQ 연동이 그래프에 추가되었습니다.", node.id)
+        }
         if (!requestsNews && hasNews) mismatch("MEANING_UNREQUESTED_INTEGRATION", "요구하지 않은 뉴스 수집 단계가 그래프에 추가되었습니다.")
         if (!requestsClassification && hasClassification) mismatch("MEANING_UNREQUESTED_DECISION", "요구하지 않은 분류 단계가 그래프에 추가되었습니다.")
         if (!requestsGeneration && hasGeneration) mismatch("MEANING_UNREQUESTED_GENERATION", "요구하지 않은 생성 단계가 그래프에 추가되었습니다.")

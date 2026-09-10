@@ -102,6 +102,28 @@ class CodexCliMetaAgentModelTest {
     }
 
     @Test
+    fun `intake discloses unavailable research and document tools before detailed planning`() {
+        whenever(runner.hasSharedAuth()).thenReturn(true)
+        whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")
+        model.generate(context, "define_agent_development_problem", mapOf("instruction" to "주제만 넣으면 보고서 ppt 만들어줘"))
+        val prompt = argumentCaptor<String>()
+        verify(runner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
+        assertThat(prompt.firstValue).contains("PPTX/DOCX/PDF 파일 제작 도구는 아직 연결되어 있지 않다", "분량·대상 같은 세부 질문보다 먼저", "동의하는지 확인", "몰래 바꾸거나")
+    }
+
+    @Test
+    fun `local evidence analysis is not an implicit external knowledge integration`() {
+        whenever(runner.hasSharedAuth()).thenReturn(true)
+        whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")
+        model.generate(context, "builder_design_bundle", mapOf(
+            "designMode" to "AGENT_DEVELOPMENT", "instruction" to "제공한 자료 중심으로 분석하고 독립 검수해줘",
+        ))
+        val prompt = argumentCaptor<String>()
+        verify(runner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
+        assertThat(prompt.firstValue).contains("노드 카탈로그는 사용 가능한 기능 목록이지 기본 설계가 아니다", "knowledge.search.mock이나 Notion 연동이 아니다")
+    }
+
+    @Test
     fun `repair prompt is compact and preserves only trusted correction contracts`() {
         whenever(runner.hasSharedAuth()).thenReturn(true)
         whenever(runner.executeWithSharedAuth(eq("gpt-test"), any(), eq(context.jobId), any())).thenReturn("{}")
@@ -124,6 +146,7 @@ class CodexCliMetaAgentModelTest {
             "반복 순번이나 슬롯용 임의 필드는 제거한다",
             "INVALID_AGENT_OUTPUT_SCHEMA",
             "reason 필드가 누락되었습니다.",
+            "MEANING_UNREQUESTED_INTEGRATION", "필수 설정을 임의로 채워 통과시키지 않는다", "사용자 명시 연동은 삭제하지 않는다",
         )
         assertThat(prompt.firstValue).doesNotContain("Business Process Analyst", "Guide Designer")
         assertThat(prompt.firstValue.length).isLessThan(4_000)

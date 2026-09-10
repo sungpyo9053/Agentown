@@ -4,6 +4,7 @@ import com.agentvillage.builder.application.TFrameXDefinitionCompiler
 import com.agentvillage.builder.domain.*
 import com.agentvillage.common.exception.BadRequestException
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -17,9 +18,72 @@ class TFrameXDefinitionCompilerTest {
     private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
+    fun `intermediate quality checks require only the current stage of a reused agent`() {
+        val fields = listOf("draft", "finalReport").map { FieldDefinition(it, "string", true, it) }
+        val writer = AgentDefinition("writer", "Writer", "Write and finalize", emptyList(), fields,
+            emptyList(), emptyList(), emptyList())
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "draft", nodes = listOf(
+            WorkflowNode("draft", "ai.generate", "Draft", NodePosition(0.0, 0.0), mapOf("agentKey" to "writer")),
+            WorkflowNode("check", "quality.check", "Check", NodePosition(0.0, 0.0)),
+            WorkflowNode("final", "ai.generate", "Finalize", NodePosition(0.0, 0.0), mapOf("agentKey" to "writer")),
+            WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("draft-check", "draft", "check", bindings = mapOf("draft" to "draft")),
+            WorkflowEdge("check-final", "check", "final", bindings = mapOf("draft" to "draft")),
+            WorkflowEdge("final-end", "final", "end", bindings = mapOf("finalReport" to "finalReport")),
+        ))
+        val definition = compiler.compile("stage-contract", graph, listOf(writer), emptyMap(), listOf(fields.last()))
+        val agents = definition["agents"] as List<Map<String, Any?>>
+        val quality = agents.single { it["toolName"] == "quality.check" }
+        assertThat((quality["inputSchema"] as List<FieldDefinition>).map { it.name }).containsExactly("draft")
+        assertThat((quality["outputSchema"] as List<FieldDefinition>).map { it.name }).containsExactly("draft", "qualityPassed")
+        assertThat(agents.single { it["name"] == "writer__final" }["outputSchema"]).isEqualTo(listOf(fields.last()))
+    }
+
+    @Test
+    fun `later consumers bind individual parallel artifacts even after join aliases`() {
+        fun agent(key: String, inputs: List<String>, outputs: List<String>) = AgentDefinition(
+            key, key, key, inputs.map { FieldDefinition(it, "string", true, it) },
+            outputs.map { FieldDefinition(it, "string", true, it) }, emptyList(), emptyList(), emptyList(),
+        )
+        val worker = agent("worker", listOf("source"), listOf("finding"))
+        val review = agent("reviewer", listOf("left", "right"), listOf("review"))
+        val final = agent("final", listOf("first", "second", "review"), listOf("answer"))
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "start", nodes = listOf(
+            WorkflowNode("start", "manual.trigger", "start", NodePosition(0.0, 0.0)),
+            WorkflowNode("a", "ai.generate", "a", NodePosition(0.0, 0.0), mapOf("agentKey" to "worker")),
+            WorkflowNode("b", "ai.generate", "b", NodePosition(0.0, 0.0), mapOf("agentKey" to "worker")),
+            WorkflowNode("review", "ai.generate", "review", NodePosition(0.0, 0.0), mapOf("agentKey" to "reviewer")),
+            WorkflowNode("final", "ai.generate", "final", NodePosition(0.0, 0.0), mapOf("agentKey" to "final")),
+            WorkflowNode("end", "workflow.end", "end", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("s-a", "start", "a", bindings = mapOf("source" to "source")),
+            WorkflowEdge("s-b", "start", "b", bindings = mapOf("source" to "source")),
+            WorkflowEdge("a-r", "a", "review", bindings = mapOf("left" to "finding")),
+            WorkflowEdge("b-r", "b", "review", bindings = mapOf("right" to "finding")),
+            WorkflowEdge("r-f", "review", "final", bindings = mapOf("review" to "review")),
+            WorkflowEdge("a-f", "a", "final", bindings = mapOf("first" to "finding")),
+            WorkflowEdge("b-f", "b", "final", bindings = mapOf("second" to "finding")),
+            WorkflowEdge("f-e", "final", "end", bindings = mapOf("answer" to "answer")),
+        ))
+        val compiled = compiler.compile("provenance", graph, listOf(worker, review, final), emptyMap(),
+            workflowInputSchema = listOf(FieldDefinition("source", "string", true, "source")))
+        val agents = compiled["agents"] as List<Map<String, Any?>>
+        val firstBindings = agents.single { it["name"] == "worker__a" }["inputBindings"] as List<Map<String, String>>
+        assertThat(firstBindings).contains(mapOf("sourceField" to "request.source", "targetField" to "source"))
+        val finalBindings = agents.single { it["name"] == "final__final" }["inputBindings"] as List<Map<String, String>>
+        assertThat(finalBindings).contains(
+            mapOf("sourceField" to "_agentownTaskOutputs.worker__a.finding", "targetField" to "first"),
+            mapOf("sourceField" to "_agentownTaskOutputs.worker__b.finding", "targetField" to "second"),
+        )
+    }
+
+    @Test
     fun `terminal agent emits the complete workflow contract even when end binding selects one field`() {
         val finalFields = listOf(
-            FieldDefinition("review", "string", true, "review evidence"),
+            FieldDefinition("review", "object", true, "review evidence", objectSchema = listOf(
+                FieldDefinition("items", "array", false, "items", minItems = 0, maxItems = 2, itemType = "string", itemMinLength = 1),
+            )),
             FieldDefinition("finalPlan", "string", true, "final plan"),
         )
         val agent = AgentDefinition("writer", "Writer", "Synthesize", emptyList(), finalFields,
@@ -35,7 +99,10 @@ class TFrameXDefinitionCompilerTest {
         val compiled = compiler.compile("final-contract", graph, listOf(agent), emptyMap(), finalFields)
         val terminal = (compiled["agents"] as List<Map<String, Any?>>).single()
         assertThat(terminal["outputSchema"]).isEqualTo(compiled["finalOutputSchema"])
-        assertThat(terminal["systemPrompt"].toString()).contains(mapper.writeValueAsString(finalFields))
+        val promptSchema = terminal["systemPrompt"].toString().lineSequence().last { it.startsWith("[") }
+        assertThat(mapper.readValue<List<FieldDefinition>>(promptSchema)).isEqualTo(finalFields)
+        assertThat(promptSchema).doesNotContain(":null")
+        assertThat(mapper.writeValueAsString(finalFields)).contains(":null")
         assertThat(terminal["preserveInput"]).isEqualTo(false)
     }
 

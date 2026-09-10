@@ -793,6 +793,27 @@ class StructuredMetaAgentPipeline(
             node.config["agentKey"]?.toString()?.let { node.id to it }
         }.toMap()
         var agents = bundle.agentDefinitions.associateBy { it.key }
+        // These tools preserve explicitly bound data; resolve its producer contract through them.
+        // Do not guess a contract for computed tool fields or ambiguous fan-in.
+        fun boundSourceField(nodeId: String, fieldName: String, visited: Set<String> = emptySet()): FieldDefinition? {
+            if (nodeId in visited) return null
+            val node = nodesById[nodeId] ?: return null
+            val key = agentKeyByNode[nodeId]
+            if (key != null) return agents[key]?.outputSchema?.firstOrNull { it.name == fieldName }
+            if (node.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) {
+                return bundle.proposal.inputSchema.firstOrNull { it.name == fieldName }
+            }
+            if (node.nodeType !in setOf(NodeType.QUALITY_CHECK.wireName, NodeType.DATA_NORMALIZE.wireName,
+                    NodeType.DATA_DEDUPLICATE.wireName, NodeType.CONDITION_BRANCH.wireName)) return null
+            val candidates = plan.edges.filter { it.target == nodeId }.flatMap { edge ->
+                edge.bindings.filter { it.targetField == fieldName }.mapNotNull { binding ->
+                    val source = binding.sourceField.removePrefix("request.")
+                    if (source.contains('.') || source.contains('[')) null
+                    else boundSourceField(edge.source, source, visited + nodeId)?.copy(name = fieldName)
+                }
+            }
+            return candidates.singleOrNull()
+        }
         val reused = agentKeyByNode.values.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
         repeat(bundle.agentDefinitions.size.coerceAtLeast(1)) {
             plan.edges.forEach { edge ->
@@ -805,7 +826,7 @@ class StructuredMetaAgentPipeline(
                     val sourceName = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
                     val targetName = binding.targetField.removePrefix("request.").substringBefore('.').substringBefore('[')
                     val sourceAgent = sourceKey?.let(agents::get)
-                    var sourceField = sourceAgent?.outputSchema?.firstOrNull { it.name == sourceName }
+                    var sourceField = boundSourceField(edge.source, sourceName)
                         ?: bundle.proposal.inputSchema.firstOrNull { field ->
                             nodesById[edge.source]?.nodeType in setOf(
                                 NodeType.MANUAL_TRIGGER.wireName,

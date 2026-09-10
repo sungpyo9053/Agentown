@@ -45,6 +45,22 @@ def test_parallel_join_preserves_pre_split_analysis_but_not_unbound_branch_mutat
     assert value["priorAnalysis"] == {"evidence": "verified before split"}
     assert value["request"] == original
     assert (value["a"], value["b"]) == ("a", "b")
+    rebound = json.loads(_apply_input_bindings(result.current_message.content, [
+        {"sourceField": "_agentownTaskOutputs.a.part", "targetField": "firstWorkerResult"},
+        {"sourceField": "_agentownTaskOutputs.b.part", "targetField": "secondWorkerResult"},
+    ]))
+    assert (rebound["firstWorkerResult"], rebound["secondWorkerResult"]) == ("a", "b")
+
+
+def test_explicit_original_input_binding_survives_a_same_named_intermediate_output():
+    records = ["original A", "original B", "original C"]
+    rebound = json.loads(_apply_input_bindings(json.dumps({
+        "records": "classified summary", "request": {"records": records},
+    }), [{"sourceField": "request.records", "targetField": "records"}], {
+        "_agentownParallelIndex": 1, "_agentownParallelSize": 2,
+    }))
+    assert rebound["records"] == records
+    assert rebound["_agentownAssignedInput"]["records"] == records
 
 
 def test_parallel_scope_preserves_unpartitioned_lists_when_worker_count_differs():

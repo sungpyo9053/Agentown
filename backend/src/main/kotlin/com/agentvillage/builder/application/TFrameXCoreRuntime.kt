@@ -12,6 +12,7 @@ import com.agentvillage.builder.domain.NodePosition
 import java.util.UUID
 import com.agentvillage.common.exception.BadRequestException
 import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.MediaType
@@ -30,6 +31,7 @@ data class TFrameXRuntimeResult(
 
 @Component
 class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
+    private val promptMapper = mapper.copy().setSerializationInclusion(JsonInclude.Include.NON_NULL)
     private val passThroughTypes = setOf(
         NodeType.MANUAL_TRIGGER.wireName,
         NodeType.TEXT_INPUT.wireName,
@@ -249,7 +251,14 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         }
         outputSchemaFor = { node ->
             when {
-                node.nodeType in aiTypes -> definitions[node.config["agentKey"]?.toString()]?.outputSchema.orEmpty()
+                node.nodeType in aiTypes -> {
+                    val declared = definitions[node.config["agentKey"]?.toString()]?.outputSchema.orEmpty()
+                    val bound = outgoing[node.id].orEmpty().flatMap { it.bindings.values }
+                        .map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
+                        .filterNot { it in setOf("context", "error") }.toSet()
+                    if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) finalOutputSchema
+                    else declared.filter { it.name in bound }.ifEmpty { declared }
+                }
                 isTerminalExecutable(node) && finalOutputSchema != null -> finalOutputSchema
                 node.nodeType == NodeType.DATA_CSV_COMPARE.wireName -> listOf(
                     FieldDefinition("changedRows", "array", true, "deterministic changed rows"),
@@ -279,6 +288,7 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                 node.id to (index + 1 to layer.size)
             }
         }.toMap()
+        val layerIndexByNode = executableLayers.flatMapIndexed { index, layer -> layer.map { it.id to index } }.toMap()
         fun boundWorkflowInputDefaults(node: WorkflowNode): Map<String, Any?> = incomingEdges[node.id].orEmpty()
             .filter { edge -> nodesById[edge.source]?.nodeType in passThroughTypes }
             .flatMap { edge -> edge.bindings.entries }
@@ -291,7 +301,16 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             val inputBindings = incomingEdges[node.id].orEmpty().flatMap { edge ->
                 edge.bindings.map { (targetField, sourceField) ->
                     val targetRoot = indexedArrayRoot(targetField)
-                    val runtimeSourceField = if (parallelScopeByNode[edge.source] != null) targetRoot else sourceField
+                    val externalSource = nodesById[edge.source]?.nodeType in passThroughTypes &&
+                        workflowInputSchema.any { it.name == sourceField.substringBefore('.').substringBefore('[') }
+                    val runtimeSourceField = when {
+                        externalSource -> "request.$sourceField"
+                        parallelScopeByNode[edge.source] != null &&
+                            layerIndexByNode[node.id] != layerIndexByNode.getValue(edge.source) + 1 ->
+                            "_agentownTaskOutputs.${effectiveByNode.getValue(edge.source)}.$sourceField"
+                        parallelScopeByNode[edge.source] != null -> targetRoot
+                        else -> sourceField
+                    }
                     mapOf("sourceField" to runtimeSourceField, "targetField" to targetRoot)
                 }
             }.distinct()
@@ -304,14 +323,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     inputBindings.map { it.getValue("targetField").substringBefore('.').substringBefore('[') } +
                         inputDefaults.keys.filterNot { it.startsWith("_agentown") }
                     ).toSet()
-                val activeOutputNames = outgoing[node.id].orEmpty().flatMap { edge ->
-                    edge.bindings.values.map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
-                }.filterNot { it in setOf("context", "error") }.toSet()
                 val nodeSource = source.copy(
                     inputSchema = source.inputSchema.filter { it.name in activeInputNames || it.required }.ifEmpty { source.inputSchema },
-                    outputSchema = if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) {
-                        finalOutputSchema
-                    } else source.outputSchema.filter { it.name in activeOutputNames }.ifEmpty { source.outputSchema },
+                    outputSchema = outputSchemaFor(node),
                 )
                 val runtimeSource = if (parallelScopeByNode[node.id] == null) nodeSource else nodeSource.copy(
                     outputSchema = nodeSource.outputSchema.map { field ->
@@ -666,9 +680,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
         appendLine("필요 근거:")
         agent.evidenceRequirements.forEach { appendLine("- $it") }
         appendLine("입력 계약(JSON, 중첩 itemSchema 포함):")
-        appendLine(mapper.writeValueAsString(agent.inputSchema))
+        appendLine(promptMapper.writeValueAsString(agent.inputSchema))
         appendLine("반드시 JSON 객체만 반환하고 아래 출력 계약 전체를 재귀적으로 준수한다. itemSchema의 필수 필드를 포함하고 선언되지 않은 필드는 반환하지 않는다:")
-        appendLine(mapper.writeValueAsString(agent.outputSchema))
+        appendLine(promptMapper.writeValueAsString(agent.outputSchema))
         appendLine("입력에 없는 사실이나 실행 결과를 만들지 않는다.")
         appendLine(AgentOutputQualityPolicy.instructions)
     }

@@ -83,6 +83,7 @@ class StructuredParallelPattern(BasePattern):
         failures = []
         values = []
         joined: dict[str, Any] = {}
+        task_values: dict[str, Any] = {}
         for index, artifact in enumerate(artifacts):
             parts = artifact.get("parts") or []
             if parts and parts[0].get("type") == "text":
@@ -105,6 +106,10 @@ class StructuredParallelPattern(BasePattern):
             except ValueError as exc:
                 failures.append(str(exc))
             values.append(value)
+            if task_name and isinstance(value, dict):
+                declared = {field["name"] for field in self.task_output_schemas.get(task_name, [])}
+                task_values[task_name] = {key: item for key, item in value.items()
+                                          if (not declared or key in declared) and not key.startswith("_agentown")}
             for binding in self.task_result_bindings.get(task_name, []) if task_name else []:
                 source_field = str(binding.get("sourceField") or "")
                 target_field = str(binding.get("targetField") or self.result_field)
@@ -148,6 +153,7 @@ class StructuredParallelPattern(BasePattern):
         envelope = dict(initial) if isinstance(initial, dict) else {}
         envelope.update(upstream)
         envelope.setdefault("request", initial if isinstance(initial, dict) else {})
+        envelope["_agentownTaskOutputs"] = {**envelope.get("_agentownTaskOutputs", {}), **task_values}
         if joined:
             envelope.update(joined)
         else:
@@ -179,9 +185,12 @@ class TracingLLMAgent(LLMAgent):
             self._validate_json_contract(
                 content, self.config.get("input_schema") or [], "input", exact=False,
             )
+            model_input = _json_object(content)
+            model_content = json.dumps({key: value for key, value in model_input.items()
+                                        if key != "_agentownTaskOutputs"}, ensure_ascii=False) if model_input is not None else content
             bound_message = Message(
                 role=input_message.role if isinstance(input_message, Message) else "user",
-                content=content,
+                content=model_content,
             )
             output_error = None
             for attempt in range(2):
@@ -200,7 +209,7 @@ class TracingLLMAgent(LLMAgent):
                 except ValueError as exc:
                     output_error = exc
                     if attempt == 0:
-                        bound_message = _output_correction_message(content, result.content or "", exc)
+                        bound_message = _output_correction_message(model_content, result.content or "", exc)
                         if trace is not None:
                             trace.append({"kind": "agent_retry", "agent": name, "reason": str(exc)})
             if output_error is not None:
@@ -811,15 +820,6 @@ def _apply_input_bindings(
     result = dict(source)
     parallel_index = (defaults or {}).get("_agentownParallelIndex")
     parallel_size = (defaults or {}).get("_agentownParallelSize")
-    if isinstance(parallel_index, int) and parallel_index > 0 and isinstance(parallel_size, int):
-        item_index = parallel_index - 1
-        assigned = {}
-        for key, item in value.items():
-            if isinstance(item, list) and len(item) == parallel_size:
-                assigned[key] = item[item_index]
-            else:
-                assigned[key] = item
-        result["_agentownAssignedInput"] = assigned
     for target_field, default_value in (defaults or {}).items():
         _set_path(result, str(target_field), default_value)
     for binding in bindings:
@@ -845,6 +845,11 @@ def _apply_input_bindings(
             ):
                 resolved = resolved[parallel_index - 1]
             _set_path(result, target_field, resolved)
+    if isinstance(parallel_index, int) and parallel_index > 0 and isinstance(parallel_size, int):
+        result["_agentownAssignedInput"] = {
+            key: item[parallel_index - 1] if isinstance(item, list) and len(item) == parallel_size else item
+            for key, item in result.items() if not key.startswith("_agentown")
+        }
     return json.dumps(result, ensure_ascii=False)
 
 

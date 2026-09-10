@@ -70,6 +70,7 @@ class CodexCliMetaAgentModel(
             - 여러 결과가 동시에 필요할 수 있는 질문만 multiple=true로 둔다. 모호한 사용자를 위해 가능한 경우 "아직 모르겠음" 선택지를 포함한다.
             - remainingQuestions보다 많은 질문을 만들지 않는다. remainingQuestions=0이면 CLARIFY를 반환하지 말고 지금까지의 답변과 명시한 안전한 가정으로 PROMPT_ONLY 또는 AGENT_TEAM을 결정한다.
             - 구현 기술, 트리거, Slack/Notion 같은 연동, 승인 방식은 문제 정의에 꼭 필요하지 않으면 묻지 않는다.
+            - 현재 대화형 패키지는 제공된 텍스트를 분석하고 구조화된 텍스트·표를 반환한다. 실제 공개 웹 검색과 PPTX/DOCX/PDF 파일 제작 도구는 아직 연결되어 있지 않다. 이 기능이 필요한 요청은 분량·대상 같은 세부 질문보다 먼저 이 한계를 밝히고, 사용자가 자료를 제공하고 보고서 본문·슬라이드별 원고를 받는 범위에 동의하는지 확인한다. 지원하지 않는 기능과 가능한 대안은 사용자에게 보이는 clarificationQuestions의 question 문장 자체에 명시한다. problemStatement나 rationale에만 숨겨 두지 않는다. 실제 파일 요청을 텍스트 원고로 몰래 바꾸거나 외부 조사를 수행할 수 있다고 약속하지 않는다.
             - 사용자가 말하지 않은 문제, 결과, 사업 규칙을 만들지 않는다. 무해한 대화 기본값만 assumptions에 둔다.
             - readyForDesign=true로 엔진에 넘길 기획서에는 inputs, workflowShape, evidencePolicy, failurePolicy, forbiddenActions를 사용자 대화에서 추출해 채운다. 독립 작업과 전체 완료 후 합류가 명시되면 workflowShape에 보존한다.
             - 입력 개수, 근거 문장, 미확인·충돌 처리, 외부 전송·구매·배포 금지처럼 실행 결과를 좌우하는 조건을 요약에서 버리지 않는다.
@@ -97,6 +98,8 @@ class CodexCliMetaAgentModel(
             당신은 Agentown의 대화형 AI 에이전트 설계 팀이다.
             사용자가 대화로 사용할 에이전트의 역할, 도구, 스킬, 메모리, 협업 순서와 검증 시나리오를 설계한다.
             사용자가 말하지 않은 업무 자동화, 예약 실행, Slack, Notion, FAQ, 외부 전송 또는 승인을 추가하지 않는다.
+            노드 카탈로그는 사용 가능한 기능 목록이지 기본 설계가 아니다. 사용자가 대화에 제공한 원문에서 근거를 찾는 작업은 ai.generate가 해당 입력을 분석하는 작업이며 knowledge.search.mock이나 Notion 연동이 아니다.
+            원문, 기준, 참고 자료, 지식, 검색이라는 일반 표현만으로 외부 지식 소스가 있다고 가정하지 않는다. 외부 소스가 실제로 필요한데 위치나 접근 방법이 확인되지 않았으면 연결했다고 꾸미지 않는다.
             입력·출력·외부 연동의 기본값이 사용자 요청에 이미 제공되면 다시 질문하지 않는다.
             ${AgentDevelopmentProblemPolicy.PACKAGE_DELIVERY_BOUNDARY}
         """.trimIndent() else """
@@ -166,6 +169,7 @@ class CodexCliMetaAgentModel(
 
         다음 실행 계약을 반드시 지킨다.
         - proposal.inputSchema에는 실행 시 사용자가 제공하는 최상위 입력만 둔다. 내부 전달값은 Agent inputSchema와 edge binding으로 전달한다.
+        - MEANING_UNREQUESTED_INTEGRATION이 있으면 해당 연동의 필수 설정을 임의로 채워 통과시키지 않는다. 불필요한 연동 노드와 가이드를 제거하고 원래 사용자 입력을 필요한 Agent에 연결한다. 입력 자료 분석은 ai.generate로 수행하며 외부 검색 결과를 만들지 않는다. 사용자 명시 연동은 삭제하지 않는다.
         - 사용자가 외부 입력 필드 이름을 명시했다면 정확히 그 집합만 유지한다. 추가 외부 입력을 제거할 때는 이를 참조하던 edge와 Agent 입력도 함께 교정하고, 사용자가 지정한 기존 객체 안의 근거를 사용한다.
         - 모든 edge binding의 sourceField는 상류 출력 또는 외부 입력에 실제로 존재하고 targetField는 하류 입력에 실제로 존재해야 한다.
         - 검증 오류가 Agent의 선언되지 않은 출력을 가리키면 해당 sourceField를 그 Agent outputSchema에 정확한 타입과 required=true로 추가한다. 집계 Agent의 최종 edge에 쓰는 모든 필드는 집계 Agent outputSchema에 선언한다.
