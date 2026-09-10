@@ -11,6 +11,21 @@ from agentown_tframex_adapter.capabilities import _matches_contract, data_dedupl
 from agentown_tframex_adapter.codex_llm import _json_schema
 
 
+def test_later_parallel_consumers_collect_all_bound_items_without_stale_results():
+    original = {"all": ["stale"], "_agentownTaskOutputs": {
+        "left": {"finding": "left"}, "right": {"finding": ["right-a", "right-b"]},
+    }}
+    bindings = [
+        {"sourceField": "_agentownTaskOutputs.left.finding", "targetField": "all", "aggregationMode": "APPEND_ITEM"},
+        {"sourceField": "_agentownTaskOutputs.right.finding", "targetField": "all", "aggregationMode": "APPEND_ARRAY_ITEMS"},
+    ]
+    result = json.loads(_apply_input_bindings(json.dumps(original), bindings, {}))
+    assert result["all"] == ["left", "right-a", "right-b"]
+    assert original["all"] == ["stale"]
+    with pytest.raises(ValueError, match="unavailable"):
+        _apply_input_bindings("{}", bindings, {})
+
+
 RECORDS_CONTRACT = [
     {
         "name": "records",
@@ -50,6 +65,24 @@ def test_parallel_join_preserves_pre_split_analysis_but_not_unbound_branch_mutat
         {"sourceField": "_agentownTaskOutputs.b.part", "targetField": "secondWorkerResult"},
     ]))
     assert (rebound["firstWorkerResult"], rebound["secondWorkerResult"]) == ("a", "b")
+
+
+def test_whole_parallel_output_excludes_transport_fields_but_preserves_every_declared_field():
+    class Engine:
+        async def call_agent(self, name, message, **kwargs):
+            return Message(role="assistant", content=json.dumps({
+                "result": name, "evidence": "provided record", "request": {"private": "input"},
+                "_agentownAssignedInput": {"private": "input"}, "_agentownParallelIndex": 1,
+            }))
+    fields = [{"name": "result", "type": "string", "required": True},
+              {"name": "evidence", "type": "string", "required": True}]
+    pattern = StructuredParallelPattern("split", ["a", "b"],
+        task_output_schemas={name: fields for name in ("a", "b")},
+        task_result_bindings={name: [{"sourceField": "$output", "targetField": "all", "aggregationMode": "APPEND_ITEM"}]
+                              for name in ("a", "b")})
+    result = asyncio.run(pattern.execute(FlowContext(Message(role="user", content="{}")), Engine()))
+    assert json.loads(result.current_message.content)["all"] == [
+        {"result": "a", "evidence": "provided record"}, {"result": "b", "evidence": "provided record"}]
 
 
 def test_explicit_original_input_binding_survives_a_same_named_intermediate_output():

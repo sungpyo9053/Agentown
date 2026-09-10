@@ -269,6 +269,9 @@ class HarnessPackageRenderer(
 
         ## 고급 자동 Runner
 
+        Python 3.11 이상과 로그인된 Codex CLI가 필요합니다. 먼저 설치 상태만 점검하세요.
+        `python3 runners/python/runner.py --check`는 AI를 호출하거나 도구를 설치하지 않습니다.
+
         ```bash
         python3 -m venv .venv
         .venv/bin/pip install ./runtime
@@ -284,19 +287,37 @@ class HarnessPackageRenderer(
 
     private fun pythonTFrameXRunner() = """
         #!/usr/bin/env python3
-        import asyncio, json, os, sys, webbrowser
+        import asyncio, importlib.util, json, os, shutil, sys, webbrowser
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
+        def setup_failure(code, message):
+            print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": code, "message": message}, ensure_ascii=False, indent=2))
+            raise SystemExit(2)
+
+        if sys.version_info < (3, 11):
+            setup_failure("PYTHON_VERSION_UNSUPPORTED", "Python 3.11 이상이 필요합니다. 해당 Python으로 START_HERE.md의 가상환경을 생성해 주세요.")
+        missing = [name for name in ("tframex", "jsonschema", "mcp") if importlib.util.find_spec(name) is None]
+        if missing:
+            setup_failure("RUNTIME_DEPENDENCIES_MISSING", "실행 환경이 준비되지 않았습니다: " + ", ".join(missing) + ". START_HERE.md에 따라 패키지 폴더에 가상환경을 만들고 pip install ./runtime을 실행하세요.")
         sys.path.insert(0, str(root / "runtime"))
-        from agentown_tframex_adapter import AgentownTFrameXAdapter, CodexCliLLMWrapper, ExecutionNotConfigured
-        from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
+        try:
+            from agentown_tframex_adapter import AgentownTFrameXAdapter, CodexCliLLMWrapper, ExecutionNotConfigured
+            from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS
+        except ImportError:
+            setup_failure("RUNTIME_IMPORT_FAILED", "설치된 실행 도구가 호환되지 않습니다. START_HERE.md의 전용 가상환경에서 pip install ./runtime을 다시 실행하세요.")
 
         status = json.loads((root / "runtime-status.json").read_text())
         if not status.get("runtimeConfigured"):
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": status.get("code"), "message": status.get("message")}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
         definition = json.loads((root / "runtime-definition.json").read_text())
+        needs_ai = any(item.get("kind") != "tool" for item in definition.get("agents", []))
+        if needs_ai and not shutil.which(os.environ.get("AGENTOWN_CODEX_COMMAND", "codex")):
+            setup_failure("CODEX_CLI_MISSING", "Codex CLI를 찾을 수 없습니다. 설치·로그인 후 다시 실행하세요. 이 점검은 자동 설치하지 않습니다.")
+        if "--check" in sys.argv:
+            print(json.dumps({"status": "ENVIRONMENT_READY", "authentication": "NOT_CHECKED", "message": "로컬 실행 도구를 확인했습니다. 로그인·실제 실행·결과물 품질은 별도 검증이 필요합니다."}, ensure_ascii=False, indent=2))
+            raise SystemExit(0)
         definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text()), ensure_ascii=False)
         office = None
         if "--office" in sys.argv:

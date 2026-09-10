@@ -23,6 +23,27 @@ class AgentPackageRuntimeTest {
     )
 
     @Test
+    fun `unprepared Python reports an actionable setup issue without a traceback or model call`(@TempDir directory: Path) {
+        val bundle = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
+        )
+        val script = directory.resolve("runner.py")
+        Files.writeString(script, HarnessPackageRenderer(mapper).render(bundle).getValue("runners/python/runner.py"))
+        // -S removes site-packages; neither an installed runtime nor AI authentication is needed.
+        val process = ProcessBuilder(System.getenv("TFRAMEX_TEST_PYTHON") ?: "python3", "-S", script.toString(), "--check")
+            .redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertThat(process.waitFor()).isEqualTo(2)
+        assertThat(output).doesNotContain("Traceback")
+        val result = mapper.readTree(output)
+        assertThat(result["status"].asText()).isEqualTo("EXECUTION_NOT_CONFIGURED")
+        assertThat(result["code"].asText()).isIn("PYTHON_VERSION_UNSUPPORTED", "RUNTIME_DEPENDENCIES_MISSING")
+        assertThat(result["message"].asText()).contains("START_HERE.md")
+    }
+
+    @Test
     fun `download package embeds the same pinned TFrameX adapter instead of a fixed mock runner`() {
         val bundle = pipeline.generateDesign(
             PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),

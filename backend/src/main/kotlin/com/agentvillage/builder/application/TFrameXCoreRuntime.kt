@@ -311,7 +311,14 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                         parallelScopeByNode[edge.source] != null -> targetRoot
                         else -> sourceField
                     }
-                    mapOf("sourceField" to runtimeSourceField, "targetField" to targetRoot)
+                    val targetArray = node.nodeType in aiTypes && runtimeAgentDefinition(node).inputSchema
+                        ?.firstOrNull { it.name == targetRoot }?.type.equals("array", true)
+                    val aggregation = if (runtimeSourceField.startsWith("_agentownTaskOutputs.") && targetArray) {
+                        val sourceArray = nodesById[edge.source]?.let(outputSchemaFor)
+                            ?.firstOrNull { it.name == sourceField }?.type.equals("array", true)
+                        mapOf("aggregationMode" to if (sourceArray) "APPEND_ARRAY_ITEMS" else "APPEND_ITEM")
+                    } else emptyMap()
+                    mapOf("sourceField" to runtimeSourceField, "targetField" to targetRoot) + aggregation
                 }
             }.distinct()
             if (node.nodeType in aiTypes) {

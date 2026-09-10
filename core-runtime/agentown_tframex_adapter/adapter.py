@@ -116,7 +116,9 @@ class StructuredParallelPattern(BasePattern):
                 aggregation_mode = binding.get("aggregationMode")
                 if aggregation_mode not in {"APPEND_ARRAY_ITEMS", "APPEND_ITEM", "SET_FIELD", "MERGE_OBJECT"}:
                     raise DefinitionError("Parallel task result binding requires APPEND_ARRAY_ITEMS, APPEND_ITEM, SET_FIELD, or MERGE_OBJECT")
-                extracted = value if source_field == "$output" else _resolve_path(value, source_field)
+                # Whole output means the declared artifact, not transport state
+                # such as request, partition metadata, or assigned inputs.
+                extracted = task_values.get(task_name, value) if source_field == "$output" else _resolve_path(value, source_field)
                 if extracted is _MISSING:
                     failures.append(f"Parallel task '{task_name}' output is missing bound field '{source_field}'")
                     continue
@@ -822,12 +824,26 @@ def _apply_input_bindings(
     parallel_size = (defaults or {}).get("_agentownParallelSize")
     for target_field, default_value in (defaults or {}).items():
         _set_path(result, str(target_field), default_value)
+    collected: dict[str, list[Any]] = {}
     for binding in bindings:
         source_field = str(binding.get("sourceField") or "")
         target_field = str(binding.get("targetField") or "")
         if not source_field or not target_field:
             continue
         resolved = _resolve_path(source, source_field)
+        aggregation = binding.get("aggregationMode")
+        if aggregation in {"APPEND_ITEM", "APPEND_ARRAY_ITEMS"}:
+            if resolved is _MISSING:
+                raise ValueError(f"Bound parallel output '{source_field}' is unavailable")
+            items = collected.setdefault(target_field, [])
+            if aggregation == "APPEND_ARRAY_ITEMS":
+                if not isinstance(resolved, list):
+                    raise ValueError(f"Bound parallel output '{source_field}' must be an array")
+                items.extend(resolved)
+            else:
+                items.append(resolved)
+            _set_path(result, target_field, items)
+            continue
         if resolved is not _MISSING:
             target_root = target_field.split(".", 1)[0].split("[", 1)[0]
             target_contract = next(

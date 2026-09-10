@@ -76,6 +76,20 @@ class TFrameXDefinitionCompilerTest {
             mapOf("sourceField" to "_agentownTaskOutputs.worker__a.finding", "targetField" to "first"),
             mapOf("sourceField" to "_agentownTaskOutputs.worker__b.finding", "targetField" to "second"),
         )
+        val collectionFinal = final.copy(inputSchema = listOf(
+            FieldDefinition("all", "array", true, "all worker findings", itemType = "string"),
+            FieldDefinition("review", "string", true, "review"),
+        ))
+        val collectionGraph = graph.copy(edges = graph.edges.map { edge ->
+            if (edge.target == "final" && edge.source in setOf("a", "b")) edge.copy(bindings = mapOf("all" to "finding")) else edge
+        })
+        val collection = compiler.compile("collection-provenance", collectionGraph, listOf(worker, review, collectionFinal), emptyMap())
+        val collectionBindings = (collection["agents"] as List<Map<String, Any?>>)
+            .single { it["name"] == "final__final" }["inputBindings"] as List<Map<String, String>>
+        assertThat(collectionBindings).contains(
+            mapOf("sourceField" to "_agentownTaskOutputs.worker__a.finding", "targetField" to "all", "aggregationMode" to "APPEND_ITEM"),
+            mapOf("sourceField" to "_agentownTaskOutputs.worker__b.finding", "targetField" to "all", "aggregationMode" to "APPEND_ITEM"),
+        )
     }
 
     @Test
@@ -966,7 +980,7 @@ class TFrameXDefinitionCompilerTest {
         """.trimIndent())
         val process = ProcessBuilder(python, script.toString(), definitionFile.toString())
             .directory(directory.toFile()).redirectErrorStream(true)
-            .also { it.environment()["PYTHONPATH"] = Path.of("core-runtime").toAbsolutePath().normalize().toString() }
+            .also { it.environment()["PYTHONPATH"] = Path.of("..", "core-runtime").toAbsolutePath().normalize().toString() }
             .start()
         val output = process.inputStream.bufferedReader().use { it.readText() }
         assertThat(process.waitFor()).describedAs(output).isZero()

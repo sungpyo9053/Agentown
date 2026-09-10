@@ -22,12 +22,12 @@ class BuilderGenerationWorkerRetryTest {
     private val usageLimiter = mock<BuilderUsageLimiter>()
 
     @Test
-    fun `one transient Codex timeout retries the same durable generation job`() {
+    fun `one transient Codex start failure retries the same durable generation job`() {
         val ownerId = UUID.randomUUID()
         val job = job()
         whenever(progress.requireJob(job.id)).thenReturn(job)
         whenever(builder.sendMessage(ownerId, job.conversationId, job.instruction, job.idempotencyKey, job.id))
-            .thenThrow(BadRequestException("BUILDER_CODEX_TIMEOUT", "Codex 분석 제한 시간을 초과했습니다."))
+            .thenThrow(BadRequestException("BUILDER_CODEX_START_FAILED", "Codex 시작에 실패했습니다."))
             .thenReturn(mock())
 
         BuilderGenerationWorker(builder, progress, usageLimiter).execute(BuilderGenerationRequested(ownerId, job.id))
@@ -40,7 +40,7 @@ class BuilderGenerationWorkerRetryTest {
     }
 
     @Test
-    fun `exhausted transient retry records one durable failed result`() {
+    fun `timeout preserves input and releases usage without replaying the whole generation`() {
         val ownerId = UUID.randomUUID()
         val job = job()
         val message = "Codex 분석 제한 시간을 초과했습니다."
@@ -50,7 +50,7 @@ class BuilderGenerationWorkerRetryTest {
 
         BuilderGenerationWorker(builder, progress, usageLimiter).execute(BuilderGenerationRequested(ownerId, job.id))
 
-        verify(builder, times(2)).sendMessage(ownerId, job.conversationId, job.instruction, job.idempotencyKey, job.id)
+        verify(builder, times(1)).sendMessage(ownerId, job.conversationId, job.instruction, job.idempotencyKey, job.id)
         verify(progress, never()).complete(job.id)
         verify(usageLimiter).releaseFailedClaim(ownerId, job.conversationId, job.workflowId, job.idempotencyKey)
         verify(builder).recordGenerationFailure(ownerId, job.conversationId, job.instruction, job.idempotencyKey, message)

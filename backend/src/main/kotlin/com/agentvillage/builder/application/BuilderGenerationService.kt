@@ -163,8 +163,10 @@ class BuilderGenerationWorker(
 
     private companion object {
         const val MAX_AUTOMATIC_RETRIES = 1
+        // A timeout has already spent the full model budget. Replaying sendMessage
+        // repeats intake and design, hiding several more minutes behind one job.
+        // Preserve the failed job/input for an explicit user retry instead.
         val RETRYABLE_GENERATION_CODES = setOf(
-            "BUILDER_CODEX_TIMEOUT",
             "BUILDER_CODEX_EMPTY_OUTPUT",
             "BUILDER_CODEX_EXEC_FAILED",
             "BUILDER_CODEX_START_FAILED",
