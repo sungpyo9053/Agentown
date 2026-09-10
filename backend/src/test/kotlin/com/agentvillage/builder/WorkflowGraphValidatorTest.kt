@@ -42,6 +42,18 @@ class WorkflowGraphValidatorTest {
 
     @Test fun `valid workflow graph is accepted`() = assertThat(validator.validate(graph()).valid).isTrue()
 
+    @Test fun `evaluation and independent review are valid AI tasks without the word generate`() {
+        listOf("지원자별 독립 평가와 근거 검수", "제안서 검토와 비교", "independent evaluation and review").forEach { task ->
+            val requirement = AutomationRequirement(task, "수동", listOf("원문"), listOf("결과"), listOf(task), emptyList(), emptyList(), false)
+            val proposal = AutomationProposal(task, task, listOf(task), emptyList(), emptyList(), "중단")
+            assertThat(validator.validate(graph(false), requirement, proposal, emptyList()).issues)
+                .describedAs(task).noneMatch { it.code == "MEANING_UNREQUESTED_GENERATION" }
+        }
+        val copyOnly = AutomationRequirement("입력 반환", "수동", listOf("원문"), listOf("원문"), listOf("그대로 반환"), emptyList(), emptyList(), false)
+        assertThat(validator.validate(graph(false), copyOnly, AutomationProposal("반환", "반환", emptyList(), emptyList(), emptyList(), "중단"), emptyList()).issues)
+            .anyMatch { it.code == "MEANING_UNREQUESTED_GENERATION" }
+    }
+
     @Test fun `unknown node is rejected`() {
         val graph = graph().let { it.copy(nodes = it.nodes + WorkflowNode("evil", "code.python", "evil", NodePosition(0.0, 0.0)), edges = it.edges + WorkflowEdge("evil-edge", "reply", "evil")) }
         assertThat(validator.validate(graph).issues.map { it.code }).contains("NODE_TYPE_NOT_ALLOWED")

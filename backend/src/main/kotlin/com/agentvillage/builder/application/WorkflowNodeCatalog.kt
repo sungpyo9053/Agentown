@@ -689,6 +689,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
     private fun requestsGeneration(value: String) = containsAny(
         value,
         "초안", "답변", "요약", "작성", "생성", "분석", "추출", "번역", "교정", "정리", "변환", "추천", "계획", "목록", "보고서", "릴리스 노트",
+        "평가", "검수", "검토", "비교", "evaluate", "review", "compare",
         "draft", "answer", "summary", "generate", "write", "analyze", "extract", "translate", "proofread", "report", "release note",
     )
 

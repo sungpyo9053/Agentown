@@ -250,13 +250,21 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     }
                 }.orEmpty()
         }
+        // Routers select a path without producing a replacement message. Fields used
+        // beyond them still belong to the upstream producer's output contract.
+        fun boundOutputNames(nodeId: String, visited: Set<String> = emptySet()): Set<String> {
+            if (nodeId in visited) return emptySet()
+            return outgoing[nodeId].orEmpty().flatMap { edge ->
+                edge.bindings.values + if (nodesById[edge.target]?.nodeType in patternTypes)
+                    boundOutputNames(edge.target, visited + nodeId) else emptySet()
+            }.map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
+                .filterNot { it in setOf("context", "error") }.toSet()
+        }
         outputSchemaFor = { node ->
             when {
                 node.nodeType in aiTypes -> {
                     val declared = definitions[node.config["agentKey"]?.toString()]?.outputSchema.orEmpty()
-                    val bound = outgoing[node.id].orEmpty().flatMap { it.bindings.values }
-                        .map { it.removePrefix("request.").substringBefore('.').substringBefore('[') }
-                        .filterNot { it in setOf("context", "error") }.toSet()
+                    val bound = boundOutputNames(node.id)
                     if (isTerminalExecutable(node) && !finalOutputSchema.isNullOrEmpty()) finalOutputSchema
                     else declared.filter { it.name in bound }.ifEmpty { declared }
                 }
@@ -336,11 +344,9 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
                     inputSchema = source.inputSchema.filter { it.name in activeInputNames || it.required }.ifEmpty { source.inputSchema },
                     outputSchema = outputSchemaFor(node),
                 )
-                val runtimeSource = if (parallelScopeByNode[node.id] == null) nodeSource else nodeSource.copy(
-                    outputSchema = nodeSource.outputSchema.map { field ->
-                        if (field.type.equals("array", true)) field.copy(minItems = 1, maxItems = 1) else field
-                    },
-                )
+                // Parallel roles may each review the complete collection. Execution
+                // topology must not silently replace their declared output bounds.
+                val runtimeSource = nodeSource
                 parallelScopeByNode[node.id]?.let { (index, size) ->
                     inputDefaults["_agentownParallelIndex"] = index
                     inputDefaults["_agentownParallelSize"] = size

@@ -18,6 +18,30 @@ class TFrameXDefinitionCompilerTest {
     private val compiler = TFrameXDefinitionCompiler(mapper)
 
     @Test
+    fun `router preserves review body needed after status selection`() {
+        val review = FieldDefinition("review", "string", true, "independent review", minLength = 1)
+        val status = FieldDefinition("reviewStatus", "string", true, "status", enumValues = listOf("PASS", "REVISION_REQUIRED"))
+        val final = FieldDefinition("report", "string", true, "final report")
+        val reviewer = AgentDefinition("reviewer", "Review", "Review", emptyList(), listOf(status, review), emptyList(), emptyList(), emptyList())
+        val writer = AgentDefinition("writer", "Write", "Write", listOf(review), listOf(final), emptyList(), emptyList(), emptyList())
+        val graph = WorkflowGraph(workflowId = UUID.randomUUID(), entryNodeId = "review", nodes = listOf(
+            WorkflowNode("review", "ai.generate", "Review", NodePosition(0.0, 0.0), mapOf("agentKey" to "reviewer")),
+            WorkflowNode("decision", "condition.branch", "Decision", NodePosition(0.0, 0.0), mapOf("expression" to "reviewStatus=PASS")),
+            WorkflowNode("final", "ai.generate", "Finalize", NodePosition(0.0, 0.0), mapOf("agentKey" to "writer")),
+            WorkflowNode("end", "workflow.end", "End", NodePosition(0.0, 0.0)),
+        ), edges = listOf(
+            WorkflowEdge("review-decision", "review", "decision", bindings = mapOf("reviewStatus" to "reviewStatus")),
+            WorkflowEdge("pass", "decision", "final", condition = "reviewStatus=PASS", bindings = mapOf("review" to "review")),
+            WorkflowEdge("revise", "decision", "final", condition = "reviewStatus=REVISION_REQUIRED", bindings = mapOf("review" to "review")),
+            WorkflowEdge("done", "final", "end", bindings = mapOf("report" to "report")),
+        ))
+        val compiled = compiler.compile("router-evidence", graph, listOf(reviewer, writer), emptyMap(), listOf(final))
+        val agents = compiled["agents"] as List<Map<String, Any?>>
+        assertThat(agents.single { it["name"] == "reviewer__review" }["outputSchema"]).isEqualTo(listOf(status, review))
+        assertThat(agents.single { it["name"] == "writer__final" }["inputSchema"]).isEqualTo(listOf(review))
+    }
+
+  @Test
     fun `local artifact producer receives tool format and final output is actual file metadata`() {
         val contract = com.agentvillage.builder.application.LocalArtifactContract
         val producer = AgentDefinition("producer", "Producer", "Prepare evidence", emptyList(), contract.input,
@@ -380,7 +404,7 @@ class TFrameXDefinitionCompilerTest {
         val runtimeAgents = definition["agents"] as List<Map<String, Any?>>
         val workerOutput = runtimeAgents.first { it["name"] == "worker-1__task-1" }["outputSchema"] as List<FieldDefinition>
         assertThat(workerOutput.single { it.name == "values" })
-            .extracting("minItems", "maxItems").containsExactly(1, 1)
+            .isEqualTo(workers.first().outputSchema.single())
         assertThat(runtimeAgents.first { it["name"] == "collector__collect" }["systemPrompt"].toString())
             .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다", "결과물 품질 기준:")
         assertThat(definition["workflowInputSchema"]).isEqualTo(workflowInputs)

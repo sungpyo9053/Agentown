@@ -96,7 +96,7 @@ def test_explicit_original_input_binding_survives_a_same_named_intermediate_outp
     assert rebound["_agentownAssignedInput"]["records"] == records
 
 
-def test_parallel_scope_preserves_unpartitioned_lists_when_worker_count_differs():
+def test_parallel_scope_does_not_infer_partition_from_worker_count():
     content = json.dumps({"feedbacks": ["F1", "F2", "F3"], "context": "three source records"})
     for index in (1, 2):
         result = json.loads(_apply_input_bindings(content, [], {
@@ -106,7 +106,7 @@ def test_parallel_scope_preserves_unpartitioned_lists_when_worker_count_differs(
     exact = json.loads(_apply_input_bindings(json.dumps({"feedbacks": ["F1", "F2"]}), [], {
         "_agentownParallelIndex": 2, "_agentownParallelSize": 2,
     }))
-    assert exact["_agentownAssignedInput"]["feedbacks"] == "F2"
+    assert exact["_agentownAssignedInput"]["feedbacks"] == ["F1", "F2"]
 
 
 def test_codex_output_schema_preserves_nested_runtime_contract():
@@ -226,7 +226,8 @@ def test_parallel_binding_projects_array_item_only_for_scalar_target_contract():
     ))
 
     assert bound["record"] == records[1]
-    assert bound["_agentownAssignedInput"]["records"] == records[1]
+    assert bound["_agentownAssignedInput"]["record"] == records[1]
+    assert "records" not in bound["_agentownAssignedInput"]
 
 
 def test_parallel_binding_keeps_array_for_array_target_contract():
@@ -245,6 +246,7 @@ def test_parallel_binding_keeps_array_for_array_target_contract():
     ))
 
     assert bound["records"] == records
+    assert bound["_agentownAssignedInput"]["records"] == records
 
 
 def test_quality_contract_enforces_nested_operational_constraints():

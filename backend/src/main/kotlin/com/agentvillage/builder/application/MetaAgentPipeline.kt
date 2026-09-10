@@ -614,10 +614,16 @@ class StructuredMetaAgentPipeline(
         plan: WorkflowGraphPlan,
         inputSchema: List<FieldDefinition>,
     ): WorkflowGraphPlan {
-        val onlyInput = inputSchema.singleOrNull()?.name ?: return plan
+        val onlyInput = inputSchema.singleOrNull()?.name
         val declared = inputSchema.map { it.name }.toSet()
         val nodeTypes = plan.nodes.associate { it.id to it.nodeType }
         return plan.copy(edges = plan.edges.map { edge ->
+            if (nodeTypes[edge.source] == NodeType.MANUAL_TRIGGER.wireName &&
+                nodeTypes[edge.target] == NodeType.TEXT_INPUT.wireName && declared.isNotEmpty() &&
+                "trigger" !in declared && edge.bindings == listOf(WorkflowFieldBinding("trigger", "trigger"))) {
+                return@map edge.copy(bindings = inputSchema.map { WorkflowFieldBinding(it.name, it.name) })
+            }
+            if (onlyInput == null) return@map edge
             if (nodeTypes[edge.source] !in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) return@map edge
             edge.copy(bindings = edge.bindings.map { binding ->
                 val sourceRoot = binding.sourceField.removePrefix("request.").substringBefore('.').substringBefore('[')
@@ -860,16 +866,22 @@ class StructuredMetaAgentPipeline(
                     }
                     sourceField ?: return@forEach
                     val parallelSources = plan.edges.filter { it.target == edge.target }.flatMap { incoming ->
-                        incoming.bindings.filter { it.targetField == targetName }.mapNotNull { bound ->
-                            boundSourceField(incoming.source, bound.sourceField.removePrefix("request."))
-                        }
-                    }
-                    val replacement = ((if (parallelSources.size > 1) unionBoundContracts(parallelSources) else null)
+                        incoming.bindings.filter { it.targetField == targetName }
+                            .map { incoming.source to it.sourceField.removePrefix("request.") }
+                    }.distinct().mapNotNull { (source, field) -> boundSourceField(source, field) }
+                    val replacement = ((if (parallelSources.size > 1) unionBoundContracts(parallelSources, concatenateArrays = true) else null)
                         ?: sourceField).copy(name = targetName)
                     inputs = if (inputs.any { it.name == targetName }) {
                         inputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
                     } else inputs + replacement.copy(required = targetKey !in reused)
-                    outputs = outputs.map { if (it.name == targetName) mergeBoundEnums(it, replacement).copy(description = it.description) else it }
+                    outputs = outputs.map { output ->
+                        if (output.name != targetName) output else {
+                            val merged = mergeBoundEnums(output, replacement).copy(description = output.description)
+                            if (parallelSources.size > 1 && replacement.type.equals("array", true))
+                                merged.copy(maxItems = output.maxItems, uniqueItems = output.uniqueItems, uniqueBy = output.uniqueBy)
+                            else merged
+                        }
+                    }
                 }
                 agents = agents + (targetKey to targetAgent.copy(inputSchema = inputs, outputSchema = outputs))
             }
@@ -903,8 +915,9 @@ class StructuredMetaAgentPipeline(
     }
 
     /** A fan-in accepts every producer's fields without requiring another producer's private fields. */
-    private fun unionBoundContracts(fields: List<FieldDefinition>): FieldDefinition? {
+    private fun unionBoundContracts(fields: List<FieldDefinition>, concatenateArrays: Boolean = false): FieldDefinition? {
         val first = fields.first()
+        val concatenated = concatenateArrays && first.type.equals("array", true)
         if (fields.any { !it.type.equals(first.type, true) || it.itemType != first.itemType || it.format != first.format || it.itemFormat != first.itemFormat }) return null
         fun children(select: (FieldDefinition) -> List<FieldDefinition>?): List<FieldDefinition>? {
             val schemas = fields.map { select(it) ?: return null }
@@ -923,12 +936,18 @@ class StructuredMetaAgentPipeline(
             objectSchema = objects, itemSchema = items,
             minLength = fields.map { it.minLength }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
             minItems = fields.map { it.minItems }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
-            maxItems = fields.map { it.maxItems }.let { if (it.any { value -> value == null }) null else it.filterNotNull().maxOrNull() },
+            maxItems = fields.map { it.maxItems }.let { bounds ->
+                if (bounds.any { it == null }) null
+                else if (concatenated) bounds.filterNotNull().sumOf { it.toLong() }.takeIf { it <= Int.MAX_VALUE }?.toInt()
+                else bounds.filterNotNull().maxOrNull()
+            },
             minimum = fields.map { it.minimum }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
             maximum = fields.map { it.maximum }.let { if (it.any { value -> value == null }) null else it.filterNotNull().maxOrNull() },
             itemMinLength = fields.map { it.itemMinLength }.let { if (it.any { value -> value == null }) null else it.filterNotNull().minOrNull() },
-            uniqueItems = fields.all { it.uniqueItems == true }.takeIf { it },
-            uniqueBy = first.uniqueBy.takeIf { value -> fields.all { it.uniqueBy == value } },
+            // Per-producer uniqueness does not imply uniqueness after concatenation.
+            // Keep every perspective; nested item contracts remain unchanged.
+            uniqueItems = (!concatenated && fields.all { it.uniqueItems == true }).takeIf { it },
+            uniqueBy = first.uniqueBy.takeIf { value -> !concatenated && fields.all { it.uniqueBy == value } },
         )
     }
 

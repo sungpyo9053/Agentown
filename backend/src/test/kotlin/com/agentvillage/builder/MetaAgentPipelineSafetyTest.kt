@@ -583,6 +583,57 @@ class MetaAgentPipelineSafetyTest {
         val objectFields = pipeline.normalizeBoundAgentSchemas(objectBundle).agentDefinitions.last().inputSchema.single().objectSchema!!
         assertThat(objectFields.map { it.name }).containsExactlyInAnyOrder("reviewType", "firstEvidence", "secondEvidence")
         assertThat(objectFields.filter { it.name.endsWith("Evidence") }).allMatch { !it.required }
+
+        val bounded = bundle.copy(agentDefinitions = bundle.agentDefinitions.map { definition ->
+            definition.copy(outputSchema = definition.outputSchema.map { field ->
+                field.copy(maxItems = 3, uniqueItems = true, uniqueBy = "reviewType",
+                    itemSchema = field.itemSchema.orEmpty() + FieldDefinition("quotes", "array", true, "quotes",
+                        itemType = "string", maxItems = 2, uniqueItems = true))
+            })
+        })
+        val boundedNormalized = pipeline.normalizeBoundAgentSchemas(bounded)
+        val collected = boundedNormalized.agentDefinitions.last().inputSchema.single()
+        assertThat(collected.maxItems).isEqualTo(6)
+        assertThat(collected.uniqueItems).isNull()
+        assertThat(collected.uniqueBy).isNull()
+        val quotes = collected.itemSchema!!.first { it.name == "quotes" }
+        assertThat(quotes.maxItems).isEqualTo(2)
+        assertThat(quotes.uniqueItems).isTrue()
+        assertThat(boundedNormalized.agentDefinitions.first().outputSchema)
+            .isEqualTo(bounded.agentDefinitions.first().outputSchema)
+        val duplicateRoute = bounded.copy(proposal = bounded.proposal.copy(graphPlan = plan.copy(
+            edges = listOf(plan.edges.first(), plan.edges.first().copy(id = "alternate-route")),
+        )))
+        val singleProducer = pipeline.normalizeBoundAgentSchemas(duplicateRoute).agentDefinitions.last().inputSchema.single()
+        assertThat(singleProducer.maxItems).isEqualTo(3)
+        assertThat(singleProducer.uniqueItems).isTrue()
+        assertThat(singleProducer.uniqueBy).isEqualTo("reviewType")
+        val consolidating = bounded.copy(agentDefinitions = bounded.agentDefinitions.map { definition ->
+            if (definition.key != "collector") definition else definition.copy(outputSchema = listOf(
+                combined.copy(maxItems = 3, uniqueItems = true, uniqueBy = "reviewType"),
+            ))
+        })
+        val consolidated = pipeline.normalizeBoundAgentSchemas(consolidating).agentDefinitions.last().outputSchema.single()
+        assertThat(consolidated.maxItems).isEqualTo(3)
+        assertThat(consolidated.uniqueItems).isTrue()
+        assertThat(consolidated.uniqueBy).isEqualTo("reviewType")
+    }
+
+    @Test
+    fun `manual trigger marker passes declared inputs to text entry without inventing data`() {
+        val fields = listOf("sourceMaterials", "writingRequest").map { FieldDefinition(it, "string", true, it) }
+        val plan = WorkflowGraphPlan("start", listOf(
+            WorkflowNodePlan("start", "manual.trigger", "Start"),
+            WorkflowNodePlan("input", "text.input", "Input"),
+        ), listOf(WorkflowEdgePlan("entry", "start", "input", bindings = listOf(WorkflowFieldBinding("trigger", "trigger")))))
+        val pipeline = pipeline()
+        assertThat(pipeline.normalizeEntryBindings(plan, fields).edges.single().bindings)
+            .containsExactlyElementsOf(fields.map { WorkflowFieldBinding(it.name, it.name) })
+        assertThat(pipeline.normalizeEntryBindings(plan, fields + FieldDefinition("trigger", "string", true, "user data"))).isEqualTo(plan)
+        val unknown = plan.copy(edges = listOf(plan.edges.single().copy(bindings = listOf(WorkflowFieldBinding("unknown", "unknown")))))
+        assertThat(pipeline.normalizeEntryBindings(unknown, fields)).isEqualTo(unknown)
+        val aiTarget = plan.copy(nodes = listOf(plan.nodes.first(), plan.nodes.last().copy(nodeType = "ai.generate")))
+        assertThat(pipeline.normalizeEntryBindings(aiTarget, fields)).isEqualTo(aiTarget)
     }
 
     @Test

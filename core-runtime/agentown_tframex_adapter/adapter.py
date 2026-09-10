@@ -873,9 +873,10 @@ def _apply_input_bindings(
                 resolved = resolved[parallel_index - 1]
             _set_path(result, target_field, resolved)
     if isinstance(parallel_index, int) and parallel_index > 0 and isinstance(parallel_size, int):
+        assigned_names = {str(field.get("name")) for field in target_schema or []}
         result["_agentownAssignedInput"] = {
-            key: item[parallel_index - 1] if isinstance(item, list) and len(item) == parallel_size else item
-            for key, item in result.items() if not key.startswith("_agentown")
+            key: item for key, item in result.items()
+            if not key.startswith("_agentown") and (not assigned_names or key in assigned_names)
         }
     return json.dumps(result, ensure_ascii=False)
 

@@ -280,6 +280,9 @@ class RealAmbiguousProductE2ETest {
     }
 
     private fun prepareRuntime(): Path {
+        System.getenv("REAL_RUNTIME_PYTHON")?.let { configured ->
+            return Path.of(configured).toAbsolutePath().also { require(Files.isExecutable(it)) }
+        }
         val working = Path.of(System.getProperty("user.dir")).toAbsolutePath()
         val repository = if (Files.isDirectory(working.resolve("core-runtime"))) working else requireNotNull(working.parent)
         val pythonCommand = listOf(Path.of("/usr/local/bin/python3.11"), Path.of("/opt/homebrew/bin/python3.11"))
@@ -290,7 +293,7 @@ class RealAmbiguousProductE2ETest {
         if (Files.isExecutable(python) && Files.isRegularFile(installed)) return python
         Files.createDirectories(venv.parent)
         require(runProcess(listOf(pythonCommand, "-m", "venv", venv.toString()), Path.of("."), 120) == 0) { "venv creation failed" }
-        require(runProcess(listOf(venv.resolve("bin/pip").toString(), "install", repository.resolve("core-runtime").toString()), repository, 900) == 0) { "runtime install failed" }
+        require(runProcess(listOf(python.toString(), "-m", "pip", "install", repository.resolve("core-runtime").toString()), repository, 900) == 0) { "runtime install failed" }
         Files.writeString(installed, "ok\n")
         return python
     }
@@ -357,18 +360,40 @@ class RealAmbiguousProductE2ETest {
         modelName: String,
         codexHome: String,
     ): Result? {
-        val resultPath = Path.of("build/reports/real-ambiguous-product-progress", "${problem.id}.json")
-        val bundlePath = Path.of("build/reports/real-ambiguous-product-packages", problem.id, "design-bundle.json")
-        if (!Files.isRegularFile(resultPath) || !Files.isRegularFile(bundlePath)) return null
+        // Read historical failures without overwriting their evidence during replay.
+        val replayRoot = Path.of(System.getenv("REAL_META_AGENT_REPLAY_REPORTS") ?: "build/reports")
+        val resultPath = replayRoot.resolve("real-ambiguous-product-progress/${problem.id}.json")
+        val bundlePath = replayRoot.resolve("real-ambiguous-product-packages/${problem.id}/design-bundle.json")
+        val invalidBundlePath = replayRoot.resolve("real-ambiguous-product-progress/${problem.id}-invalid-bundle.json")
+        if (!Files.isRegularFile(resultPath) || (!Files.isRegularFile(bundlePath) && !Files.isRegularFile(invalidBundlePath))) return null
         val previous = runCatching { mapper.readValue(resultPath.toFile(), Result::class.java) }.getOrNull()
             ?.takeIf { !it.passed && it.expected == problem.expected.name } ?: return null
-        val bundle = runCatching { mapper.readValue(bundlePath.toFile(), MetaAgentDesignBundle::class.java) }.getOrNull()
+        val bundle = runCatching {
+            if (Files.isRegularFile(bundlePath)) mapper.readValue(bundlePath.toFile(), MetaAgentDesignBundle::class.java)
+            else mapper.treeToValue(mapper.readTree(invalidBundlePath.toFile())["bundle"], MetaAgentDesignBundle::class.java)
+        }.getOrNull()
+            ?.let { original -> original.copy(proposal = original.proposal.copy(
+                graphPlan = original.proposal.graphPlan?.let { pipeline.normalizeEntryBindings(it, original.proposal.inputSchema) },
+            )) }
             ?.let(pipeline::normalizeBoundAgentSchemas)
             ?.let { normalized -> normalized.copy(proposal = normalized.proposal.copy(
                 graphPlan = normalized.proposal.graphPlan?.let(WorkflowGraphPlanNormalizer::normalize),
             )) } ?: return null
         val started = System.nanoTime()
+        val catalog = WorkflowNodeCatalog()
+        val validation = WorkflowGraphValidator(catalog, mapper).validate(
+            WorkflowGraphTranslator(catalog).translate(UUID.randomUUID(), bundle.proposal),
+            bundle.requirement, bundle.proposal, bundle.agentDefinitions,
+        )
+        if (!validation.valid) return Result(problem.id, problem.category, problem.expected.name, "INVALID_DESIGN",
+            false, previous.questionCount, elapsed(started), bundle.agentDefinitions.size, false, null,
+            validation.issues.map { it.code }).also(::record)
         val packageRoot = writePackage(problem.id, renderer.render(bundle))
+        System.getenv("REAL_META_AGENT_REPLAY_INPUTS")?.let { inputRoot ->
+            val input = Path.of(inputRoot).resolve("${problem.id}.json")
+            require(Files.isRegularFile(input)) { "Replay input is missing: ${problem.id}" }
+            Files.writeString(packageRoot.resolve("examples/sample-input.json"), Files.readString(input))
+        }
         val zip = zipAndVerify(packageRoot, bundle)
         val execution = if (runtimePython == null) RunnerResult("SKIPPED", emptyList())
             else executePackage(runtimePython, packageRoot, codexCommand, modelName, codexHome)
