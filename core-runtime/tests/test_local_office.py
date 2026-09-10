@@ -68,6 +68,36 @@ def office(tmp_path):
     viewer.close()
 
 
+def test_artifact_download_uses_received_bytes_and_reports_failures():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for the shipped office download test')
+    html = (Path(__file__).parents[1] / 'agentown_tframex_adapter/office.html').read_text()
+    handler = 'async function downloadArtifact' + html.split('async function downloadArtifact', 1)[1].split("document.querySelector('#artifact').onclick", 1)[0]
+    script = r'''
+const assert=require('node:assert/strict');
+const error={hidden:true}, trigger={dataset:{},download:'agentown-result.zip',setAttribute(){},removeAttribute(){}};
+let clicked=0,removed=0,revoked=0,received,fetches=0,prevented=0;
+const blob={size:123};
+let response={ok:true,blob:async()=>blob};
+const fetch=async(path,options)=>{assert.equal(path,'artifact');assert.equal(options.cache,'no-store');fetches++;return response};
+const document={querySelector:()=>error,body:{append(){}},createElement:()=>({style:{},click(){assert.equal(this.download,trigger.download);assert.equal(this.href,'blob:verified');clicked++},remove(){removed++}})};
+const URL={createObjectURL(value){received=value;return 'blob:verified'},revokeObjectURL(value){assert.equal(value,'blob:verified');revoked++}};
+const setTimeout=(fn,ms)=>{assert.equal(ms,60000);fn()};
+''' + handler + r'''
+(async()=>{
+const event={currentTarget:trigger,preventDefault(){prevented++}};
+const first=downloadArtifact(event);await downloadArtifact(event);await first;
+assert.equal(fetches,1);assert.equal(clicked,1);assert.equal(removed,1);assert.equal(revoked,1);assert.equal(received,blob);assert.equal(prevented,2);assert.equal(trigger.dataset.busy,'false');assert.equal(error.hidden,true);
+for(const invalid of [{ok:false},{ok:true,blob:async()=>({size:0})},{ok:true,blob:async()=>({size:64*1024*1024+1})},{ok:true,blob:async()=>{throw Error('network')}}]){
+response=invalid;await downloadArtifact(event);assert.equal(clicked,1);assert.equal(error.hidden,false);assert.match(error.textContent,/다시/);assert.equal(trigger.dataset.busy,'false');
+}
+response={ok:true,blob:async()=>blob};await downloadArtifact(event);assert.equal(clicked,2);assert.equal(error.hidden,true);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
+
+
 def test_real_trace_mapping_and_parallel_failure(office):
     trace = OfficeTrace(office)
     trace.append({'kind': 'agent_start', 'agent': 'worker-a__review1'})
