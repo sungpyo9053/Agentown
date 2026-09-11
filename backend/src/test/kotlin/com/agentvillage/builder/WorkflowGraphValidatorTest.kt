@@ -72,6 +72,23 @@ class WorkflowGraphValidatorTest {
 
     @Test fun `valid workflow graph is accepted`() = assertThat(validator.validate(graph()).valid).isTrue()
 
+    @Test fun `boolean branch must retain both outcomes before package export`() {
+        val branch = WorkflowNode("review", "condition.branch", "검토", NodePosition(0.0, 0.0), mapOf("expression" to "qualityPassed"))
+        val end = WorkflowNode("end", "workflow.end", "결과", NodePosition(1.0, 0.0))
+        fun issues(vararg conditions: String) = validator.validate(WorkflowGraph(
+            workflowId = UUID.randomUUID(), entryNodeId = branch.id, nodes = listOf(branch, end),
+            edges = conditions.mapIndexed { index, condition -> WorkflowEdge("e$index", branch.id, end.id, condition) },
+        )).issues
+        assertThat(issues("qualityPassed=true")).anyMatch { it.code == "INCOMPLETE_BOOLEAN_BRANCH" }
+        assertThat(issues("qualityPassed=false")).anyMatch { it.code == "INCOMPLETE_BOOLEAN_BRANCH" }
+        assertThat(issues("qualityPassed=true", "other=false")).anyMatch { it.code == "INCOMPLETE_BOOLEAN_BRANCH" }
+        assertThat(issues("qualityPassed=true", "qualityPassed=false")).isEmpty()
+        assertThat(issues("qualityPassed=true", "qualityPassed=true", "qualityPassed=false"))
+            .anyMatch { it.code == "DUPLICATE_BRANCH_CONDITION" }
+        assertThat(issues("category=READY", "category=REVIEW"))
+            .noneMatch { it.code == "INCOMPLETE_BOOLEAN_BRANCH" }
+    }
+
     @Test fun `unused sibling AI output cannot be shipped as a valid joined workflow`() {
         val start = WorkflowNode("start", "manual.trigger", "시작", NodePosition(0.0, 0.0))
         val worker = WorkflowNode("worker", "ai.generate", "분석", NodePosition(1.0, 0.0), mapOf("instruction" to "분석"))

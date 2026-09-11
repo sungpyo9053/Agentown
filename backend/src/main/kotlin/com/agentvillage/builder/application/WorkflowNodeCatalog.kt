@@ -267,6 +267,12 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
             if (outgoing.map { it.condition }.distinct().size != outgoing.size) {
                 issues += ValidationIssue("DUPLICATE_BRANCH_CONDITION", "조건 분기의 edge condition이 중복됩니다.", branch.id)
             }
+            val conditions = outgoing.mapNotNull { parseBranchCondition(it.condition) }
+            conditions.filter { it.second in setOf("true", "false") }.groupBy { it.first }
+                .filterValues { values -> values.map { it.second }.toSet() != setOf("true", "false") }
+                .keys.forEach { field ->
+                    issues += ValidationIssue("INCOMPLETE_BOOLEAN_BRANCH", "조건 '$field'의 true와 false 경로가 모두 필요합니다. 미통과 경로에는 검토 사유와 추가 확인 사항을 반환하고 성공 결과로 바꾸지 마세요.", branch.id)
+                }
         }
         return WorkflowValidationResult(issues.isEmpty(), graphHash = hash(graph), issues = issues)
     }

@@ -151,6 +151,7 @@ class CodexCliMetaAgentModel(
         template.render와 slack.send.mock에는 rendererKey를 반드시 넣는다. 일반 출력은 plain-text.v1, 시장 뉴스 보고서는 slack.market-news.v1만 사용한다.
         모든 edge에는 bindings를 [{"sourceField":"...","targetField":"..."}] 배열로 하나 이상 넣는다.
         condition.branch에서 나가는 모든 edge condition은 category=BUG 또는 qualityPassed=true처럼 field=value 형식이어야 하며 서로 중복되면 안 된다. success 같은 단독 상태 문자열은 사용하지 않는다.
+        boolean 분기는 같은 필드의 true와 false 경로를 모두 정의한다. 미통과 경로는 검토 사유·미확인 사항을 반환하며 성공으로 위장하지 않는다. 단순 검토 의견 반영이면 분기를 추가하지 말고 검토 결과를 최종 담당자에게 전달한다. 원문 전달용 binding 때문에 분기에 동일 조건의 두 번째 경로를 만들지 않는다.
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
