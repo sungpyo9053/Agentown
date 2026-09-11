@@ -95,7 +95,14 @@ class TFrameXDefinitionCompilerTest {
         val normalized = contract.normalizeGeneratedConfig(aliasPlan)
         assertThat(normalized.nodes.single().config).containsEntry("format", "bundle").doesNotContainKey("rendererKey")
         assertThat(contract.normalizeGeneratedConfig(normalized)).isEqualTo(normalized)
-        listOf(mapOf("rendererKey" to "pdf"), mapOf("format" to "pptx", "rendererKey" to "bundle"), mapOf("format" to null, "rendererKey" to "bundle")).forEach { config ->
+        contract.formats.forEach { format ->
+            val versioned = aliasPlan.copy(nodes = listOf(aliasPlan.nodes.single().copy(config = mapOf("rendererKey" to "artifact.$format.v1"))))
+            assertThat(contract.normalizeGeneratedConfig(versioned).nodes.single().config).isEqualTo(mapOf("format" to format))
+        }
+        listOf(mapOf("rendererKey" to "pdf"), mapOf("rendererKey" to "artifact.pdf.v1"), mapOf("rendererKey" to "artifact.bundle.v2"),
+            mapOf("rendererKey" to "other.bundle.v1"), mapOf("rendererKey" to "artifact.bundle.v1/../pdf"),
+            mapOf("format" to "pptx", "rendererKey" to "bundle"), mapOf("format" to "pptx", "rendererKey" to "artifact.bundle.v1"),
+            mapOf("format" to null, "rendererKey" to "bundle")).forEach { config ->
             val explicit = aliasPlan.copy(nodes = listOf(aliasPlan.nodes.single().copy(config = config)))
             assertThat(contract.normalizeGeneratedConfig(explicit)).isEqualTo(explicit)
         }

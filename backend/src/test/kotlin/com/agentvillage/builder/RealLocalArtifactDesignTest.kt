@@ -45,7 +45,11 @@ class RealLocalArtifactDesignTest {
         val started = System.nanoTime()
         val replay = System.getenv("REAL_LOCAL_ARTIFACT_REPLAY_BUNDLE")
         var bundle = if (replay == null) pipeline.generateDesign(context, instruction, StructuredMetaAgentPipeline.DesignMode.AGENT_DEVELOPMENT, userInstruction = instruction)
-        else pipeline.normalizeBoundAgentSchemas(mapper.readValue(Path.of(replay).toFile(), MetaAgentDesignBundle::class.java))
+        else mapper.readValue(Path.of(replay).toFile(), MetaAgentDesignBundle::class.java).let { captured ->
+            pipeline.normalizeBoundAgentSchemas(captured.copy(proposal = captured.proposal.copy(
+                graphPlan = captured.proposal.graphPlan?.let(LocalArtifactContract::normalizeGeneratedConfig),
+            )))
+        }
         val initialMillis = (System.nanoTime() - started) / 1_000_000
         fun validate() = validator.validate(translator.translate(context.workflowId, bundle.proposal), bundle.requirement,
             bundle.proposal, bundle.agentDefinitions, instruction)

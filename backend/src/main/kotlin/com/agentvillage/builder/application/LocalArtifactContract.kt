@@ -16,8 +16,9 @@ object LocalArtifactContract {
     val runtimeModules = mapOf("pptx" to listOf("pptx"), "xlsx" to listOf("openpyxl"), "docx" to listOf("docx"))
         .let { it + ("bundle" to it.values.flatten().distinct()) }
     fun normalizeGeneratedConfig(plan: WorkflowGraphPlan) = plan.copy(nodes = plan.nodes.map { node ->
-        val alias = node.config["rendererKey"]
-        if (node.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName && "format" !in node.config && alias in formats)
+        val key = node.config["rendererKey"] as? String
+        val alias = formats.firstOrNull { key == it || key == "artifact.$it.v1" }
+        if (node.nodeType == NodeType.LOCAL_ARTIFACT_RENDER.wireName && "format" !in node.config && alias != null)
             node.copy(config = (node.config - "rendererKey") + ("format" to alias))
         else node
     })
