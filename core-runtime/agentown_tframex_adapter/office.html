@@ -6,6 +6,7 @@
 .desk{width:190px;max-width:100%;margin:auto}.head{width:36px;left:calc(50% - 18px)}.body{width:62px;left:calc(50% - 31px)}.chair{width:76px;left:calc(50% - 38px)}.floor{grid-template-columns:repeat(auto-fit,minmax(180px,230px));justify-content:center;min-height:285px}.employee{align-self:start}.windows{position:relative}.windows:after{content:'🌿';position:absolute;bottom:-5px;right:20px;font-size:45px}@media(max-width:560px){.floor{grid-template-columns:repeat(2,minmax(0,1fr))}.head{width:30px;left:calc(50% - 15px)}}
 #output{overflow-x:auto}#output table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.6;margin:16px 0}#output th,#output td{border:1px solid #c3cecb;padding:10px;text-align:left;vertical-align:top;min-width:100px;overflow-wrap:anywhere}#output th{background:#edf3ef}
 a.toggle{text-decoration:none;color:inherit;margin-right:12px}
+#input-form{background:#fff;border-radius:16px;padding:24px;margin-bottom:24px}#input-fields label{display:block;margin:18px 0}#input-fields textarea,#input-fields input,#input-fields select{display:block;width:100%;padding:12px;margin-top:8px;font:inherit;border:1px solid #a7b7b0;border-radius:8px}#input-fields textarea{min-height:130px;resize:vertical}#input-error{color:#873e30}
 </style>
 <header><div><small>AGENTOWN · LOCAL OFFICE</small><h1 id="company">나의 AI 회사</h1><div id="connection" role="status">로컬 실행기에 연결 중…</div><div id="execution-error" role="alert" hidden></div></div><button class="toggle" id="motion">움직임 끄기</button></header>
 <main><section class="room" aria-label="에이전트 사무실"><div class="windows" aria-hidden="true"><i class="window"></i><i class="window"></i><i class="window"></i></div><div class="floor" id="employees"></div></section><section class="detail"><h2 id="person">직원을 선택해 주세요</h2><p id="role">직원이 곧 패키지의 에이전트입니다. 실제 실행 이벤트에만 작업 중으로 표시됩니다.</p><div id="output"></div></section></main>
@@ -13,6 +14,40 @@ a.toggle{text-decoration:none;color:inherit;margin-right:12px}
 <script>
 const labels={IDLE:'대기',RUNNING:'작업 중',SUCCEEDED:'완료',FAILED:'실패 · 확인 필요',INTERRUPTED:'중단',EXECUTION_NOT_CONFIGURED:'실행 설정 필요'};
 const colors=['#7d998d','#b38c79','#7f99b0','#c2a56f','#9b89ac','#829f9e'];let selected=null,buttons=new Map();
+const inputForm=document.createElement('form');inputForm.id='input-form';inputForm.hidden=true;
+inputForm.innerHTML='<h2>이번에 처리할 자료를 입력하세요</h2><p>예시 자료로 자동 실행하지 않습니다. 입력한 자료는 실행 시 설정된 AI 제공자에게 전달됩니다.</p><div id="input-fields"></div><p id="input-error" role="alert" hidden></p><button class="toggle" type="submit">이 자료로 직원들 실행</button>';
+document.querySelector('main').prepend(inputForm);
+let inputControls=null,inputSubmitted=false;
+function paintInput(schema){
+ if(!schema){if(inputControls)inputForm.hidden=true;return}
+ inputForm.hidden=false;if(inputControls)return;
+ const properties=Object.entries(schema.properties||{}),whole=!properties.length||properties.length>50;
+ const fields=whole?[['전체 입력',{type:'object',description:'패키지 입력 형식에 맞는 JSON 객체'}]]:properties;
+ inputControls=fields.map(([key,field])=>{
+  const label=document.createElement('label');label.append(document.createTextNode((field.description||key)+((schema.required||[]).includes(key)?' (필수)':'')));
+  const control=document.createElement(field.type==='boolean'?'select':field.type==='number'||field.type==='integer'?'input':'textarea');
+  if(field.type==='boolean'){for(const [value,text] of [['','선택하세요'],['true','예'],['false','아니요']]){const option=document.createElement('option');option.value=value;option.textContent=text;control.append(option)}}
+  else if(field.type==='number'||field.type==='integer'){control.type='number';control.step=field.type==='integer'?'1':'any'}
+  else if(field.type==='object'||field.type==='array'){control.placeholder=field.type==='array'?'JSON 배열: [ ... ]':'JSON 객체: { ... }'}
+  control.required=whole||(schema.required||[]).includes(key);label.append(control);document.querySelector('#input-fields').append(label);
+  return {key,field,control,whole};
+ });
+}
+inputForm.onsubmit=async event=>{
+ event.preventDefault();if(inputSubmitted||inputForm.dataset.busy==='true')return;
+ const button=inputForm.querySelector('button'),error=document.querySelector('#input-error');error.hidden=true;
+ try{
+  let value={};for(const {key,field,control,whole} of inputControls||[]){const raw=control.value;if(!raw.trim()&&!control.required)continue;
+   const parsed=field.type==='string'?raw:JSON.parse(raw);
+   if(whole)value=parsed;else Object.defineProperty(value,key,{value:parsed,enumerable:true});
+  }
+  inputForm.dataset.busy='true';button.disabled=true;
+  const response=await fetch('input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+  if(!response.ok)throw Error(response.status===409?'이미 실행이 시작됐습니다. 중복 실행하지 않습니다.':'입력 형식을 확인해 주세요. 입력은 그대로 남아 있습니다.');
+  inputSubmitted=true;inputForm.hidden=true;
+ }catch(e){error.textContent=e instanceof SyntaxError?'숫자·목록·객체의 입력 형식을 확인해 주세요. 입력은 보존됩니다.':e.message||'실행기에 연결하지 못했습니다. 입력은 보존됩니다.';error.hidden=false}
+ finally{inputForm.dataset.busy='false';button.disabled=inputSubmitted}
+};
 function readable(value){if(typeof value==='string'){try{return readable(JSON.parse(value))}catch{return value}}if(Array.isArray(value))return value.map((item,index)=>(index+1)+'. '+readable(item)).join('\n');if(value&&typeof value==='object')return Object.entries(value).map(([key,item])=>key+'\n'+readable(item)).join('\n\n');return String(value)}
 function tableCells(line){const text=line.trim();if(!text.startsWith('|')||!text.endsWith('|')||text.includes('\\|'))return null;const cells=text.slice(1,-1).split('|').map(cell=>cell.trim());return cells.length>=2&&cells.length<=20?cells:null}
 function renderOutput(target,text){
@@ -47,7 +82,7 @@ async function downloadArtifact(event){
 }
 document.querySelector('#artifact').onclick=downloadArtifact;
 document.querySelector('#motion').onclick=()=>{const paused=document.body.classList.toggle('paused');document.querySelector('#motion').textContent=paused?'움직임 켜기':'움직임 끄기'};
-function paint(state){document.querySelector('#company').textContent=state.name;const progress=(state.activeSteps||[]).map(step=>step.label+' ('+step.elapsedSeconds+'초)').join(' · ');document.querySelector('#connection').textContent='내 PC 실행 · '+(labels[state.status]||state.status)+(progress?' · '+progress:'');const error=document.querySelector('#execution-error');error.hidden=!state.error;error.textContent=state.error||'';const artifact=document.querySelector('#artifact');artifact.hidden=!state.artifact;if(state.artifact){artifact.download=state.artifact.name;artifact.textContent='결과 파일 다운로드 ('+Math.ceil(state.artifact.bytes/1024)+' KB)'}const employees=state.employees;selected=selected||employees[0]?.key;
+function paint(state){paintInput(state.inputSchema);document.querySelector('#company').textContent=state.name;const progress=(state.activeSteps||[]).map(step=>step.label+' ('+step.elapsedSeconds+'초)').join(' · ');document.querySelector('#connection').textContent='내 PC 실행 · '+(labels[state.status]||state.status)+(progress?' · '+progress:'');const error=document.querySelector('#execution-error');error.hidden=!state.error;error.textContent=state.error||'';const artifact=document.querySelector('#artifact');artifact.hidden=!state.artifact;if(state.artifact){artifact.download=state.artifact.name;artifact.textContent='결과 파일 다운로드 ('+Math.ceil(state.artifact.bytes/1024)+' KB)'}const employees=state.employees;selected=selected||employees[0]?.key;
 employees.forEach((employee,index)=>{let button=buttons.get(employee.key);if(!button){button=document.createElement('button');button.className='employee';button.style.setProperty('--shirt',colors[index%colors.length]);button.innerHTML='<div class="desk" aria-hidden="true"><i class="table"></i><i class="screen"></i><i class="cup"></i><i class="body"></i><i class="head"></i><i class="chair"></i></div><span class="name"></span><span class="badge"></span>';buttons.set(employee.key,button);document.querySelector('#employees').append(button)}button.onclick=()=>{selected=employee.key;paint(state)};button.dataset.status=employee.status;button.setAttribute('aria-pressed',String(employee.key===selected));button.querySelector('.name').textContent=employee.name;button.querySelector('.badge').textContent=labels[employee.status]||employee.status});
 const person=employees.find(e=>e.key===selected);if(person){document.querySelector('#person').textContent=person.name;document.querySelector('#role').textContent=person.role;renderOutput(document.querySelector('#output'),person.output?readable(person.output):'아직 이 직원의 실행 결과가 없습니다.');document.querySelector('#save').disabled=!person.output}}
 async function poll(){try{const response=await fetch('state',{cache:'no-store'});if(!response.ok)throw Error();paint(await response.json())}catch{document.querySelector('#connection').textContent='실행기 연결 끊김 · 마지막 상태입니다';document.body.classList.add('paused')}finally{setTimeout(poll,1500)}}poll();

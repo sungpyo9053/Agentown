@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from tframex.models.primitives import Message
 
-from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper, codex_auth_file, safe_cli_failure
+from agentown_tframex_adapter.codex_llm import CodexCliLLMWrapper, cli_search_path, codex_auth_file, safe_cli_failure
 
 
 class _Process:
@@ -18,6 +18,21 @@ class _Process:
 
 
 class CodexWritableHomeTest(unittest.IsolatedAsyncioTestCase):
+    def test_nonstandard_cli_and_node_directories_are_preserved_without_inheriting_path(self):
+        with patch.dict(os.environ, {"PATH": "/unrelated/private-tools"}), \
+             patch("agentown_tframex_adapter.codex_llm.shutil.which", return_value="/opt/custom-node/bin/node"):
+            paths = cli_search_path("/opt/custom-cli/bin/codex").split(os.pathsep)
+        self.assertEqual(paths[:2], ["/opt/custom-cli/bin", "/opt/custom-node/bin"])
+        self.assertNotIn("/unrelated/private-tools", paths)
+        self.assertNotIn(".", paths)
+        self.assertNotIn("", paths)
+
+    def test_native_cli_without_node_uses_only_cli_directory_and_system_defaults(self):
+        with patch("agentown_tframex_adapter.codex_llm.shutil.which", return_value=None):
+            paths = cli_search_path("/custom/bin/codex").split(os.pathsep)
+        self.assertEqual(paths[0], "/custom/bin")
+        self.assertEqual(len(paths), len(set(paths)))
+
     async def test_web_search_is_opt_in_and_requires_completed_search_events(self):
         with tempfile.TemporaryDirectory() as shared_home:
             Path(shared_home, "auth.json").write_text('{}', encoding="utf-8")

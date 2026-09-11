@@ -271,6 +271,7 @@ class StructuredMetaAgentPipeline(
             "remainingQuestions" to remainingQuestions,
         )
         val stage = "define_agent_development_problem"
+        val startedAt = System.nanoTime()
         audit.record(context, stage, "STARTED", summary(input) + mapOf("executor" to model.executorName, "model" to model.modelName))
         progress.running(context.jobId, BuilderGenerationStage.PROBLEM_DEFINING)
         return try {
@@ -285,12 +286,13 @@ class StructuredMetaAgentPipeline(
             audit.record(context, stage, "SUCCEEDED", summary(input), mapOf(
                 "readyForDesign" to result.readyForDesign,
                 "questionCount" to result.clarificationQuestions.size,
+                "durationMs" to (System.nanoTime() - startedAt) / 1_000_000,
                 "executor" to model.executorName,
                 "model" to model.modelName,
             ))
             result
         } catch (exception: Exception) {
-            audit.record(context, stage, "FAILED", summary(input), failure = failure(exception, 0))
+            audit.record(context, stage, "FAILED", summary(input), failure = failure(exception, (System.nanoTime() - startedAt) / 1_000_000))
             when (exception) {
                 is ApiException -> throw exception
                 is MetaAgentExecutionException -> throw BadRequestException(exception.errorCode, exception.message ?: "문제 정의 에이전트 실행에 실패했습니다.")
@@ -1503,7 +1505,15 @@ class StructuredMetaAgentPipeline(
         detail?.let { "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다: ${it.take(500)}" }
             ?: "메타 에이전트 결과가 승인된 스키마와 일치하지 않습니다.",
     )
-    private fun summary(input: Map<String, Any?>) = mapOf("fieldCount" to input.size, "instructionChars" to input["instruction"]?.toString()?.length)
+    private fun summary(input: Map<String, Any?>) = buildMap<String, Any?> {
+        put("fieldCount", input.size)
+        put("instructionChars", input["instruction"]?.toString()?.length)
+        val feedback = (input["validationFeedback"] as? List<*>)?.filterIsInstance<ValidationIssue>().orEmpty()
+        if (feedback.isNotEmpty()) {
+            put("validationIssueCount", feedback.size)
+            put("validationIssueCodes", feedback.map { it.code }.distinct().take(100))
+        }
+    }
     private fun failure(exception: Exception, durationMs: Long) = when (exception) {
         is MetaAgentExecutionException -> MetaAgentFailure(exception.errorCode, exception.errorType, exception.retryable, durationMs, exception.cliExitCode, exception.safeMessage)
         is ApiException -> MetaAgentFailure(exception.code, exception::class.simpleName ?: "ApiException", false, durationMs, safeMessage = exception.message)

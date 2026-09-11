@@ -25,6 +25,21 @@ import org.mockito.kotlin.whenever
 import java.util.UUID
 
 class MetaAgentPipelineSafetyTest {
+    @Test fun `audit records repair codes and intake duration without source text or issue messages`() {
+        val mapper = jacksonObjectMapper()
+        val captured = mutableListOf<MetaAgentRun>()
+        val runs = mock<MetaAgentRunRepository>()
+        whenever(runs.save(any())).thenAnswer { call -> (call.arguments[0] as MetaAgentRun).also(captured::add) }
+        val pipeline = StructuredMetaAgentPipeline(DeterministicMockMetaAgentModel(mapper), mapper, MetaAgentAuditService(runs), mock())
+        val context = PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+        pipeline.defineAgentDevelopmentProblem(context, "문장 다듬기 private-source", 10)
+        assertThat(captured.last().outputSummary?.get("durationMs") as Long).isGreaterThanOrEqualTo(0)
+        pipeline.generateDesign(context, "입력 문서를 분석해 요약 결과를 반환하는 에이전트 private-source",
+            validationFeedback = listOf(ValidationIssue("MISSING_REQUIRED_CONFIG", "private-detail")))
+        assertThat(captured.last().inputSummary["validationIssueCodes"]).isEqualTo(listOf("MISSING_REQUIRED_CONFIG"))
+        assertThat(mapper.writeValueAsString(captured.map { it.inputSummary })).doesNotContain("private-source", "private-detail")
+    }
+
     @Test fun `internal design errors never become generic user clarification`() {
         listOf("MEANING_REQUIREMENT_DROPPED", "MEANING_UNREQUESTED_INTEGRATION", "MEANING_AGENT_INPUT_UNBOUND", "WORKFLOW_VALIDATION_FAILED").forEach { code ->
             assertThat(AgentDevelopmentProblemPolicy.semanticFallback(listOf(ValidationIssue(code, "design error")))).isEmpty()

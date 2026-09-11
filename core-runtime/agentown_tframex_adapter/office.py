@@ -9,6 +9,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from jsonschema import Draft202012Validator
 
 
 class OfficeTrace(list):
@@ -22,9 +23,14 @@ class OfficeTrace(list):
 
 
 class LocalOffice:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, input_schema=None):
         self.results_root = (root / "results").resolve()
         self.artifact = None
+        self.input_schema = copy.deepcopy(input_schema)
+        self.input_ready = threading.Event()
+        self.submitted_input = None
+        if input_schema is not None:
+            Draft202012Validator.check_schema(input_schema)
         bundle = json.loads((root / "design-bundle.json").read_text(encoding="utf-8"))
         workflow = json.loads((root / "workflow.json").read_text(encoding="utf-8"))
         self.lock = threading.Lock()
@@ -53,6 +59,42 @@ class LocalOffice:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass  # Do not log the capability URL or user results.
+
+            def do_POST(self):
+                origin = f"http://127.0.0.1:{office.server.server_port}"
+                if self.headers.get("Host") != origin.removeprefix("http://") or self.headers.get("Origin") != origin:
+                    self.send_error(403)
+                    return
+                if self.path != f"/{office.token}/input" or office.input_schema is None:
+                    self.send_error(404)
+                    return
+                if self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding"):
+                    self.send_error(415)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 1024 * 1024:
+                        self.send_error(413)
+                        return
+                    self.connection.settimeout(5)
+                    value = json.loads(self.rfile.read(length))
+                    if not isinstance(value, dict) or not Draft202012Validator(office.input_schema).is_valid(value):
+                        self.send_error(422, "Input does not match package schema")
+                        return
+                except (ValueError, OSError):
+                    self.send_error(400)
+                    return
+                with office.lock:
+                    if office.submitted_input is not None:
+                        self.send_error(409)
+                        return
+                    office.submitted_input = value
+                    office.state["status"] = "RUNNING"
+                    office.input_ready.set()
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def do_GET(self):
                 if self.headers.get("Host") != f"127.0.0.1:{office.server.server_port}":
@@ -98,6 +140,8 @@ class LocalOffice:
     def snapshot(self):
         with self.lock:
             snapshot = copy.deepcopy(self.state)
+            if self.input_schema is not None and self.submitted_input is None:
+                snapshot["inputSchema"] = copy.deepcopy(self.input_schema)
             snapshot["activeSteps"] = [{"label": self.step_labels.get(node, "실행 단계"),
                 "elapsedSeconds": max(0, int(time.monotonic() - started))}
                 for node, started in self.running_steps.items()]

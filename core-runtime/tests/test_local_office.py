@@ -193,4 +193,79 @@ def test_loopback_capability_no_file_serving_or_writes(office):
     assert error.value.code == 403
     with pytest.raises(HTTPError) as error:
         urlopen(Request(office.url, data=b'run', method='POST'))
-    assert error.value.code == 501
+    assert error.value.code == 403
+
+
+def test_interactive_input_is_validated_once_and_never_echoed_in_state(office):
+    office.input_schema = {'type': 'object', 'properties': {'text': {'type': 'string', 'minLength': 1}},
+                           'required': ['text'], 'additionalProperties': False}
+    origin = office.url.split('/')[0] + '//' + office.url.split('/')[2]
+    headers = {'Origin': origin, 'Content-Type': 'application/json'}
+    assert office.snapshot()['inputSchema'] == office.input_schema
+    assert not office.input_ready.is_set()
+    for value in ({}, {'text': 3}, {'text': ''}, {'text': 'ok', 'extra': True}, []):
+        with pytest.raises(HTTPError) as error:
+            urlopen(Request(office.url + 'input', data=json.dumps(value).encode(), headers=headers))
+        assert error.value.code == 422
+        assert not office.input_ready.is_set()
+    with urlopen(Request(office.url + 'input', data=b'{"text":"private input"}', headers=headers)) as response:
+        assert response.status == 204
+    assert office.input_ready.is_set()
+    assert office.submitted_input == {'text': 'private input'}
+    assert office.snapshot()['status'] == 'RUNNING'
+    assert 'inputSchema' not in office.snapshot()
+    assert 'private input' not in json.dumps(office.snapshot())
+    with pytest.raises(HTTPError) as error:
+        urlopen(Request(office.url + 'input', data=b'{"text":"duplicate"}', headers=headers))
+    assert error.value.code == 409
+    assert office.submitted_input == {'text': 'private input'}
+
+
+def test_input_form_preserves_types_drafts_and_prevents_duplicate_calls():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for the shipped input form test')
+    html = (Path(__file__).parents[1] / 'agentown_tframex_adapter/office.html').read_text()
+    handler = 'inputForm.onsubmit=async event=>{' + html.split('inputForm.onsubmit=async event=>{', 1)[1].split('function readable', 1)[0]
+    script = r'''
+const assert=require('node:assert/strict');
+const error={hidden:true},button={disabled:false};
+const inputForm={dataset:{},hidden:false,querySelector:()=>button};
+const document={querySelector:()=>error};
+let inputSubmitted=false,calls=0,received,response={ok:false,status:422};
+const fetch=async(path,options)=>{assert.equal(path,'input');assert.equal(options.method,'POST');assert.equal(options.headers['Content-Type'],'application/json');calls++;received=JSON.parse(options.body);return response};
+const field=(key,type,value,required=true)=>({key,field:{type},control:{value,required}});
+let inputControls=[field('text','string',' original '),field('count','integer','0'),field('enabled','boolean','false'),field('rows','array','["one"]'),field('optional','string','',false)];
+''' + handler + r'''
+(async()=>{
+ const event={preventDefault(){}};
+ await inputForm.onsubmit(event);
+ assert.deepEqual(received,{text:' original ',count:0,enabled:false,rows:['one']});
+ assert.equal(inputControls[0].control.value,' original ');assert.equal(inputForm.hidden,false);assert.equal(error.hidden,false);assert.equal(button.disabled,false);
+ inputControls[3].control.value='bad json';await inputForm.onsubmit(event);assert.equal(calls,1);assert.equal(error.hidden,false);
+ inputControls[3].control.value='[]';response={ok:true};
+ const first=inputForm.onsubmit(event);await inputForm.onsubmit(event);await first;
+ assert.equal(calls,2);assert.equal(inputSubmitted,true);assert.equal(inputForm.hidden,true);
+ await inputForm.onsubmit(event);assert.equal(calls,2);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
+
+
+def test_interactive_input_rejects_cross_origin_wrong_routes_and_large_payloads(office):
+    origin = office.url.split('/')[0] + '//' + office.url.split('/')[2]
+    headers = {'Origin': origin, 'Content-Type': 'application/json'}
+    with pytest.raises(HTTPError) as error:
+        urlopen(Request(office.url + 'input', data=b'{}', headers=headers))
+    assert error.value.code == 404  # Existing viewer-only mode has no input endpoint.
+    office.input_schema = {'type': 'object'}
+    for path, changes, expected in [('input', {'Origin': 'https://attacker.example'}, 403),
+                                   ('input', {'Origin': 'null'}, 403),
+                                   ('input', {'Host': 'attacker.example'}, 403),
+                                   ('wrong', {}, 404),
+                                   ('input', {'Content-Type': 'text/plain'}, 415),
+                                   ('input', {'Content-Length': str(1024 * 1024 + 1)}, 413)]:
+        with pytest.raises(HTTPError) as error:
+            urlopen(Request(office.url + path, data=b'{}', headers={**headers, **changes}))
+        assert error.value.code == expected
+        assert not office.input_ready.is_set()

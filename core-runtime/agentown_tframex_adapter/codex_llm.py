@@ -29,6 +29,17 @@ def safe_cli_failure(stderr: bytes) -> str:
     return "AI_EXECUTION_FAILED: AI 실행에 실패했습니다. 잠시 후 다시 시도해 주세요."
 
 
+def cli_search_path(executable: str) -> str:
+    # npm installs can use an env-node launcher. Preserve only the resolved
+    # executable/dependency directories, never the whole caller environment.
+    node = shutil.which("node")
+    directories = [str(Path(executable).absolute().parent)]
+    if node:
+        directories.append(str(Path(node).absolute().parent))
+    directories.extend(os.defpath.split(os.pathsep))
+    return os.pathsep.join(dict.fromkeys(path for path in directories if path and path != "."))
+
+
 class CodexCliLLMWrapper(BaseLLMWrapper):
     """TFrameX LLM transport backed by the server's authenticated Codex CLI."""
 
@@ -104,10 +115,12 @@ class CodexCliLLMWrapper(BaseLLMWrapper):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={
-                    "PATH": "/usr/local/bin:/usr/bin:/bin",
+                    "PATH": cli_search_path(executable),
                     "HOME": writable_home,
                     "CODEX_HOME": writable_home,
                     "LANG": "C.UTF-8",
+                    **{key: os.environ[key] for key in ("SystemRoot", "WINDIR")
+                       if os.name == "nt" and key in os.environ},
                 },
             )
             try:

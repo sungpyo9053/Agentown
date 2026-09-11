@@ -82,7 +82,7 @@ class HarnessPackageRenderer(
                 put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
             put("company/index.html", TFrameXRuntimeResources.read("agentown_tframex_adapter/office.html"))
-            put("company/README.md", "# 내 PC에서 회사 보기\n\nSTART_HERE.md의 Python 실행 환경을 준비하고 패키지 루트에서 `.venv/bin/python runners/python/runner.py --office`를 실행하세요. 입력은 examples/sample-input.json에 실제 자료를 넣으세요. 터미널에 표시된 로컬 주소에서 직원별 실제 진행 상태와 결과를 볼 수 있습니다. 실행 종료 후에도 화면은 유지되며 Ctrl+C로 닫습니다. 애니메이션은 내 PC에서 실행되지만 AI 호출에는 설정된 제공자와 인터넷이 필요합니다. 웹에서 실행한 작업이나 Codex 채팅은 이 로컬 실행기 화면에 연결되지 않습니다.\n")
+            put("company/README.md", "# 내 PC에서 회사 보기\n\nSTART_HERE.md의 Python 실행 환경을 준비하고 패키지 루트에서 `.venv/bin/python runners/python/runner.py --office-input`를 실행하세요. 회사 화면에서 실제 자료를 입력하고 실행 버튼을 누르세요. 터미널에 표시된 로컬 주소에서 직원별 실제 진행 상태와 결과를 볼 수 있습니다. 실행 종료 후에도 화면은 유지되며 Ctrl+C로 닫습니다. 애니메이션은 내 PC에서 실행되지만 AI 호출에는 설정된 제공자와 인터넷이 필요합니다. 웹에서 실행한 작업이나 Codex 채팅은 이 로컬 실행기 화면에 연결되지 않습니다.\n")
             put(".env.example", environmentExample(resources))
             put("README.md", packageReadme(normalized))
             put("START_HERE.md", startHere(normalized, resources, generatedSampleInput))
@@ -258,7 +258,7 @@ class HarnessPackageRenderer(
         Codex와 Claude Code는 `AGENTS.md`를 공통 실행 계약으로 사용합니다. 입력 예시는 아래와 같습니다.
 
         ```json
-        ${pretty(sample).trim()}
+        ${pretty(sample).trim().replace("\n", "\n        ")}
         ```
 
         ## 환경변수와 제한
@@ -274,17 +274,20 @@ class HarnessPackageRenderer(
 
         ```bash
         python3 -m venv .venv
-        .venv/bin/pip install ./runtime
-        .venv/bin/python runners/python/runner.py
+        .venv/bin/python -m pip install './runtime[artifacts]'
+        .venv/bin/python runners/python/runner.py --office-input
         ```
 
-        파일 제작 노드가 포함된 패키지는 `.venv/bin/python -m pip install './runtime[artifacts]'`로 제작 도구를 설치하세요.
+        위 명령은 파일 제작 도구까지 전용 가상환경에 설치합니다. 시스템 Python이나 기존 프로젝트의 패키지는 변경하지 않습니다.
         실제 파일은 패키지의 `results` 아래 매번 새 폴더에 생성합니다. 기존 파일은 덮어쓰지 않습니다.
         파일 제작은 로컬 실행기 전용이며, 생성 성공이 내용·출처·레이아웃 검토 완료를 뜻하지는 않습니다.
 
         ## 내 PC에서 직원들이 일하는 회사 화면 보기
 
-        위 실행 환경을 준비한 뒤 `.venv/bin/python runners/python/runner.py --office`로 실행하세요.
+        위 실행 환경을 준비한 뒤 `.venv/bin/python runners/python/runner.py --office-input`로 실행하세요.
+        회사 화면에 실제 자료를 입력하고 ‘이 자료로 직원들 실행’을 누르세요. 누르기 전에는 AI를 호출하지 않으며 예시 자료를 자동 실행하지 않습니다.
+        Windows PowerShell에서는 `py -3 -m venv .venv`, `.venv\Scripts\python.exe -m pip install './runtime[artifacts]'`, `.venv\Scripts\python.exe runners/python/runner.py --office-input` 순서로 실행합니다. Python 3.11 이상이 필요합니다.
+        기존 예시 파일을 사용하는 고급 실행은 `--office`로 유지됩니다.
         브라우저의 로컬 회사 화면에서 실제 에이전트별 진행 상태와 결과를 봅니다. AI 호출에는 설정된 제공자와 인터넷이 필요합니다.
         실행이 끝나면 Ctrl+C로 로컬 화면 서버를 종료합니다. 웹 실행이나 별도 채팅의 작업 상태는 표시하지 않습니다.
     """.trimIndent() + "\n"
@@ -329,13 +332,15 @@ class HarnessPackageRenderer(
         if "--check" in sys.argv:
             print(json.dumps({"status": "ENVIRONMENT_READY", "authentication": "NOT_CHECKED", "message": "로컬 실행 도구를 확인했습니다. 로그인·실제 실행·결과물 품질은 별도 검증이 필요합니다."}, ensure_ascii=False, indent=2))
             raise SystemExit(0)
-        definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text()), ensure_ascii=False)
+        interactive_input = "--office-input" in sys.argv
+        if not interactive_input:
+            definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text()), ensure_ascii=False)
         office = None
-        if "--office" in sys.argv:
+        if "--office" in sys.argv or interactive_input:
             from agentown_tframex_adapter.office import LocalOffice, OfficeTrace
-            office = LocalOffice(root)
+            office = LocalOffice(root, input_schema=json.loads((root / "schemas/input.schema.json").read_text()) if interactive_input else None)
             office.start()
-            office.finish("RUNNING")
+            office.finish("IDLE" if interactive_input else "RUNNING")
             print("로컬 회사 화면: " + office.url, file=sys.stderr, flush=True)
             try:
                 webbrowser.open(office.url)
@@ -362,6 +367,9 @@ class HarnessPackageRenderer(
             return await adapter.run(definition)
 
         try:
+            if interactive_input:
+                office.input_ready.wait()
+                definition["input"] = json.dumps(office.submitted_input, ensure_ascii=False)
             result = asyncio.run(execute())
             final = result.get("final") or ""
             try: output = json.loads(final)
