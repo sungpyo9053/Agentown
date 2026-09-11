@@ -97,9 +97,11 @@ class TFrameXDefinitionCompiler(private val mapper: ObjectMapper) {
             val source = definitions[node.config["agentKey"]?.toString()] ?: return emptySet()
             val repeatedTargets = incomingEdges[node.id].orEmpty()
                 .flatMap { edge -> edge.bindings.map { (target, sourceField) ->
-                    indexedArrayRoot(target).substringBefore('.') to sourceField.substringBefore('.')
+                    Triple(edge.source, indexedArrayRoot(target).substringBefore('.'), sourceField.substringBefore('.'))
                 } }
-                .groupBy({ it.first }, { it.second })
+                // Alternative routes from one producer do not produce multiple values.
+                .distinct()
+                .groupBy({ it.second }, { it.third })
                 .filterValues { sources -> sources.groupingBy { it }.eachCount().values.any { it > 1 } }
                 .keys
             val parallelTextTargets = incomingEdges[node.id].orEmpty()

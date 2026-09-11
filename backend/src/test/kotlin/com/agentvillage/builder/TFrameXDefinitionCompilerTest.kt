@@ -39,6 +39,15 @@ class TFrameXDefinitionCompilerTest {
         val agents = compiled["agents"] as List<Map<String, Any?>>
         assertThat(agents.single { it["name"] == "reviewer__review" }["outputSchema"]).isEqualTo(listOf(status, review))
         assertThat(agents.single { it["name"] == "writer__final" }["inputSchema"]).isEqualTo(listOf(review))
+        val structuredReview = review.copy(type = "object", minLength = null,
+            objectSchema = listOf(FieldDefinition("finding", "string", true, "finding")))
+        val structured = compiler.compile("router-structured-evidence", graph, listOf(
+            reviewer.copy(outputSchema = listOf(status, structuredReview)),
+            writer.copy(inputSchema = listOf(structuredReview)),
+        ), emptyMap(), listOf(final))
+        val structuredAgents = structured["agents"] as List<Map<String, Any?>>
+        assertThat(structuredAgents.single { it["name"] == "writer__final" }["inputSchema"])
+            .isEqualTo(listOf(structuredReview))
     }
 
     @Test
