@@ -465,6 +465,7 @@ class TFrameXDefinitionCompilerTest {
         assertThat(runtimeAgents.first { it["name"] == "collector__collect" }["systemPrompt"].toString())
             .contains("출력 계약 전체를 재귀적으로 준수한다", "선언되지 않은 필드는 반환하지 않는다", "결과물 품질 기준:")
             .contains("부재 사실로 바꾸려면 원문의 명시적 근거가 필요하다")
+            .contains("결론을 바꾸는 한정어를 보존한다", "통계적으로 유의한 차이를 확인하지 못함")
         assertThat(definition["workflowInputSchema"]).isEqualTo(workflowInputs)
     }
 
