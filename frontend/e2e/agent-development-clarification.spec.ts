@@ -96,6 +96,7 @@ test("team view hides developer graph, deduplicates resources, and downloads a b
   await page.getByRole("button", { name: "리소스" }).click();
   await expect(page.getByText("Agentown 제공 AI")).toHaveCount(1);
   await page.getByRole("button", { name: "팀" }).click();
+  await expect(page.getByText("내 PC 실행에는 도구 설치와 AI 서비스 로그인이 필요할 수 있습니다. AI 이용 조건·요금은 해당 서비스 기준을 따릅니다.")).toBeVisible();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "에이전트 패키지 다운로드" }).click();
   await expect((await download).suggestedFilename()).toBe("agentown-agent-conversa.zip");

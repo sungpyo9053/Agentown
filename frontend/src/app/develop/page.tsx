@@ -256,7 +256,7 @@ function PackageDownloadButton({ conversationId }: { conversationId: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "패키지를 내려받지 못했습니다."); }
     finally { setDownloading(false); }
   }
-  return <div><button type="button" disabled={downloading} onClick={download} className="flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs disabled:opacity-40">{downloading ? <Download className="h-3.5 w-3.5 animate-pulse" /> : <FileCode2 className="h-3.5 w-3.5" />}{downloading ? "패키지 준비 중" : "에이전트 패키지 다운로드"}</button>{error && <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p>}</div>;
+  return <div><button type="button" disabled={downloading} onClick={download} className="flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs disabled:opacity-40">{downloading ? <Download className="h-3.5 w-3.5 animate-pulse" /> : <FileCode2 className="h-3.5 w-3.5" />}{downloading ? "패키지 준비 중" : "에이전트 패키지 다운로드"}</button><p className="mt-2 text-[11px] leading-5 text-mute">내 PC 실행에는 도구 설치와 AI 서비스 로그인이 필요할 수 있습니다. AI 이용 조건·요금은 해당 서비스 기준을 따릅니다.</p>{error && <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p>}</div>;
 }
 function AgentEditor({ agent, resources, disabled, save }: { agent: Agent; resources: Resource[]; disabled: boolean; save: (value: Agent) => void }) {
   const [editing, setEditing] = useState(false);
