@@ -152,6 +152,7 @@ class CodexCliMetaAgentModel(
         모든 edge에는 bindings를 [{"sourceField":"...","targetField":"..."}] 배열로 하나 이상 넣는다.
         condition.branch에서 나가는 모든 edge condition은 category=BUG 또는 qualityPassed=true처럼 field=value 형식이어야 하며 서로 중복되면 안 된다. success 같은 단독 상태 문자열은 사용하지 않는다.
         boolean 분기는 같은 필드의 true와 false 경로를 모두 정의한다. 미통과 경로는 검토 사유·미확인 사항을 반환하며 성공으로 위장하지 않는다. 단순 검토 의견 반영이면 분기를 추가하지 말고 검토 결과를 최종 담당자에게 전달한다. 원문 전달용 binding 때문에 분기에 동일 조건의 두 번째 경로를 만들지 않는다.
+        $reviewDeliveryContract
         AI 노드의 agentKey는 반드시 agentDefinitions의 key 중 하나를 참조한다.
         외부 연동 명칭은 Mock으로 표현하며 실제 외부 전송을 제안하지 않는다.
         사용자가 요청하지 않은 Slack, Notion, FAQ, 승인, 분류 단계를 추가하지 않는다.
@@ -170,12 +171,15 @@ class CodexCliMetaAgentModel(
     """.trimIndent()
     }
 
+    private val reviewDeliveryContract = "검수 후 최종 담당자에게는 상태 플래그만 보내지 말고 초안·구체적 검토 의견·필요한 원문을 각각 inputSchema와 binding으로 연결한다. quality.check는 구조 계약 검사이지 AI 검토 의견의 의미 판정이 아니므로 검수 대용으로 추가하지 않는다. 원문으로 바로 수정할 수 있는 누락·중복·과도한 표현은 최종 담당자가 수정된 결과와 남은 한계를 반환하게 한다. 미확인 사실·필수 조건·사람 승인은 대신 확정하지 않는다."
+
     private fun repairPrompt(inputJson: String): String = """
         당신은 서버 검증에 실패한 Agentown 설계 번들을 교정한다.
         아래 JSON의 validationFeedback은 신뢰할 수 있는 검증 결과다. previousBundle의 올바른 필드와 userInstruction의 의미를 보존하고, 지적된 오류만 고친 완전한 설계 번들을 제공된 JSON Schema에 맞춰 반환한다.
         새 시나리오나 사용자가 요청하지 않은 Agent, 도구, 승인, 외부 연동을 추가하지 않는다.
 
         다음 실행 계약을 반드시 지킨다.
+        - $reviewDeliveryContract
         - local.artifact.render의 설정은 format=${LocalArtifactContract.formats.joinToString("/")}다. 정상 format을 rendererKey로 바꾸지 않는다. 이 도구의 출력 계약: ${LocalArtifactContract.outputSummary()}.
         - proposal.inputSchema에는 실행 시 사용자가 제공하는 최상위 입력만 둔다. 내부 전달값은 Agent inputSchema와 edge binding으로 전달한다.
         - MEANING_UNREQUESTED_INTEGRATION이 있으면 해당 연동의 필수 설정을 임의로 채워 통과시키지 않는다. 불필요한 연동 노드와 가이드를 제거하고 원래 사용자 입력을 필요한 Agent에 연결한다. 입력 자료 분석은 ai.generate로 수행하며 외부 검색 결과를 만들지 않는다. 사용자 명시 연동은 삭제하지 않는다.

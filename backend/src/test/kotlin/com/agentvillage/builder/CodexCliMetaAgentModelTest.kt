@@ -124,6 +124,7 @@ class CodexCliMetaAgentModelTest {
         val prompt = argumentCaptor<String>()
         verify(runner).executeWithSharedAuth(eq("gpt-test"), prompt.capture(), eq(context.jobId), any())
         assertThat(prompt.firstValue).contains("노드 카탈로그는 사용 가능한 기능 목록이지 기본 설계가 아니다", "knowledge.search.mock이나 Notion 연동이 아니다")
+        assertThat(prompt.firstValue).contains("초안·구체적 검토 의견·필요한 원문", "quality.check는 구조 계약 검사", "수정된 결과와 남은 한계")
     }
 
     @Test
@@ -150,6 +151,7 @@ class CodexCliMetaAgentModelTest {
             "INVALID_AGENT_OUTPUT_SCHEMA",
             "reason 필드가 누락되었습니다.",
             "MEANING_UNREQUESTED_INTEGRATION", "필수 설정을 임의로 채워 통과시키지 않는다", "사용자 명시 연동은 삭제하지 않는다",
+            "초안·구체적 검토 의견·필요한 원문", "quality.check는 구조 계약 검사", "수정된 결과와 남은 한계",
         )
         assertThat(prompt.firstValue).doesNotContain("Business Process Analyst", "Guide Designer")
         assertThat(prompt.firstValue.length).isLessThan(4_000)
