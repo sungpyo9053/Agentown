@@ -48,6 +48,7 @@ class RealAmbiguousProductE2ETest {
         val packageDownloaded: Boolean = false,
         val runnerStatus: String? = null,
         val issues: List<String> = emptyList(),
+        val generationMode: String = "FRESH_MODEL",
     )
 
     @Test
@@ -91,6 +92,8 @@ class RealAmbiguousProductE2ETest {
         val report = mapOf(
             "mode" to "real-ambiguous-paid-product-e2e",
             "model" to modelName,
+            "resumePassed" to resumePassed,
+            "replayFailedPackages" to replayFailedPackages,
             "total" to results.size,
             "passed" to passed,
             "failed" to results.size - passed,
@@ -256,7 +259,7 @@ class RealAmbiguousProductE2ETest {
         val output = packageRoot.resolve("runner-output.json")
         val process = ProcessBuilder(runtimePython.toString(), "runners/python/runner.py")
             .directory(packageRoot.toFile())
-            .redirectErrorStream(true)
+            .redirectError(packageRoot.resolve("runner-stderr.log").toFile())
             .redirectOutput(output.toFile())
             .apply {
                 environment()["AGENTOWN_CODEX_COMMAND"] = codexCommand
@@ -274,6 +277,7 @@ class RealAmbiguousProductE2ETest {
         val issues = buildList {
             if (process.exitValue() != 0) add("RUNNER_EXIT_${process.exitValue()}")
             json?.path("code")?.asText()?.takeIf(String::isNotBlank)?.let(::add)
+            if (status != "SUCCEEDED") json?.path("message")?.asText()?.takeIf(String::isNotBlank)?.let(::add)
             if (json == null) add(text.takeLast(1000))
         }
         return RunnerResult(status, issues)
@@ -351,7 +355,7 @@ class RealAmbiguousProductE2ETest {
         if (!Files.isRegularFile(target)) return null
         return runCatching { mapper.readValue(target.toFile(), Result::class.java) }.getOrNull()
             ?.takeIf { it.passed && it.expected == problem.expected.name }
-            ?.copy(actual = problem.expected.name)
+            ?.copy(actual = problem.expected.name, generationMode = "RESUMED_PREVIOUS_PASS")
     }
 
     private fun replayFailedPackage(
@@ -372,7 +376,7 @@ class RealAmbiguousProductE2ETest {
         val previous = runCatching { mapper.readValue(resultPath.toFile(), Result::class.java) }.getOrNull()
             ?.takeIf { !it.passed && it.expected == problem.expected.name } ?: return null
         val bundle = runCatching {
-            if (Files.isRegularFile(bundlePath)) mapper.readValue(bundlePath.toFile(), MetaAgentDesignBundle::class.java)
+            if (previous.actual != "INVALID_DESIGN" && Files.isRegularFile(bundlePath)) mapper.readValue(bundlePath.toFile(), MetaAgentDesignBundle::class.java)
             else mapper.treeToValue(mapper.readTree(invalidBundlePath.toFile())["bundle"], MetaAgentDesignBundle::class.java)
         }.getOrNull()
             ?.let { original -> original.copy(proposal = original.proposal.copy(
@@ -390,7 +394,7 @@ class RealAmbiguousProductE2ETest {
         )
         if (!validation.valid) return Result(problem.id, problem.category, problem.expected.name, "INVALID_DESIGN",
             false, previous.questionCount, elapsed(started), bundle.agentDefinitions.size, false, null,
-            validation.issues.map { it.code }).also(::record)
+            validation.issues.map { it.code }, generationMode = "CAPTURED_BUNDLE_REPLAY").also(::record)
         val packageRoot = writePackage(problem.id, renderer.render(bundle))
         System.getenv("REAL_META_AGENT_REPLAY_INPUTS")?.let { inputRoot ->
             val input = Path.of(inputRoot).resolve("${problem.id}.json")
@@ -404,6 +408,7 @@ class RealAmbiguousProductE2ETest {
             problem.id, problem.category, problem.expected.name, problem.expected.name,
             zip && execution.status == "SUCCEEDED" && bundle.agentDefinitions.isNotEmpty(),
             previous.questionCount, elapsed(started), bundle.agentDefinitions.size, zip, execution.status, execution.issues,
+            generationMode = "CAPTURED_BUNDLE_REPLAY",
         ).also(::record)
     }
 

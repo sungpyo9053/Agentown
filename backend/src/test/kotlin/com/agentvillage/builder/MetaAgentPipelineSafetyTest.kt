@@ -9,6 +9,9 @@ import com.agentvillage.builder.application.DeterministicMockMetaAgentModel
 import com.agentvillage.builder.application.AgentDevelopmentApproach
 import com.agentvillage.builder.application.AgentDevelopmentProblemDefinition
 import com.agentvillage.builder.application.AgentDevelopmentProblemPolicy
+import com.agentvillage.builder.application.WorkflowGraphValidator
+import com.agentvillage.builder.application.WorkflowGraphTranslator
+import com.agentvillage.builder.application.WorkflowNodeCatalog
 import com.agentvillage.builder.domain.*
 import com.agentvillage.builder.infrastructure.MetaAgentRunRepository
 import com.agentvillage.common.exception.BadRequestException
@@ -78,6 +81,15 @@ class MetaAgentPipelineSafetyTest {
         assertThat(normalized.agentDefinitions.single().inputSchema.single())
             .isEqualTo(source.copy(name = "record", description = wrong.description))
         assertThat(normalized.proposal.graphPlan).isEqualTo(plan)
+        val routePlan = plan.copy(nodes = plan.nodes + WorkflowNodePlan("route", "condition.branch", "Route", mapOf("expression" to "qualityPassed")),
+            edges = plan.edges.dropLast(1) + listOf(
+                WorkflowEdgePlan("flag", "quality", "route", bindings = listOf(WorkflowFieldBinding("qualityPassed", "qualityPassed"))),
+                WorkflowEdgePlan("yes", "route", "worker", "qualityPassed=true", plan.edges.last().bindings + WorkflowFieldBinding("qualityPassed", "qualityPassed")),
+                WorkflowEdgePlan("no", "route", "worker", "qualityPassed=false", plan.edges.last().bindings + WorkflowFieldBinding("qualityPassed", "qualityPassed")),
+            ))
+        val routed = pipeline().normalizeBoundAgentSchemas(bundle.copy(proposal = bundle.proposal.copy(graphPlan = routePlan)))
+        assertThat(routed.agentDefinitions.single().inputSchema.single { it.name == "qualityPassed" }.type).isEqualTo("boolean")
+        assertThat(routed.agentDefinitions.single().inputSchema.single { it.name == "record" }.itemSchema).isEqualTo(source.itemSchema)
     }
 
     @Test
@@ -552,6 +564,39 @@ class MetaAgentPipelineSafetyTest {
         assertThat(normalized.agentDefinitions[1].inputSchema.single().objectSchema).isNotEmpty
         assertThat(normalized.agentDefinitions[1].outputSchema.single().objectSchema).isNotEmpty
         assertThat(normalized.agentDefinitions[2].inputSchema.single().objectSchema).isNotEmpty
+
+        val flag = FieldDefinition("hasMissing", "boolean", true, "review flag")
+        val wrongType = FieldDefinition("extraction", "string", true, "must retain object contract")
+        val routePlan = plan.copy(
+            nodes = plan.nodes + WorkflowNodePlan("route", "condition.branch", "Route", mapOf("expression" to "hasMissing")),
+            edges = listOf(
+                WorkflowEdgePlan("flag", "source-node", "route", bindings = listOf(WorkflowFieldBinding(flag.name, flag.name))),
+                WorkflowEdgePlan("yes", "route", "middle-node", "hasMissing=true", listOf(WorkflowFieldBinding("extraction", "extraction"))),
+                WorkflowEdgePlan("no", "route", "middle-node", "hasMissing=false", listOf(WorkflowFieldBinding("extraction", "extraction"))),
+                plan.edges.last(),
+            ),
+        )
+        val routed = bundle.copy(proposal = bundle.proposal.copy(graphPlan = routePlan,
+            inputSchema = listOf(FieldDefinition("raw", "string", true, "source input"))),
+            agentDefinitions = listOf(agent("source", emptyList(), listOf(complete, flag)),
+                agent("middle", listOf(wrongType), listOf(wrongType)), agent("target", listOf(wrongType), emptyList())))
+        val validator = WorkflowGraphValidator(WorkflowNodeCatalog(), mapper)
+        fun bindingIssues(value: MetaAgentDesignBundle) = validator.validate(
+            WorkflowGraphTranslator(WorkflowNodeCatalog()).translate(UUID.randomUUID(), value.proposal),
+            value.requirement, value.proposal, value.agentDefinitions,
+        ).issues.filter { it.code == "MEANING_BINDING_TYPE_MISMATCH" }
+        assertThat(bindingIssues(routed)).hasSize(2)
+        val routedNormalized = pipeline.normalizeBoundAgentSchemas(routed)
+        assertThat(routedNormalized.agentDefinitions[1].inputSchema.single().objectSchema).isEqualTo(complete.objectSchema)
+        assertThat(routedNormalized.agentDefinitions[1].outputSchema.single().objectSchema).isEqualTo(complete.objectSchema)
+        assertThat(routedNormalized.agentDefinitions[2].inputSchema.single().objectSchema).isEqualTo(complete.objectSchema)
+        assertThat(bindingIssues(routedNormalized)).isEmpty()
+        assertThat(pipeline.normalizeBoundAgentSchemas(routedNormalized)).isEqualTo(routedNormalized)
+        val ambiguousRoute = routed.copy(proposal = routed.proposal.copy(graphPlan = routePlan.copy(
+            nodes = routePlan.nodes + routePlan.nodes.first().copy(id = "other-source"),
+            edges = routePlan.edges + routePlan.edges.first().copy(id = "other-flag", source = "other-source"),
+        )))
+        assertThat(pipeline.normalizeBoundAgentSchemas(ambiguousRoute).agentDefinitions[1].inputSchema.single().type).isEqualTo("string")
     }
 
     @Test

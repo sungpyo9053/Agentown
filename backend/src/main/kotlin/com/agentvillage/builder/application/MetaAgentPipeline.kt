@@ -849,12 +849,20 @@ class StructuredMetaAgentPipeline(
             val key = agentKeyByNode[nodeId]
             if (key != null) return agents[key]?.outputSchema?.firstOrNull { it.name == fieldName }
             if (node.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName) return LocalResearchContract.output.firstOrNull { it.name == fieldName }
+            if (node.nodeType == NodeType.QUALITY_CHECK.wireName && fieldName == "qualityPassed")
+                return FieldDefinition("qualityPassed", "boolean", true, "quality gate result")
             if (node.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName)) {
                 return bundle.proposal.inputSchema.firstOrNull { it.name == fieldName }
             }
             if (node.nodeType !in setOf(NodeType.QUALITY_CHECK.wireName, NodeType.DATA_NORMALIZE.wireName,
                     NodeType.DATA_DEDUPLICATE.wireName, NodeType.CONDITION_BRANCH.wireName)) return null
-            val candidates = plan.edges.filter { it.target == nodeId }.flatMap { edge ->
+            val incoming = plan.edges.filter { it.target == nodeId }
+            if (node.nodeType == NodeType.CONDITION_BRANCH.wireName && incoming.none { edge -> edge.bindings.any { it.targetField == fieldName } }) {
+                // A router selects a path but preserves its single upstream message, not only its decision flag.
+                val upstream = incoming.map { it.source }.distinct().singleOrNull() ?: return null
+                return boundSourceField(upstream, fieldName, visited + nodeId)
+            }
+            val candidates = incoming.flatMap { edge ->
                 edge.bindings.filter { it.targetField == fieldName }.mapNotNull { binding ->
                     val source = binding.sourceField.removePrefix("request.")
                     if (source.contains('.') || source.contains('[')) null

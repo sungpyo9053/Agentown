@@ -520,6 +520,24 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
         if (proposalInputNames.isNotEmpty()) {
             val nodesById = graph.nodes.associateBy { it.id }
             val incomingByTarget = graph.edges.groupBy { it.target }
+            fun sourceContract(nodeId: String, field: String, visited: Set<String> = emptySet()): FieldDefinition? {
+                if (nodeId in visited) return null
+                val node = nodesById[nodeId] ?: return null
+                val agent = node.config["agentKey"]?.toString()?.let(agentsByKey::get)
+                if (agent != null) return agent.outputSchema.firstOrNull { it.name == field }
+                if (node.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName))
+                    return proposal.inputSchema.firstOrNull { it.name == field }
+                if (node.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName)
+                    return LocalResearchContract.output.firstOrNull { it.name == field }
+                if (node.nodeType == NodeType.QUALITY_CHECK.wireName && field == "qualityPassed")
+                    return FieldDefinition("qualityPassed", "boolean", true, "quality gate result")
+                if (node.nodeType != NodeType.CONDITION_BRANCH.wireName) return null
+                val incoming = incomingByTarget[nodeId].orEmpty()
+                val upstream = incoming.map { it.source }.distinct().singleOrNull() ?: return null
+                val mapped = incoming.mapNotNull { it.bindings[field] }.distinct()
+                val source = if (mapped.isEmpty()) field else mapped.singleOrNull() ?: return null
+                return sourceContract(upstream, source, visited + nodeId)?.copy(name = field)
+            }
             graph.nodes.filter { it.nodeType in setOf(NodeType.AI_CLASSIFY.wireName, NodeType.AI_GENERATE.wireName) }.forEach { node ->
                 val agent = node.config["agentKey"]?.toString()?.let(agentsByKey::get) ?: return@forEach
                 val incoming = incomingByTarget[node.id].orEmpty()
@@ -565,13 +583,7 @@ class WorkflowGraphValidator(private val catalog: WorkflowNodeCatalog, private v
                         mismatch("MEANING_AGENT_INPUT_UNDECLARED", "edge '${edge.id}'가 Agent '${targetAgent.key}'의 선언되지 않은 입력 '$targetRoot'에 연결됩니다.", edge.target)
                     }
                     if (!source.contains('.') && !source.contains('[') && !target.contains('.') && !target.contains('[')) {
-                        val sourceField = when {
-                            sourceNode.nodeType in setOf(NodeType.MANUAL_TRIGGER.wireName, NodeType.TEXT_INPUT.wireName) ->
-                                proposal.inputSchema.firstOrNull { it.name == sourceRoot }
-                            sourceAgent != null -> sourceAgent.outputSchema.firstOrNull { it.name == sourceRoot }
-                            sourceNode.nodeType == NodeType.LOCAL_WEB_RESEARCH.wireName -> LocalResearchContract.output.firstOrNull { it.name == sourceRoot }
-                            else -> null
-                        }
+                        val sourceField = sourceContract(edge.source, sourceRoot)
                         val targetField = targetAgent?.inputSchema?.firstOrNull { it.name == targetRoot }
                         val parallelArrayDistribution = sourceField != null && targetField != null &&
                             sourceField.type.equals("array", true) && !targetField.type.equals("array", true) &&
