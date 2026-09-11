@@ -619,9 +619,12 @@ class StructuredMetaAgentPipeline(
         val declared = inputSchema.map { it.name }.toSet()
         val nodeTypes = plan.nodes.associate { it.id to it.nodeType }
         return plan.copy(edges = plan.edges.map { edge ->
+            val marker = edge.bindings.singleOrNull()?.takeIf {
+                it.sourceField == it.targetField && it.sourceField in setOf("trigger", "triggered") && it.sourceField !in declared
+            }
             if (nodeTypes[edge.source] == NodeType.MANUAL_TRIGGER.wireName &&
                 nodeTypes[edge.target] == NodeType.TEXT_INPUT.wireName && declared.isNotEmpty() &&
-                "trigger" !in declared && edge.bindings == listOf(WorkflowFieldBinding("trigger", "trigger"))) {
+                marker != null) {
                 return@map edge.copy(bindings = inputSchema.map { WorkflowFieldBinding(it.name, it.name) })
             }
             if (onlyInput == null) return@map edge
