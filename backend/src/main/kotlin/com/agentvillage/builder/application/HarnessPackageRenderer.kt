@@ -78,7 +78,7 @@ class HarnessPackageRenderer(
             )))
             put("runners/python/runner.py", pythonTFrameXRunner())
             put("runtime/pyproject.toml", TFrameXRuntimeResources.read("pyproject.toml"))
-            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py", "office.py", "artifacts.py", "research.py").forEach { name ->
+            listOf("__init__.py", "adapter.py", "codex_llm.py", "capabilities.py", "server.py", "office.py", "file_input.py", "artifacts.py", "research.py").forEach { name ->
                 put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
             put("company/index.html", TFrameXRuntimeResources.read("agentown_tframex_adapter/office.html"))

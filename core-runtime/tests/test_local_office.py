@@ -286,6 +286,8 @@ class Element {
 }
 const document={createElement:()=>new Element()};
 const inputForm={dataset:{} };let inputSubmitted=false;
+let attachmentResponse={ok:false},uploads=0;
+const fetch=async(path,options)=>{assert.equal(path,'attachment');assert.equal(options.method,'POST');assert.equal(options.headers['Content-Type'],'application/octet-stream');uploads++;return attachmentResponse};
 const file=(name,text)=>({name,size:Buffer.byteLength(text),arrayBuffer:async()=>Buffer.from(text)});
 ''' + handler + r'''
 (async()=>{
@@ -312,6 +314,40 @@ const file=(name,text)=>({name,size:Buffer.byteLength(text),arrayBuffer:async()=
  area.ondrop({preventDefault(){prevented=true},dataTransfer:{files:[file('drop.csv','id,value\nA,0')]}});
  await new Promise(r=>setImmediate(r));assert.equal(prevented,true);assert.equal(control.value,'id,value\nA,0');
  assert.equal(inputSubmitted,false);
+ control.value='';attachmentResponse={ok:true,json:async()=>({text:'실제 슬라이드 텍스트',warning:'이미지는 읽지 않음'})};
+ for(const extension of ['pptx','xlsx','docx']){
+  const imported=await readInputFile(file('input.'+extension,'zip'),{type:'string'});
+  assert.match(imported,/실제 슬라이드 텍스트/);assert.match(imported,/이미지는 읽지 않음/);
+ }
+ const before=uploads;await assert.rejects(()=>readInputFile(file('input.pptx','zip'),{type:'array'}));assert.equal(uploads,before);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
     subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
+
+
+def test_attachment_http_is_local_only_and_does_not_start_ai_or_persist_input(office):
+    from test_file_input import document
+    origin = 'http://' + office.url.split('/')[2]
+    headers = {'Origin': origin, 'Content-Type': 'application/octet-stream', 'X-Agentown-Format': 'docx'}
+    office.input_schema = {'type': 'object'}
+    with urlopen(Request(office.url + 'attachment', data=document('비공개 입력'), headers=headers)) as response:
+        value = json.load(response)
+        assert value['text'] == '비공개 입력'
+        assert value['warning']
+        assert response.headers['Cache-Control'] == 'no-store'
+    assert office.submitted_input is None
+    assert not office.input_ready.is_set()
+    assert office.snapshot()['status'] == 'IDLE'
+    assert '비공개 입력' not in json.dumps(office.snapshot(), ensure_ascii=False)
+    for changed, data, code in [({'Origin': 'https://attacker.invalid'}, document(), 403),
+                               ({'X-Agentown-Format': 'exe'}, document(), 422),
+                               ({'Content-Type': 'text/plain'}, document(), 415),
+                               ({}, b'broken', 422),
+                               ({'Content-Length': str(8 * 1024 * 1024 + 1)}, b'x', 413)]:
+        with pytest.raises(HTTPError) as error:
+            urlopen(Request(office.url + 'attachment', data=data, headers={**headers, **changed}))
+        assert error.value.code == code
+    office.input_ready.set()
+    with pytest.raises(HTTPError) as error:
+        urlopen(Request(office.url + 'attachment', data=document(), headers=headers))
+    assert error.value.code == 409

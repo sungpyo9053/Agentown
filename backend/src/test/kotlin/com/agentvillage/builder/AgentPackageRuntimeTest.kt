@@ -59,6 +59,7 @@ class AgentPackageRuntimeTest {
             "agent.yaml", "workflow.yaml", "workflow.json", "examples/sample-input.json",
             "schemas/input.schema.json", "schemas/output.schema.json",
             "company/index.html", "company/README.md", "runtime/agentown_tframex_adapter/office.py",
+            "runtime/agentown_tframex_adapter/file_input.py",
         )
         assertThat(files.getValue("runtime/pyproject.toml"))
             .contains("23d7a45dd9e2e52f54f44ff8f63c6dff28ef8603")

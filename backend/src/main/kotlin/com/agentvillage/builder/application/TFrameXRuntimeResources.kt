@@ -12,6 +12,7 @@ object TFrameXRuntimeResources {
         "agentown_tframex_adapter/capabilities.py",
         "agentown_tframex_adapter/server.py",
         "agentown_tframex_adapter/office.py",
+        "agentown_tframex_adapter/file_input.py",
         "agentown_tframex_adapter/artifacts.py",
         "agentown_tframex_adapter/research.py",
         "agentown_tframex_adapter/office.html",

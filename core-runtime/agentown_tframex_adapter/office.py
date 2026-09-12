@@ -10,6 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from jsonschema import Draft202012Validator
+from .file_input import read_office_file, MAX_FILE_BYTES
 
 
 class OfficeTrace(list):
@@ -34,6 +35,7 @@ class LocalOffice:
         bundle = json.loads((root / "design-bundle.json").read_text(encoding="utf-8"))
         workflow = json.loads((root / "workflow.json").read_text(encoding="utf-8"))
         self.lock = threading.Lock()
+        self.import_lock = threading.Lock()
         self.nodes = {}
         self.step_labels = {}
         self.running_steps = {}
@@ -65,6 +67,9 @@ class LocalOffice:
                 if self.headers.get("Host") != origin.removeprefix("http://") or self.headers.get("Origin") != origin:
                     self.send_error(403)
                     return
+                if self.path == f"/{office.token}/attachment" and office.input_schema is not None:
+                    self.read_attachment()
+                    return
                 if self.path != f"/{office.token}/input" or office.input_schema is None:
                     self.send_error(404)
                     return
@@ -95,6 +100,36 @@ class LocalOffice:
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+
+            def read_attachment(self):
+                if office.input_ready.is_set():
+                    self.send_error(409)
+                    return
+                if self.headers.get('Content-Type') != 'application/octet-stream' or self.headers.get('Transfer-Encoding'):
+                    self.send_error(415)
+                    return
+                if not office.import_lock.acquire(blocking=False):
+                    self.send_error(429)
+                    return
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= MAX_FILE_BYTES:
+                        self.send_error(413)
+                        return
+                    self.connection.settimeout(10)
+                    value = read_office_file(self.rfile.read(length), self.headers.get('X-Agentown-Format', ''))
+                    payload = json.dumps(value, ensure_ascii=False).encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except (ValueError, OSError):
+                    self.send_error(422, 'Cannot safely read document; original input is preserved')
+                finally:
+                    office.import_lock.release()
 
             def do_GET(self):
                 if self.headers.get("Host") != f"127.0.0.1:{office.server.server_port}":

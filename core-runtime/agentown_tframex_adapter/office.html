@@ -19,9 +19,19 @@ inputForm.innerHTML='<h2>이번에 처리할 자료를 입력하세요</h2><p>�
 document.querySelector('main').prepend(inputForm);
 let inputControls=null,inputSubmitted=false;
 async function readInputFile(file,field){
- if(!file||file.size>128*1024)throw Error('128 KB 이하의 UTF-8 텍스트 파일을 선택해 주세요.');
+ if(!file)throw Error('파일을 선택해 주세요.');
  const extension=file.name.split('.').pop().toLowerCase();
- if(!['txt','md','csv','tsv','json'].includes(extension))throw Error('현재 이 입력은 TXT·MD·CSV·TSV·JSON만 읽습니다. 다른 형식은 변환 없이 읽었다고 처리하지 않습니다.');
+ if(['docx','pptx','xlsx'].includes(extension)){
+  if(field.type!=='string')throw Error('문서 파일은 텍스트 입력 항목에 선택해 주세요. 목록·객체 입력에는 JSON이 필요합니다.');
+  if(file.size>8*1024*1024)throw Error('문서 파일은 최대 8 MB까지 읽습니다.');
+  const response=await fetch('attachment',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Agentown-Format':extension},body:file});
+  if(!response.ok)throw Error('문서를 읽지 못했습니다. 암호·손상 여부와 용량을 확인해 주세요. 기존 입력은 보존됩니다.');
+  const result=await response.json();
+  if(typeof result.text!=='string'||typeof result.warning!=='string')throw Error('파일 읽기 응답을 확인하지 못했습니다.');
+  return '[파일 읽기 한계]\n'+result.warning+'\n\n[읽은 내용]\n'+result.text;
+ }
+ if(file.size>128*1024)throw Error('128 KB 이하의 UTF-8 텍스트 파일을 선택해 주세요.');
+ if(!['txt','md','csv','tsv','json'].includes(extension))throw Error('지원하지 않는 파일 형식입니다. TXT·MD·CSV·TSV·JSON 또는 DOCX·PPTX·XLSX를 선택해 주세요.');
  const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());
  if(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text))throw Error('텍스트가 아닌 데이터가 포함되어 있습니다. 기존 입력은 보존됩니다.');
  if(field.type==='object'||field.type==='array'){
@@ -31,10 +41,10 @@ async function readInputFile(file,field){
  return text;
 }
 function attachFileInput(label,control,field){
- const picker=document.createElement('input');picker.type='file';picker.accept='.txt,.md,.csv,.tsv,.json';
- picker.setAttribute('aria-label','이 항목에 텍스트 파일 불러오기');
+ const picker=document.createElement('input');picker.type='file';picker.accept=field.type==='string'?'.txt,.md,.csv,.tsv,.json,.docx,.pptx,.xlsx':'.json';
+ picker.setAttribute('aria-label','이 항목에 파일 불러오기');
  const status=document.createElement('small');status.setAttribute('role','status');
- status.textContent='텍스트 파일 선택 또는 여기에 끌어 놓기 · UTF-8, 최대 128 KB. 내용을 확인한 뒤 실행하세요.';
+ status.textContent='파일 선택 또는 여기에 끌어 놓기 · 텍스트 128 KB, DOCX·PPTX·XLSX 8 MB. 문서는 텍스트만 읽으며 이미지·도표 등은 포함하지 않습니다. 내용을 확인한 뒤 실행하세요.';
  const area=document.createElement('div');area.append(picker,status);label.append(area);
  let revision=0;
  const load=async files=>{
