@@ -297,7 +297,12 @@ class HarnessPackageRenderer(
         import asyncio, importlib.util, json, os, shutil, sys, webbrowser
         from pathlib import Path
 
-        root = Path(__file__).resolve().parents[2]
+        bundled_runtime = bool(getattr(sys, "frozen", False))
+        root = Path(sys.executable).resolve().parent if bundled_runtime else Path(__file__).resolve().parents[2]
+        # A bundled launcher shares the same workflow interpreter for every
+        # package. Double-clicking must wait for real input, never run examples.
+        if bundled_runtime and "--check" not in sys.argv and "--office-input" not in sys.argv:
+            sys.argv.append("--office-input")
         def setup_failure(code, message):
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": code, "message": message}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
@@ -307,7 +312,8 @@ class HarnessPackageRenderer(
         missing = [name for name in ("tframex", "jsonschema", "mcp") if importlib.util.find_spec(name) is None]
         if missing:
             setup_failure("RUNTIME_DEPENDENCIES_MISSING", "실행 환경이 준비되지 않았습니다: " + ", ".join(missing) + ". START_HERE.md에 따라 패키지 폴더에 가상환경을 만들고 pip install ./runtime을 실행하세요.")
-        sys.path.insert(0, str(root / "runtime"))
+        if not bundled_runtime:
+            sys.path.insert(0, str(root / "runtime"))
         try:
             from agentown_tframex_adapter import AgentownTFrameXAdapter, CodexCliLLMWrapper, ExecutionNotConfigured
             from agentown_tframex_adapter.capabilities import BUILTIN_TOOLS

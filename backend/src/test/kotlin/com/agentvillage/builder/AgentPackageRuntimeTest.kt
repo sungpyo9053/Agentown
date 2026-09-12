@@ -72,6 +72,12 @@ class AgentPackageRuntimeTest {
         assertThat(files.getValue("START_HERE.md")).contains("codex", "claude", "examples/sample-input.json")
         assertThat(files.getValue("runners/python/runner.py")).contains("--office", "OfficeTrace(office)")
         assertThat(files.getValue("runners/python/runner.py")).contains("--office-input", "office.input_ready.wait()", "office.submitted_input")
+        assertThat(files.getValue("runners/python/runner.py")).contains(
+            "bundled_runtime = bool(getattr(sys, \"frozen\", False))",
+            "Path(sys.executable).resolve().parent if bundled_runtime",
+            "if not bundled_runtime:",
+            "if bundled_runtime and \"--check\" not in sys.argv and \"--office-input\" not in sys.argv:",
+        )
         assertThat(files.getValue("START_HERE.md")).contains("--office-input", "Windows PowerShell", "예시 자료를 자동 실행하지 않습니다")
         assertThat(files.getValue("START_HERE.md")).startsWith("# 시작하기\n")
         assertThat(files.getValue("company/index.html")).contains("prefers-reduced-motion", "textContent", "fetch('state'")

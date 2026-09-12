@@ -18,6 +18,42 @@ const inputForm=document.createElement('form');inputForm.id='input-form';inputFo
 inputForm.innerHTML='<h2>이번에 처리할 자료를 입력하세요</h2><p>예시 자료로 자동 실행하지 않습니다. 입력한 자료는 실행 시 설정된 AI 제공자에게 전달됩니다.</p><div id="input-fields"></div><p id="input-error" role="alert" hidden></p><button class="toggle" type="submit">이 자료로 직원들 실행</button>';
 document.querySelector('main').prepend(inputForm);
 let inputControls=null,inputSubmitted=false;
+async function readInputFile(file,field){
+ if(!file||file.size>128*1024)throw Error('128 KB 이하의 UTF-8 텍스트 파일을 선택해 주세요.');
+ const extension=file.name.split('.').pop().toLowerCase();
+ if(!['txt','md','csv','tsv','json'].includes(extension))throw Error('현재 이 입력은 TXT·MD·CSV·TSV·JSON만 읽습니다. 다른 형식은 변환 없이 읽었다고 처리하지 않습니다.');
+ const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());
+ if(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text))throw Error('텍스트가 아닌 데이터가 포함되어 있습니다. 기존 입력은 보존됩니다.');
+ if(field.type==='object'||field.type==='array'){
+  const value=JSON.parse(text);
+  if(field.type==='array'?!Array.isArray(value):!value||typeof value!=='object'||Array.isArray(value))throw Error('입력에 맞는 JSON 형식이 아닙니다. 기존 입력은 보존됩니다.');
+ }
+ return text;
+}
+function attachFileInput(label,control,field){
+ const picker=document.createElement('input');picker.type='file';picker.accept='.txt,.md,.csv,.tsv,.json';
+ picker.setAttribute('aria-label','이 항목에 텍스트 파일 불러오기');
+ const status=document.createElement('small');status.setAttribute('role','status');
+ status.textContent='텍스트 파일 선택 또는 여기에 끌어 놓기 · UTF-8, 최대 128 KB. 내용을 확인한 뒤 실행하세요.';
+ const area=document.createElement('div');area.append(picker,status);label.append(area);
+ let revision=0;
+ const load=async files=>{
+  const current=++revision,original=control.value;
+  if(inputSubmitted||inputForm.dataset.busy==='true')return;
+  if(files.length!==1){status.textContent='한 번에 파일 하나를 선택해 주세요. 기존 입력은 보존됩니다.';return}
+  try{
+   const text=await readInputFile(files[0],field);
+   if(current!==revision||inputSubmitted||inputForm.dataset.busy==='true')return;
+   if(control.value!==original){status.textContent='읽는 동안 입력이 변경되어 파일을 적용하지 않았습니다. 다시 선택해 주세요.';return}
+   if(original.trim()){status.textContent='기존 입력이 있어 덮어쓰지 않았습니다. 교체하려면 입력을 비우고 다시 선택해 주세요.';return}
+   control.value=text;status.textContent=files[0].name+' · 내용을 불러왔습니다. 확인 후 실행하세요.';
+  }catch(error){if(current===revision)status.textContent=error instanceof TypeError?'UTF-8 텍스트를 읽지 못했습니다. 기존 입력은 보존됩니다.':error.message}
+  finally{if(current===revision)picker.value=''}
+ };
+ picker.onchange=()=>load(picker.files);
+ area.ondragover=event=>event.preventDefault();
+ area.ondrop=event=>{event.preventDefault();load(event.dataTransfer.files)};
+}
 function paintInput(schema){
  if(!schema){if(inputControls)inputForm.hidden=true;return}
  inputForm.hidden=false;if(inputControls)return;
@@ -30,6 +66,7 @@ function paintInput(schema){
   else if(field.type==='number'||field.type==='integer'){control.type='number';control.step=field.type==='integer'?'1':'any'}
   else if(field.type==='object'||field.type==='array'){control.placeholder=field.type==='array'?'JSON 배열: [ ... ]':'JSON 객체: { ... }'}
   control.required=whole||(schema.required||[]).includes(key);label.append(control);document.querySelector('#input-fields').append(label);
+  if(['string','object','array'].includes(field.type))attachFileInput(label,control,field);
   return {key,field,control,whole};
  });
 }

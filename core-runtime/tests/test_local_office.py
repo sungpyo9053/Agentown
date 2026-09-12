@@ -269,3 +269,49 @@ def test_interactive_input_rejects_cross_origin_wrong_routes_and_large_payloads(
             urlopen(Request(office.url + path, data=b'{}', headers={**headers, **changes}))
         assert error.value.code == expected
         assert not office.input_ready.is_set()
+
+
+def test_file_input_preserves_data_types_and_never_executes_or_overwrites_drafts():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for the shipped file input test')
+    html = (Path(__file__).parents[1] / 'agentown_tframex_adapter/office.html').read_text()
+    handler = 'async function readInputFile' + html.split('async function readInputFile', 1)[1].split('function paintInput', 1)[0]
+    script = r'''
+const assert=require('node:assert/strict');
+class Element {
+ constructor(){this.children=[];this.value=''}
+ append(...items){this.children.push(...items)}
+ setAttribute(){}
+}
+const document={createElement:()=>new Element()};
+const inputForm={dataset:{} };let inputSubmitted=false;
+const file=(name,text)=>({name,size:Buffer.byteLength(text),arrayBuffer:async()=>Buffer.from(text)});
+''' + handler + r'''
+(async()=>{
+ for(const extension of ['txt','md','csv','tsv','json']){
+  const text='  이름,값\n가,0\n<script>not HTML</script>  ';
+  assert.equal(await readInputFile(file('input.'+extension,text),{type:'string'}),text);
+ }
+ assert.equal(await readInputFile(file('input.json','[0,false,"한글"]'),{type:'array'}),'[0,false,"한글"]');
+ assert.equal(await readInputFile(file('input.json','{"a":0}'),{type:'object'}),'{"a":0}');
+ for(const [value,type] of [[file('x.pptx','zip'),'string'],[file('x.txt','\0'),'string'],[file('x.json','null'),'object'],[file('x.json','{}'),'array'],[file('x.json','[]'),'object'],[file('x.json','broken'),'array'],[{...file('x.txt',''),size:128*1024+1},'string'],[{...file('x.txt',''),arrayBuffer:async()=>Buffer.from([0xff])},'string']]){
+  await assert.rejects(()=>readInputFile(value,{type}));
+ }
+ const label=new Element(),control={value:''};attachFileInput(label,control,{type:'string'});
+ const area=label.children[0],[picker,status]=area.children;
+ picker.files=[file('example.txt','real input')];await picker.onchange();
+ assert.equal(control.value,'real input');assert.equal(inputSubmitted,false);
+ picker.files=[file('replacement.txt','replacement')];await picker.onchange();assert.equal(control.value,'real input');
+ control.value='';picker.files=[file('bad.exe','data')];await picker.onchange();assert.equal(control.value,'');
+ picker.files=[file('a.txt','a'),file('b.txt','b')];await picker.onchange();assert.equal(control.value,'');
+ let resolve;picker.files=[{name:'slow.txt',size:4,arrayBuffer:()=>new Promise(r=>resolve=r)}];
+ const pending=picker.onchange();control.value='typed while loading';resolve(Buffer.from('slow'));await pending;assert.equal(control.value,'typed while loading');
+ control.value='';inputForm.dataset.busy='true';picker.files=[file('x.txt','no')];await picker.onchange();assert.equal(control.value,'');
+ inputForm.dataset.busy='false';let prevented=false;
+ area.ondrop({preventDefault(){prevented=true},dataTransfer:{files:[file('drop.csv','id,value\nA,0')]}});
+ await new Promise(r=>setImmediate(r));assert.equal(prevented,true);assert.equal(control.value,'id,value\nA,0');
+ assert.equal(inputSubmitted,false);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
