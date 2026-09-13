@@ -15,6 +15,13 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew :backend:test
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-results
+          path: backend/build/test-results/test/TEST-*.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   frontend:
     runs-on: ubuntu-latest

@@ -54,8 +54,10 @@ class AgentPackageRuntimeTest {
         val script = directory.resolve("runner.py")
         Files.writeString(script, HarnessPackageRenderer(mapper).render(bundle).getValue("runners/python/runner.py"))
         // -S removes site-packages; neither an installed runtime nor AI authentication is needed.
-        val process = ProcessBuilder(System.getenv("TFRAMEX_TEST_PYTHON") ?: "python3", "-S", script.toString(), "--check")
-            .redirectErrorStream(true).start()
+        val builder = ProcessBuilder(System.getenv("TFRAMEX_TEST_PYTHON") ?: "python3", "-S", script.toString(), "--check")
+            .redirectErrorStream(true)
+        builder.environment()["PYTHONIOENCODING"] = "cp1252"
+        val process = builder.start()
         val output = process.inputStream.bufferedReader().use { it.readText() }
         assertThat(process.waitFor()).isEqualTo(2)
         assertThat(output).doesNotContain("Traceback")

@@ -297,6 +297,10 @@ class HarnessPackageRenderer(
         import asyncio, importlib.util, json, os, shutil, sys, webbrowser
         from pathlib import Path
 
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+
         bundled_runtime = bool(getattr(sys, "frozen", False))
         root = Path(sys.executable).resolve().parent if bundled_runtime else Path(__file__).resolve().parents[2]
         if bundled_runtime and sys.platform == "darwin" and root.name == "MacOS" and root.parent.name == "Contents":

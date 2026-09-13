@@ -57,7 +57,7 @@ def main():
         environment = dict(os.environ)
         environment['PATH'] = os.environ.get('SystemRoot', 'C:\\Windows') + '\\System32' if system == 'Windows' else '/usr/bin:/bin'
         checked = subprocess.run([str(executable), '--check'], env=environment, cwd=temp,
-                                 capture_output=True, text=True, timeout=60)
+                                 capture_output=True, text=True, encoding='utf-8', timeout=60)
         if checked.returncode:
             raise RuntimeError('Frozen startup check failed: ' + checked.stdout + checked.stderr)
         # macOS windowed executables need not have stdout; exit code is the startup gate.
