@@ -32,6 +32,7 @@ class AgentPackageRuntimeTest {
         val files = HarnessPackageRenderer(mapper).render(bundle)
         assertThat(files.getValue("runners/python/runner.py"))
             .contains("root = root.parents[2]", "if not bundled_runtime:", "read_text(encoding=\"utf-8\")")
+            .contains("if office.stop_requested.is_set():", "office.stop_requested.wait()")
             .doesNotContain(".read_text()")
         if (System.getenv("AGENTOWN_EXPORT_NATIVE_FIXTURE") == "true") {
             val directory = Path.of("build", "native-fixture").toAbsolutePath()

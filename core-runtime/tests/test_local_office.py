@@ -68,6 +68,59 @@ def office(tmp_path):
     viewer.close()
 
 
+@pytest.mark.parametrize('status', ['IDLE', 'SUCCEEDED', 'FAILED', 'EXECUTION_NOT_CONFIGURED'])
+def test_shutdown_wakes_launcher_without_starting_work(office, status):
+    office.finish(status)
+    origin = office.url.split('/' + office.token)[0]
+    with urlopen(Request(office.url + 'shutdown', method='POST', headers={'Origin': origin})) as response:
+        assert response.status == 204
+    assert office.stop_requested.is_set()
+    assert office.input_ready.is_set()
+    assert office.submitted_input is None
+
+
+def test_shutdown_button_preserves_page_on_failure_and_disables_input_on_success():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required for shipped office controls')
+    html = (Path(__file__).parents[1] / 'agentown_tframex_adapter/office.html').read_text()
+    handler = html.split('let officeClosed=false;', 1)[1].split('const labels=', 1)[0]
+    script = r'''
+const assert=require('node:assert/strict');
+let officeClosed=false, consent=false, calls=0, response={ok:false,status:409};
+const button={}, connection={}, error={}, field={disabled:false};
+const document={createElement:()=>button,querySelector:s=>s==='footer'?{prepend(){}}:s==='#connection'?connection:error,body:{classList:{add(){}}}};
+const inputForm={querySelectorAll:()=>[field]};
+const confirm=()=>consent;
+const fetch=async(path,options)=>{assert.equal(path,'shutdown');assert.equal(options.method,'POST');calls++;return response};
+''' + handler + r'''
+(async()=>{
+await button.onclick();assert.equal(calls,0);
+consent=true;await button.onclick();assert.equal(officeClosed,false);assert.equal(field.disabled,false);assert.equal(button.disabled,false);assert.match(error.textContent,/작업 중/);
+response={ok:true};await button.onclick();assert.equal(officeClosed,true);assert.equal(field.disabled,true);assert.equal(button.disabled,true);assert.match(connection.textContent,/종료했습니다/);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
+
+
+def test_shutdown_protects_active_work_and_rejects_foreign_pages(office):
+    origin = office.url.split('/' + office.token)[0]
+    for url, request_origin, expected in [
+        (office.url + 'shutdown', 'https://attacker.invalid', 403),
+        (origin + '/wrong-token/shutdown', origin, 404),
+    ]:
+        with pytest.raises(HTTPError) as error:
+            urlopen(Request(url, method='POST', headers={'Origin': request_origin}))
+        assert error.value.code == expected
+        assert not office.stop_requested.is_set()
+    office.finish('RUNNING')
+    with pytest.raises(HTTPError) as error:
+        urlopen(Request(office.url + 'shutdown', method='POST', headers={'Origin': origin}))
+    assert error.value.code == 409
+    assert not office.stop_requested.is_set()
+    assert not office.input_ready.is_set()
+
+
 def test_artifact_download_uses_received_bytes_and_reports_failures():
     node = shutil.which('node')
     if not node:

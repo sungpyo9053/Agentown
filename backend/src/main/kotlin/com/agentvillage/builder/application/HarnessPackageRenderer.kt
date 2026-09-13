@@ -82,7 +82,7 @@ class HarnessPackageRenderer(
                 put("runtime/agentown_tframex_adapter/$name", TFrameXRuntimeResources.read("agentown_tframex_adapter/$name"))
             }
             put("company/index.html", TFrameXRuntimeResources.read("agentown_tframex_adapter/office.html"))
-            put("company/README.md", "# 내 PC에서 회사 보기\n\nSTART_HERE.md의 Python 실행 환경을 준비하고 패키지 루트에서 `.venv/bin/python runners/python/runner.py --office-input`를 실행하세요. 회사 화면에서 실제 자료를 입력하고 실행 버튼을 누르세요. 터미널에 표시된 로컬 주소에서 직원별 실제 진행 상태와 결과를 볼 수 있습니다. 실행 종료 후에도 화면은 유지되며 Ctrl+C로 닫습니다. 애니메이션은 내 PC에서 실행되지만 AI 호출에는 설정된 제공자와 인터넷이 필요합니다. 웹에서 실행한 작업이나 Codex 채팅은 이 로컬 실행기 화면에 연결되지 않습니다.\n")
+            put("company/README.md", "# 내 PC에서 회사 보기\n\nSTART_HERE.md의 Python 실행 환경을 준비하고 패키지 루트에서 `.venv/bin/python runners/python/runner.py --office-input`를 실행하세요. 회사 화면에서 실제 자료를 입력하고 실행 버튼을 누르세요. 터미널에 표시된 로컬 주소에서 직원별 실제 진행 상태와 결과를 볼 수 있습니다. 실행 완료 후 결과를 저장하고 화면의 '실행기 종료' 버튼으로 종료하세요. 터미널에서는 Ctrl+C도 가능합니다. 애니메이션은 내 PC에서 실행되지만 AI 호출에는 설정된 제공자와 인터넷이 필요합니다. 웹에서 실행한 작업이나 Codex 채팅은 이 로컬 실행기 화면에 연결되지 않습니다.\n")
             put(".env.example", environmentExample(resources))
             put("README.md", packageReadme(normalized))
             put("START_HERE.md", startHere(normalized, resources, generatedSampleInput))
@@ -289,7 +289,7 @@ class HarnessPackageRenderer(
         Windows PowerShell에서는 `py -3 -m venv .venv`, `.venv\Scripts\python.exe -m pip install './runtime[artifacts]'`, `.venv\Scripts\python.exe runners/python/runner.py --office-input` 순서로 실행합니다. Python 3.11 이상이 필요합니다.
         기존 예시 파일을 사용하는 고급 실행은 `--office`로 유지됩니다.
         브라우저의 로컬 회사 화면에서 실제 에이전트별 진행 상태와 결과를 봅니다. AI 호출에는 설정된 제공자와 인터넷이 필요합니다.
-        실행이 끝나면 Ctrl+C로 로컬 화면 서버를 종료합니다. 웹 실행이나 별도 채팅의 작업 상태는 표시하지 않습니다.
+        실행이 끝나면 결과 파일을 저장한 뒤 화면의 '실행기 종료' 버튼으로 종료합니다. 터미널에서는 Ctrl+C도 가능합니다. 웹 실행이나 별도 채팅의 작업 상태는 표시하지 않습니다.
     """.trimIndent() + "\n"
 
     private fun pythonTFrameXRunner() = """
@@ -381,6 +381,8 @@ class HarnessPackageRenderer(
         try:
             if interactive_input:
                 office.input_ready.wait()
+                if office.stop_requested.is_set():
+                    raise SystemExit(0)
                 definition["input"] = json.dumps(office.submitted_input, ensure_ascii=False)
             result = asyncio.run(execute())
             final = result.get("final") or ""
@@ -404,10 +406,9 @@ class HarnessPackageRenderer(
             raise SystemExit(130)
         finally:
             if office:
-                print("회사 화면이 열려 있습니다. Ctrl+C로 종료합니다.", file=sys.stderr, flush=True)
+                print("회사 화면의 실행기 종료 버튼 또는 Ctrl+C로 종료합니다.", file=sys.stderr, flush=True)
                 try:
-                    import threading
-                    threading.Event().wait()
+                    office.stop_requested.wait()
                 except KeyboardInterrupt:
                     pass
                 finally:

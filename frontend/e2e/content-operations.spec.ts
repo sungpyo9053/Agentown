@@ -12,8 +12,8 @@ const draft = {
   status:"DRAFT", createdAt:"2026-08-30T00:00:00Z", updatedAt:"2026-08-30T00:00:00Z",
 };
 
-test("콘텐츠 운영 탭에서 초안을 편집 승인하고 네이버 붙여넣기용으로 복사한다", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin:"http://127.0.0.1:3100" });
+test("콘텐츠 운영 탭에서 초안을 편집 승인하고 네이버 붙여넣기용으로 복사한다", async ({ page, context, baseURL }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(baseURL!).origin });
   let generateBody:Record<string,unknown>|null=null;
   let current:Record<string,unknown>={...draft};
   await page.route("**/api/**", async route => {

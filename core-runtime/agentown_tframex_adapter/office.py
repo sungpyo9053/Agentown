@@ -29,6 +29,7 @@ class LocalOffice:
         self.artifact = None
         self.input_schema = copy.deepcopy(input_schema)
         self.input_ready = threading.Event()
+        self.stop_requested = threading.Event()
         self.submitted_input = None
         if input_schema is not None:
             Draft202012Validator.check_schema(input_schema)
@@ -67,6 +68,21 @@ class LocalOffice:
                 if self.headers.get("Host") != origin.removeprefix("http://") or self.headers.get("Origin") != origin:
                     self.send_error(403)
                     return
+                if self.path == f"/{office.token}/shutdown":
+                    with office.lock:
+                        if office.state["status"] == "RUNNING":
+                            self.send_error(409, "Wait for the active work to finish")
+                            return
+                        self.send_response(204)
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        office.stop_requested.set()
+                        office.input_ready.set()  # Wake a launcher waiting for its first input.
+                    return
+                if office.stop_requested.is_set():
+                    self.send_error(409)
+                    return
                 if self.path == f"/{office.token}/attachment" and office.input_schema is not None:
                     self.read_attachment()
                     return
@@ -90,7 +106,7 @@ class LocalOffice:
                     self.send_error(400)
                     return
                 with office.lock:
-                    if office.submitted_input is not None:
+                    if office.submitted_input is not None or office.stop_requested.is_set():
                         self.send_error(409)
                         return
                     office.submitted_input = value
