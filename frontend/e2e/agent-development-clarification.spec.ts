@@ -51,7 +51,8 @@ function baseSnapshot(overrides: Record<string, unknown> = {}) {
 }
 
 async function mockShell(page: import("@playwright/test").Page, snapshot: Record<string, unknown>, onMessage?: (body: Record<string, unknown>) => void) {
-  await page.addInitScript(() => localStorage.setItem("agentown.agent-development.session.v1", "conversation-card"));
+  const sessionId = String(snapshot.conversationId);
+  await page.addInitScript(id => localStorage.setItem("agentown.agent-development.session.v1", id), sessionId);
   await page.route("**/api/**", async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -59,7 +60,7 @@ async function mockShell(page: import("@playwright/test").Page, snapshot: Record
     if (path === "/api/auth/me") return json({ displayName: "검증 사용자", role: "USER" });
     if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
     if (path === "/api/agent-development/sessions") return json([]);
-    if (path === "/api/agent-development/sessions/conversation-card" && request.method() === "GET") return json(snapshot);
+    if (path === `/api/agent-development/sessions/${sessionId}` && request.method() === "GET") return json(snapshot);
     if (path === "/api/agent-development/sessions/conversation-card/messages") { onMessage?.(request.postDataJSON()); return json({ id: "job-1", conversationId: "conversation-card", status: "RUNNING", stage: "REQUEST_ACCEPTED", elapsedSeconds: 0, remainingSeconds: 120 }); }
     if (path === "/api/agent-development/jobs/job-1") return json({ id: "job-1", conversationId: "conversation-card", status: "RUNNING", stage: "CODEX_ANALYZING", elapsedSeconds: 1, remainingSeconds: 119 });
     if (path === "/api/agent-development/sessions/conversation-card/package") return route.fulfill({ status: 200, contentType: "application/zip", body: "PK-test-package" });
@@ -100,6 +101,34 @@ test("team view hides developer graph, deduplicates resources, and downloads a b
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "에이전트 패키지 다운로드" }).click();
   await expect((await download).suggestedFilename()).toBe("agentown-agent-conversa.zip");
+});
+
+test("expired download login preserves the request and retries without regeneration", async ({ page }) => {
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  await mockShell(page, baseSnapshot({ conversationId: sessionId, status: "READY_TO_SIMULATE", clarificationQuestions: [], currentVersionId: "version-1", proposal: { name: "다운로드 검증", summary: "입력 보존", capabilities: [] } }));
+  let attempts = 0;
+  await page.route(`**/api/agent-development/sessions/${sessionId}/package`, route => {
+    attempts++;
+    return attempts === 1
+      ? route.fulfill({ status: 401, contentType: "application/json", body: "{}" })
+      : route.fulfill({ contentType: "application/zip", body: "PK-test-package" });
+  });
+  await page.goto("/develop");
+  const input = page.getByLabel("에이전트 개발 요청");
+  await input.fill("아직 보내지 않은 추가 요구사항");
+  const button = page.getByRole("button", { name: "에이전트 패키지 다운로드" });
+  await button.click();
+  const login = page.getByRole("link", { name: "새 탭에서 로그인" });
+  await expect(login).toBeVisible();
+  await expect(login).toHaveAttribute("target", "_blank");
+  await expect(login).toHaveAttribute("href", `/login?next=${encodeURIComponent(`/develop?session=${sessionId}&panel=output`)}`);
+  await expect(input).toHaveValue("아직 보내지 않은 추가 요구사항");
+  const download = page.waitForEvent("download");
+  await button.click();
+  expect((await download).suggestedFilename()).toBe("agentown-agent-22222222.zip");
+  await expect(login).toHaveCount(0);
+  await expect(input).toHaveValue("아직 보내지 않은 추가 요구사항");
+  expect(attempts).toBe(2);
 });
 
 test("a patch error does not leak into a prompt-only project or its follow-up", async ({ page }) => {

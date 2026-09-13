@@ -4,7 +4,7 @@ test("develop patch refreshes the server version before changing the canvas", as
   let reads = 0;
   let patchBody: Record<string, unknown> | undefined;
   const snapshot = (version: number) => ({
-    conversationId: "conversation-1",
+    conversationId: "11111111-1111-4111-8111-111111111111",
     workflowId: "workflow-1",
     status: "READY_TO_SIMULATE",
     proposal: { name: "FAQ 에이전트", summary: "근거 기반 답변", capabilities: [], resourcePlan: { bindings: [], uncoveredCapabilities: [], simulationReady: true, productionReady: false } },
@@ -15,16 +15,16 @@ test("develop patch refreshes the server version before changing the canvas", as
     messages: [],
     versions: [{ id: `version-${version}`, versionNo: version, graphHash: `stored-hash-${version}`, changeSummary: "최신 설계", approved: true, createdAt: "2026-09-02T00:00:00Z" }],
   });
-  await page.addInitScript(() => localStorage.setItem("agentown.agent-development.session.v1", "conversation-1"));
+  await page.addInitScript(() => localStorage.setItem("agentown.agent-development.session.v1", "11111111-1111-4111-8111-111111111111"));
   await page.route("**/api/**", async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
     if (path === "/api/auth/me") return json({ displayName: "검증 사용자", role: "USER" });
     if (path === "/api/mini-homes/me") return json({ title: "검증 회사" });
-    if (path === "/api/agent-development/sessions") return json([{ conversationId: "conversation-1", workflowId: "workflow-1", title: "FAQ 에이전트", status: "READY_TO_SIMULATE", currentVersionNo: 1, updatedAt: "2026-09-02T00:00:00Z" }]);
-    if (path === "/api/agent-development/sessions/conversation-1" && request.method() === "GET") return json(snapshot(++reads === 1 ? 1 : 2));
-    if (path === "/api/agent-development/sessions/conversation-1/patches") {
+    if (path === "/api/agent-development/sessions") return json([{ conversationId: "11111111-1111-4111-8111-111111111111", workflowId: "workflow-1", title: "FAQ 에이전트", status: "READY_TO_SIMULATE", currentVersionNo: 1, updatedAt: "2026-09-02T00:00:00Z" }]);
+    if (path === "/api/agent-development/sessions/11111111-1111-4111-8111-111111111111" && request.method() === "GET") return json(snapshot(patchBody ? 3 : ++reads === 1 ? 1 : 2));
+    if (path === "/api/agent-development/sessions/11111111-1111-4111-8111-111111111111/patches") {
       patchBody = request.postDataJSON();
       return json(snapshot(3));
     }
@@ -36,6 +36,7 @@ test("develop patch refreshes the server version before changing the canvas", as
   await page.getByRole("button", { name: "보내기" }).click();
 
   await expect.poll(() => patchBody).toMatchObject({ baseVersionId: "version-2", expectedGraphHash: "stored-hash-2" });
+  await expect(page.getByLabel("에이전트 개발 요청")).toHaveValue("");
   await expect(page.getByRole("button", { name: "에이전트 패키지 다운로드" })).toBeVisible();
   await page.getByRole("button", { name: "버전" }).click();
   await expect(page.getByText("Version 3")).toBeVisible();

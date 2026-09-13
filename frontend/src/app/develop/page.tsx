@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, CheckCircle2, ChevronRight, CircleStop, Database, Download, FileCode2, History, PanelRight, Plus, RotateCcw, Save, Send, Sparkles, TestTube2, Users, Wrench, X } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
-import { api, ApiError } from "@/lib/api";
+import { api, apiBlob, ApiError } from "@/lib/api";
 import { AgentResultView } from "@/components/AgentResultView";
 import { AgentWorkProgress } from "@/components/AgentWorkProgress";
 import { clarificationDraftKey, readClarificationDraft } from "@/lib/clarificationDraft";
@@ -242,21 +242,24 @@ function TeamPanel({ snapshot, pending, decide, save }: { snapshot?: Snapshot; p
 function PackageDownloadButton({ conversationId }: { conversationId: string }) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const [loginRequired, setLoginRequired] = useState(false);
+  const inFlight = useRef(false);
   async function download() {
-    setDownloading(true); setError("");
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setDownloading(true); setError(""); setLoginRequired(false);
     try {
-      const response = await fetch(`/api/agent-development/sessions/${conversationId}/package`, { credentials: "include" });
-      if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "패키지를 내려받지 못했습니다.");
-      const blob = await response.blob();
-      if (!blob.size) throw new Error("빈 패키지가 반환되었습니다.");
+      const blob = await apiBlob(`/agent-development/sessions/${conversationId}/package`);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url; anchor.download = `agentown-agent-${conversationId.slice(0, 8)}.zip`; anchor.style.display = "none";
-      document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "패키지를 내려받지 못했습니다."); }
-    finally { setDownloading(false); }
+      document.body.appendChild(anchor);
+      try { anchor.click(); }
+      finally { anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "패키지를 내려받지 못했습니다."); setLoginRequired(cause instanceof ApiError && cause.status === 401); }
+    finally { inFlight.current = false; setDownloading(false); }
   }
-  return <div><button type="button" disabled={downloading} onClick={download} className="flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs disabled:opacity-40">{downloading ? <Download className="h-3.5 w-3.5 animate-pulse" /> : <FileCode2 className="h-3.5 w-3.5" />}{downloading ? "패키지 준비 중" : "에이전트 패키지 다운로드"}</button><p className="mt-2 text-[11px] leading-5 text-mute">내 PC 실행에는 도구 설치와 AI 서비스 로그인이 필요할 수 있습니다. AI 이용 조건·요금은 해당 서비스 기준을 따릅니다.</p>{error && <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p>}</div>;
+  return <div><button type="button" disabled={downloading} onClick={download} className="flex w-full items-center justify-center gap-2 rounded-md border border-hairline bg-white px-3 py-2.5 text-xs disabled:opacity-40">{downloading ? <Download className="h-3.5 w-3.5 animate-pulse" /> : <FileCode2 className="h-3.5 w-3.5" />}{downloading ? "패키지 준비 중" : "에이전트 패키지 다운로드"}</button><p className="mt-2 text-[11px] leading-5 text-mute">내 PC 실행에는 도구 설치와 AI 서비스 로그인이 필요할 수 있습니다. AI 이용 조건·요금은 해당 서비스 기준을 따릅니다.</p>{error && <p role="alert" className="mt-2 text-[11px] text-red-700">{error}</p>}{loginRequired && <p className="mt-2 text-xs leading-6"><a className="underline" target="_blank" rel="noopener noreferrer" href={`/login?next=${encodeURIComponent(`/develop?session=${conversationId}&panel=output`)}`}>새 탭에서 로그인</a><br />현재 입력은 이 탭에 그대로 남습니다. 로그인 후 돌아와 다운로드를 다시 눌러 주세요.</p>}</div>;
 }
 function AgentEditor({ agent, resources, disabled, save }: { agent: Agent; resources: Resource[]; disabled: boolean; save: (value: Agent) => void }) {
   const [editing, setEditing] = useState(false);
@@ -281,7 +284,7 @@ function OutputPanel({ snapshot, run, input, setInput, pending, simulate, decide
   if (requiresLocalPackage(snapshot.proposal?.resourcePlan?.bindings)) return <div className="space-y-3 rounded-md border border-hairline bg-white p-4">
     <h3 className="text-sm font-semibold">내 PC에서 파일 만들기</h3>
     <p className="text-xs leading-6">이 팀의 파일 제작 도구는 다운로드한 패키지에서 실행됩니다. 패키지를 풀고 START_HERE.md의 전용 실행 환경 설치·점검 안내를 따라 주세요.</p>
-    <p className="text-xs leading-6 text-mute">실제 입력은 examples/sample-input.json에 넣고 실행합니다. 결과 파일은 results 폴더에 저장됩니다. 파일 생성 성공과 내용·출처 검토 완료는 다르므로 결과를 확인해 주세요.</p>
+    <p className="text-xs leading-6 text-mute">로컬 회사 화면에서 자료를 직접 입력하거나 파일을 선택하고, 내용을 확인한 뒤 실행하세요. 결과는 화면의 다운로드 버튼으로 받습니다. JSON 파일을 직접 수정할 필요는 없습니다. 문서 입력은 텍스트·셀 내용만 읽으며 이미지·도표 해석이나 수식 재계산은 하지 않습니다. 결과의 내용·출처는 별도로 확인해 주세요.</p>
     <PackageDownloadButton conversationId={snapshot.conversationId} />
   </div>;
   const sample = JSON.stringify(defaultTestInput(snapshot), null, 2);
