@@ -322,11 +322,11 @@ class HarnessPackageRenderer(
         except ImportError:
             setup_failure("RUNTIME_IMPORT_FAILED", "설치된 실행 도구가 호환되지 않습니다. START_HERE.md의 전용 가상환경에서 pip install ./runtime을 다시 실행하세요.")
 
-        status = json.loads((root / "runtime-status.json").read_text())
+        status = json.loads((root / "runtime-status.json").read_text(encoding="utf-8"))
         if not status.get("runtimeConfigured"):
             print(json.dumps({"status": "EXECUTION_NOT_CONFIGURED", "code": status.get("code"), "message": status.get("message")}, ensure_ascii=False, indent=2))
             raise SystemExit(2)
-        definition = json.loads((root / "runtime-definition.json").read_text())
+        definition = json.loads((root / "runtime-definition.json").read_text(encoding="utf-8"))
         needs_research = any(item.get("toolName") == "local.web.research" for item in definition.get("agents", []))
         needs_ai = needs_research or any(item.get("kind") != "tool" for item in definition.get("agents", []))
         needs_artifacts = any(item.get("toolName") == "local.artifact.render" for item in definition.get("agents", []))
@@ -342,11 +342,11 @@ class HarnessPackageRenderer(
             raise SystemExit(0)
         interactive_input = "--office-input" in sys.argv
         if not interactive_input:
-            definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text()), ensure_ascii=False)
+            definition["input"] = json.dumps(json.loads((root / "examples/sample-input.json").read_text(encoding="utf-8")), ensure_ascii=False)
         office = None
         if "--office" in sys.argv or interactive_input:
             from agentown_tframex_adapter.office import LocalOffice, OfficeTrace
-            office = LocalOffice(root, input_schema=json.loads((root / "schemas/input.schema.json").read_text()) if interactive_input else None)
+            office = LocalOffice(root, input_schema=json.loads((root / "schemas/input.schema.json").read_text(encoding="utf-8")) if interactive_input else None)
             office.start()
             office.finish("IDLE" if interactive_input else "RUNNING")
             print("로컬 회사 화면: " + office.url, file=sys.stderr, flush=True)
