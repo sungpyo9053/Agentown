@@ -134,6 +134,21 @@ class LocalArtifactTests(unittest.TestCase):
         self.assertNotEqual(first["path"], second["path"])
         self.assertEqual(Path(first["path"]).read_bytes(), before)
 
+    def test_display_labels_are_distinct_from_keys_and_widths_follow_content(self):
+        from openpyxl import load_workbook
+        spec = self.workbook()
+        spec["sheets"][0].update(columns=[{"key": "reference", "label": "번호"}, {"key": "detail", "label": "확인 내용"}],
+                                  rows=[["A1", "확인된 사실과 아직 확인되지 않은 조건을 구분합니다."], ["A2", "=1+1"]])
+        book = load_workbook(render_artifact(spec, self.root)["path"])
+        self.addCleanup(book.close)
+        self.assertEqual([cell.value for cell in book.active[1]], ["번호", "확인 내용"])
+        self.assertLess(book.active.column_dimensions["A"].width, book.active.column_dimensions["B"].width)
+        self.assertEqual(book.active["B3"].data_type, "s")
+        for invalid in ({"key": "internalOnly"}, {"key": "internalOnly", "label": " "}):
+            spec["sheets"][0]["columns"][0] = invalid
+            with self.assertRaises(ArtifactContractError):
+                render_artifact(spec, self.root)
+
     def test_model_supplied_path_cannot_escape_caller_directory(self):
         spec = self.workbook() | {"path": "../../outside.xlsx"}
         result = render_artifact(spec, self.root)

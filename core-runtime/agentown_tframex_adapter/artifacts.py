@@ -92,12 +92,16 @@ def _presentation(spec: dict) -> tuple[bytes, dict]:
                      "visualReview": "REQUIRED"}
 
 
-def _row_height(values: list, width: int = 28) -> float:
-    def lines(value: Any) -> int:
+def _display_width(value: Any) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in str(value if value is not None else ""))
+
+
+def _row_height(values: list, widths: list[int] | None = None) -> float:
+    def lines(value: Any, width: int) -> int:
         return sum(max(1, math.ceil(sum(2 if unicodedata.east_asian_width(c) in "WF" else 1
                                       for c in line) / (width - 2)))
                    for line in str(value if value is not None else "").split("\n"))
-    height = max(34, max(map(lines, values)) * 18 + 8)
+    height = max(34, max(lines(value, width) for value, width in zip(values, widths or [28] * len(values))) * 18 + 8)
     if height > 400:
         raise ArtifactContractError("cell text is too long to display; make cells concise or split content into additional rows")
     return height
@@ -122,8 +126,16 @@ def _workbook(spec: dict) -> tuple[bytes, dict]:
         if re.search(r"[\\/*?:\[\]]", name) or name.casefold() in names:
             raise ArtifactContractError("sheet name must be valid and unique")
         names.add(name.casefold())
-        columns = [_text(value, "column heading", 120) for value in _items(data.get("columns"), "columns", 30)]
+        raw_columns = _items(data.get("columns"), "columns", 30)
+        # Internal keys are never a fallback for missing display labels.
+        columns = [_text(value.get("label") if isinstance(value, dict) else value, "column heading", 120)
+                   for value in raw_columns]
         rows = _items(data.get("rows"), "rows", 5000)
+        if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
+            raise ArtifactContractError("row width must equal column count")
+        widths = [min(42, max(12, max(_display_width(line) for value in [heading] + [row[index] for row in rows]
+                                      for line in str(value if value is not None else "").split("\n")) + 2))
+                  for index, heading in enumerate(columns)]
         total += len(rows) * len(columns)
         if total > 50000:
             raise ArtifactContractError("workbook exceeds 50000 data cells")
@@ -147,9 +159,9 @@ def _workbook(spec: dict) -> tuple[bytes, dict]:
                 if row_index == 1:
                     cell.font = Font(size=11, bold=True, color="FFFFFF")
                     cell.fill = PatternFill("solid", fgColor="17365D")
-            sheet.row_dimensions[row_index].height = _row_height(row)
+            sheet.row_dimensions[row_index].height = _row_height(row, widths)
         for index in range(1, len(columns) + 1):
-            sheet.column_dimensions[get_column_letter(index)].width = 28
+            sheet.column_dimensions[get_column_letter(index)].width = widths[index - 1]
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions
         sheet.sheet_properties.pageSetUpPr.fitToPage = True
