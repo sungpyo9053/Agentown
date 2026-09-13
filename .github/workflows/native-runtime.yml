@@ -1,0 +1,59 @@
+name: Native runtime candidates
+on:
+  workflow_dispatch:
+  push:
+    branches: ['work/native-runtime-*']
+permissions:
+  contents: read
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Export production runner with deterministic test data
+        env:
+          AGENTOWN_EXPORT_NATIVE_FIXTURE: 'true'
+        run: ./gradlew :backend:test --tests '*AgentPackageRuntimeTest.native build fixture*' --no-daemon
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-fixture
+          path: backend/build/native-fixture
+          if-no-files-found: error
+  build:
+    needs: fixture
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x86_64
+          - os: macos-15-intel
+            target: macos-x86_64
+          - os: macos-15
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-fixture
+          path: native-fixture
+      - run: python -m pip install './core-runtime[artifacts]' 'pyinstaller==6.22.2'
+      - run: python core-runtime/build_native.py --package native-fixture --output native-output
+      # Archive on the build host to preserve executable permissions and symlinks.
+      - run: python -c "import shutil; shutil.make_archive('native-candidate', 'gztar', 'native-output')"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ matrix.target }}
+          path: native-candidate.tar.gz
+          if-no-files-found: error

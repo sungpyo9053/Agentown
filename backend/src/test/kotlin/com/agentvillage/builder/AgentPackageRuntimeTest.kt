@@ -23,6 +23,26 @@ class AgentPackageRuntimeTest {
     )
 
     @Test
+    fun `native build fixture uses the production package renderer`() {
+        val bundle = pipeline.generateDesign(
+            PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),
+            "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
+            StructuredMetaAgentPipeline.DesignMode.AUTOMATION,
+        )
+        val files = HarnessPackageRenderer(mapper).render(bundle)
+        assertThat(files.getValue("runners/python/runner.py")).contains("root = root.parents[2]", "if not bundled_runtime:")
+        if (System.getenv("AGENTOWN_EXPORT_NATIVE_FIXTURE") == "true") {
+            val directory = Path.of("build", "native-fixture").toAbsolutePath()
+            files.forEach { (relativePath, content) ->
+                val target = directory.resolve(relativePath).normalize()
+                require(target.startsWith(directory))
+                Files.createDirectories(target.parent)
+                Files.writeString(target, content)
+            }
+        }
+    }
+
+    @Test
     fun `unprepared Python reports an actionable setup issue without a traceback or model call`(@TempDir directory: Path) {
         val bundle = pipeline.generateDesign(
             PipelineContext(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()),

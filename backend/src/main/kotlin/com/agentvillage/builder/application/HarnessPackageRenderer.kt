@@ -299,6 +299,8 @@ class HarnessPackageRenderer(
 
         bundled_runtime = bool(getattr(sys, "frozen", False))
         root = Path(sys.executable).resolve().parent if bundled_runtime else Path(__file__).resolve().parents[2]
+        if bundled_runtime and sys.platform == "darwin" and root.name == "MacOS" and root.parent.name == "Contents":
+            root = root.parents[2]  # Package data lives beside Agentown.app, never inside its signature.
         # A bundled launcher shares the same workflow interpreter for every
         # package. Double-clicking must wait for real input, never run examples.
         if bundled_runtime and "--check" not in sys.argv and "--office-input" not in sys.argv:
