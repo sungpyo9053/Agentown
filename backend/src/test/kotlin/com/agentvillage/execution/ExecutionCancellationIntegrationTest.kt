@@ -119,7 +119,8 @@ class ExecutionCancellationIntegrationTest : IntegrationTestSupport() {
             ),
         )
         val beforeEvents = events.findAllByExecutionIdOrderBySequenceNo(execution.id)
-        val originalUpdatedAt = execution.updatedAt
+        // Compare persisted state: PostgreSQL rounds JVM nanoseconds to microseconds.
+        val originalUpdatedAt = executions.findById(execution.id).orElseThrow().updatedAt
 
         cancel(execution.id, fixture.principal)
             .andExpect(status().isConflict)

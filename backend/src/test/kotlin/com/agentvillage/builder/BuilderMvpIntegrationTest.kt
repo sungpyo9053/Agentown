@@ -563,7 +563,8 @@ class BuilderMvpIntegrationTest : IntegrationTestSupport() {
         )
         snapshot = service.decideDesign(owner.id, snapshot.workflowId, true, "unsupported-patch-approve-$suffix")
         assertThat(snapshot.graph!!.nodes.map { it.nodeType }).contains("human.approval", "slack.reply.mock")
-        val before = snapshot
+        // Compare database snapshots, not an unrounded timestamp from the write response.
+        val before = service.snapshot(owner.id, snapshot.conversationId)
         val idempotencyKey = "unsupported-patch-delete-$suffix"
         val body = """{"instruction":"Slack 노드를 삭제해줘.","baseVersionId":"${before.currentVersionId}","expectedGraphHash":"${before.validation!!.graphHash}"}"""
 
