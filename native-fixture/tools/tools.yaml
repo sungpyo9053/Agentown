@@ -1,0 +1,27 @@
+format: agentown-tools/v1
+tools:
+  - key: "builtin.manual.trigger"
+    kind: TOOL
+    availability: INSTALLED
+    simulation_only: false
+    requires_user_action: false
+  - key: "builtin.data.csv.compare"
+    kind: TOOL
+    availability: INSTALLED
+    simulation_only: false
+    requires_user_action: false
+  - key: "builtin.template.render"
+    kind: TOOL
+    availability: INSTALLED
+    simulation_only: false
+    requires_user_action: false
+  - key: "builtin.workflow.end"
+    kind: TOOL
+    availability: INSTALLED
+    simulation_only: false
+    requires_user_action: false
+  - key: "template.generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457.v1"
+    kind: SKILL
+    availability: INSTALLED
+    simulation_only: false
+    requires_user_action: false

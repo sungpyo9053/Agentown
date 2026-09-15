@@ -1,0 +1,12 @@
+format: agentown-agent-package/v1
+name: "CSV 변경 행 비교"
+version: 1
+goal: "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘"
+purpose: "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘"
+input_schema: schemas/input.schema.json
+output_schema: schemas/output.schema.json
+status: READY_FOR_REVIEW
+execution_readiness: READY_TO_SIMULATE
+agents:
+workflow: ["manual-input", "csv-compare", "table-render", "end"]
+required_environment: []

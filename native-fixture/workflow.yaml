@@ -1,0 +1,19 @@
+format: agentown-workflow/v1
+entry_node_id: "manual-input"
+nodes:
+  - id: "manual-input"
+    type: "manual.trigger"
+    label: "CSV 두 파일 입력"
+  - id: "csv-compare"
+    type: "data.csv.compare"
+    label: "CSV 행 결정적 비교"
+  - id: "table-render"
+    type: "template.render"
+    label: "변경 행 표 렌더링"
+  - id: "end"
+    type: "workflow.end"
+    label: "완료"
+edges:
+  - { source: "manual-input", target: "csv-compare", condition: "success" }
+  - { source: "csv-compare", target: "table-render", condition: "success" }
+  - { source: "table-render", target: "end", condition: "success" }

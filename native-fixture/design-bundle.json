@@ -1,0 +1,454 @@
+{
+  "requirement" : {
+    "objective" : "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
+    "trigger" : "수동 파일 입력",
+    "inputs" : [ "기준 CSV", "비교 CSV" ],
+    "outputs" : [ "추가·수정·삭제된 행" ],
+    "steps" : [ "CSV 두 파일 입력", "CSV 행 결정적 비교", "변경 행 표 렌더링", "완료" ],
+    "decisions" : [ ],
+    "exceptions" : [ "키 열 누락", "CSV 파싱 실패" ],
+    "humanApprovalRequired" : false,
+    "qualityConditions" : [ ],
+    "forbiddenConditions" : [ ],
+    "assumptions" : [ ],
+    "unresolvedQuestions" : [ ],
+    "sourceRequest" : "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘"
+  },
+  "clarificationQuestions" : [ ],
+  "proposal" : {
+    "name" : "CSV 변경 행 비교",
+    "summary" : "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.",
+    "capabilities" : [ "CSV 두 파일 입력", "CSV 행 결정적 비교", "변경 행 표 렌더링", "완료" ],
+    "integrations" : [ ],
+    "approvalPoints" : [ ],
+    "failurePolicy" : "입력 형식 또는 키 열이 유효하지 않으면 비교를 중단하고 원인을 표시",
+    "graphPlan" : {
+      "entryNodeId" : "manual-input",
+      "nodes" : [ {
+        "id" : "manual-input",
+        "nodeType" : "manual.trigger",
+        "label" : "CSV 두 파일 입력",
+        "config" : { }
+      }, {
+        "id" : "csv-compare",
+        "nodeType" : "data.csv.compare",
+        "label" : "CSV 행 결정적 비교",
+        "config" : {
+          "keyColumns" : [ "사용자 지정 키" ],
+          "comparisonMode" : "EXACT"
+        }
+      }, {
+        "id" : "table-render",
+        "nodeType" : "template.render",
+        "label" : "변경 행 표 렌더링",
+        "config" : {
+          "rendererKey" : "table.markdown.v1"
+        }
+      }, {
+        "id" : "end",
+        "nodeType" : "workflow.end",
+        "label" : "완료",
+        "config" : { }
+      } ],
+      "edges" : [ {
+        "id" : "edge-1",
+        "source" : "manual-input",
+        "target" : "csv-compare",
+        "condition" : "success",
+        "bindings" : [ {
+          "sourceField" : "context",
+          "targetField" : "context"
+        } ],
+        "conditionSpec" : null
+      }, {
+        "id" : "edge-2",
+        "source" : "csv-compare",
+        "target" : "table-render",
+        "condition" : "success",
+        "bindings" : [ {
+          "sourceField" : "context",
+          "targetField" : "context"
+        } ],
+        "conditionSpec" : null
+      }, {
+        "id" : "edge-3",
+        "source" : "table-render",
+        "target" : "end",
+        "condition" : "success",
+        "bindings" : [ {
+          "sourceField" : "context",
+          "targetField" : "context"
+        } ],
+        "conditionSpec" : null
+      } ]
+    },
+    "templateSelection" : {
+      "templateKey" : "generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457",
+      "version" : 1,
+      "source" : "GENERATED",
+      "matchReason" : "승인된 기본 템플릿과 정확히 일치하지 않아 구조화 계약 안에서 초안을 생성"
+    },
+    "economics" : {
+      "agentCount" : 0,
+      "estimatedAiCallsPerRun" : 0,
+      "separationRationale" : [ "AI를 호출하지 않습니다. ‘CSV 두 파일 입력’, ‘CSV 행 결정적 비교’ 단계는 일반 코드와 규칙으로 처리합니다. ‘변경 행 표 렌더링’, ‘완료’ 단계는 연결 도구로 처리합니다." ]
+    },
+    "outputSchema" : [ {
+      "name" : "changedRows",
+      "type" : "array",
+      "required" : true,
+      "description" : "추가·수정·삭제된 행 목록",
+      "minItems" : null,
+      "maxItems" : null,
+      "itemType" : null,
+      "itemSchema" : null,
+      "itemFormat" : null,
+      "itemMinLength" : null,
+      "objectSchema" : null,
+      "format" : null,
+      "enumValues" : null,
+      "minimum" : null,
+      "maximum" : null,
+      "minLength" : null,
+      "uniqueItems" : null,
+      "uniqueBy" : null
+    }, {
+      "name" : "rendered",
+      "type" : "string",
+      "required" : true,
+      "description" : "변경 행 Markdown 표",
+      "minItems" : null,
+      "maxItems" : null,
+      "itemType" : null,
+      "itemSchema" : null,
+      "itemFormat" : null,
+      "itemMinLength" : null,
+      "objectSchema" : null,
+      "format" : null,
+      "enumValues" : null,
+      "minimum" : null,
+      "maximum" : null,
+      "minLength" : null,
+      "uniqueItems" : null,
+      "uniqueBy" : null
+    } ],
+    "executionContract" : {
+      "contentSchemaVersion" : "1.0",
+      "rendererKey" : "plain-text",
+      "rendererVersion" : "1",
+      "qualityRuleVersion" : "1",
+      "promptVersion" : "1",
+      "modelPolicy" : {
+        "mode" : "STRUCTURED",
+        "maxCallsPerRun" : 0,
+        "temperature" : 0
+      },
+      "sourcePolicyVersion" : "1",
+      "qualityRules" : {
+        "evidenceRequired" : true,
+        "arbitraryFieldsAllowed" : false
+      }
+    },
+    "templateRevisionPreview" : null,
+    "resourcePlan" : {
+      "requirements" : [ {
+        "key" : "manual-input",
+        "capability" : "CSV 두 파일 입력",
+        "reason" : "워크플로 노드 manual.trigger 실행에 필요",
+        "executionStrategy" : "DETERMINISTIC",
+        "required" : true,
+        "searchTerms" : [ "manual.trigger", "CSV 두 파일 입력" ]
+      }, {
+        "key" : "csv-compare",
+        "capability" : "CSV 행 결정적 비교",
+        "reason" : "워크플로 노드 data.csv.compare 실행에 필요",
+        "executionStrategy" : "DETERMINISTIC",
+        "required" : true,
+        "searchTerms" : [ "data.csv.compare", "CSV 행 결정적 비교" ]
+      }, {
+        "key" : "table-render",
+        "capability" : "변경 행 표 렌더링",
+        "reason" : "워크플로 노드 template.render 실행에 필요",
+        "executionStrategy" : "DETERMINISTIC",
+        "required" : true,
+        "searchTerms" : [ "template.render", "변경 행 표 렌더링" ]
+      }, {
+        "key" : "end",
+        "capability" : "완료",
+        "reason" : "워크플로 노드 workflow.end 실행에 필요",
+        "executionStrategy" : "DETERMINISTIC",
+        "required" : true,
+        "searchTerms" : [ "workflow.end", "완료" ]
+      } ],
+      "bindings" : [ {
+        "capabilityKey" : "manual-input",
+        "resourceKind" : "TOOL",
+        "resourceKey" : "builtin.manual.trigger",
+        "label" : "CSV 두 파일 입력",
+        "availability" : "INSTALLED",
+        "source" : "SERVER_CATALOG",
+        "reason" : "Agentown 결정론적 런타임",
+        "simulationOnly" : false,
+        "requiresUserAction" : false
+      }, {
+        "capabilityKey" : "csv-compare",
+        "resourceKind" : "TOOL",
+        "resourceKey" : "builtin.data.csv.compare",
+        "label" : "CSV 행 결정적 비교",
+        "availability" : "INSTALLED",
+        "source" : "SERVER_CATALOG",
+        "reason" : "Agentown 결정론적 런타임",
+        "simulationOnly" : false,
+        "requiresUserAction" : false
+      }, {
+        "capabilityKey" : "table-render",
+        "resourceKind" : "TOOL",
+        "resourceKey" : "builtin.template.render",
+        "label" : "변경 행 표 렌더링",
+        "availability" : "INSTALLED",
+        "source" : "SERVER_CATALOG",
+        "reason" : "Agentown 결정론적 런타임",
+        "simulationOnly" : false,
+        "requiresUserAction" : false
+      }, {
+        "capabilityKey" : "end",
+        "resourceKind" : "TOOL",
+        "resourceKey" : "builtin.workflow.end",
+        "label" : "완료",
+        "availability" : "INSTALLED",
+        "source" : "SERVER_CATALOG",
+        "reason" : "Agentown 결정론적 런타임",
+        "simulationOnly" : false,
+        "requiresUserAction" : false
+      }, {
+        "capabilityKey" : "output-template",
+        "resourceKind" : "SKILL",
+        "resourceKey" : "template.generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457.v1",
+        "label" : "generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457 v1",
+        "availability" : "INSTALLED",
+        "source" : "SERVER_CATALOG",
+        "reason" : "승인된 출력 스키마·렌더러·품질 규칙",
+        "simulationOnly" : false,
+        "requiresUserAction" : false
+      } ],
+      "uncoveredCapabilities" : [ ],
+      "simulationReady" : true,
+      "productionReady" : true
+    },
+    "agentDesign" : {
+      "status" : "READY_FOR_REVIEW",
+      "purpose" : "두 CSV 파일을 ID 기준으로 비교해서 추가 수정 삭제 행을 표로 만들어줘",
+      "naturalLanguageSummary" : "두 CSV를 일반 코드로 정확히 비교하고 변경된 행을 구조화합니다.",
+      "agentKeys" : [ ],
+      "toolRequirements" : [ {
+        "key" : "builtin.manual.trigger",
+        "capability" : "CSV 두 파일 입력",
+        "kind" : "TOOL",
+        "required" : true,
+        "availability" : "INSTALLED",
+        "reason" : "Agentown 결정론적 런타임"
+      }, {
+        "key" : "builtin.data.csv.compare",
+        "capability" : "CSV 행 결정적 비교",
+        "kind" : "TOOL",
+        "required" : true,
+        "availability" : "INSTALLED",
+        "reason" : "Agentown 결정론적 런타임"
+      }, {
+        "key" : "builtin.template.render",
+        "capability" : "변경 행 표 렌더링",
+        "kind" : "TOOL",
+        "required" : true,
+        "availability" : "INSTALLED",
+        "reason" : "Agentown 결정론적 런타임"
+      }, {
+        "key" : "builtin.workflow.end",
+        "capability" : "완료",
+        "kind" : "TOOL",
+        "required" : true,
+        "availability" : "INSTALLED",
+        "reason" : "Agentown 결정론적 런타임"
+      }, {
+        "key" : "template.generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457.v1",
+        "capability" : "generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457 v1",
+        "kind" : "SKILL",
+        "required" : true,
+        "availability" : "INSTALLED",
+        "reason" : "승인된 출력 스키마·렌더러·품질 규칙"
+      } ],
+      "workflow" : {
+        "nodes" : [ {
+          "id" : "design-start",
+          "kind" : "START",
+          "label" : "시작",
+          "runtimeNodeType" : null,
+          "agentKey" : null
+        }, {
+          "id" : "manual-input",
+          "kind" : "TRIGGER",
+          "label" : "CSV 두 파일 입력",
+          "runtimeNodeType" : "manual.trigger",
+          "agentKey" : null
+        }, {
+          "id" : "csv-compare",
+          "kind" : "FUNCTION",
+          "label" : "CSV 행 결정적 비교",
+          "runtimeNodeType" : "data.csv.compare",
+          "agentKey" : null
+        }, {
+          "id" : "table-render",
+          "kind" : "TEMPLATE",
+          "label" : "변경 행 표 렌더링",
+          "runtimeNodeType" : "template.render",
+          "agentKey" : null
+        }, {
+          "id" : "end",
+          "kind" : "END",
+          "label" : "완료",
+          "runtimeNodeType" : "workflow.end",
+          "agentKey" : null
+        } ],
+        "edges" : [ {
+          "id" : "design-start-edge",
+          "source" : "design-start",
+          "target" : "manual-input",
+          "condition" : "success",
+          "bindings" : [ {
+            "sourceField" : "context",
+            "targetField" : "context"
+          } ],
+          "conditionSpec" : null
+        }, {
+          "id" : "edge-1",
+          "source" : "manual-input",
+          "target" : "csv-compare",
+          "condition" : "success",
+          "bindings" : [ {
+            "sourceField" : "context",
+            "targetField" : "context"
+          } ],
+          "conditionSpec" : null
+        }, {
+          "id" : "edge-2",
+          "source" : "csv-compare",
+          "target" : "table-render",
+          "condition" : "success",
+          "bindings" : [ {
+            "sourceField" : "context",
+            "targetField" : "context"
+          } ],
+          "conditionSpec" : null
+        }, {
+          "id" : "edge-3",
+          "source" : "table-render",
+          "target" : "end",
+          "condition" : "success",
+          "bindings" : [ {
+            "sourceField" : "context",
+            "targetField" : "context"
+          } ],
+          "conditionSpec" : null
+        } ]
+      },
+      "approvalPolicy" : {
+        "required" : false,
+        "beforeNodeIds" : [ ],
+        "reason" : ""
+      },
+      "retryPolicy" : {
+        "maxAttempts" : 1,
+        "backoffSeconds" : 0,
+        "retryableErrors" : [ "MOCK_CONNECTOR_TEMPORARY_FAILURE" ]
+      },
+      "assumptions" : [ ],
+      "unresolvedQuestions" : [ ],
+      "review" : {
+        "passed" : true,
+        "issues" : [ ],
+        "estimatedAiCallsPerRun" : 0
+      },
+      "simulationScenarios" : [ {
+        "name" : "기본 Mock 시나리오",
+        "input" : {
+          "text" : "샘플 입력",
+          "message" : "환불은 언제 처리되나요?"
+        },
+        "expectedStages" : [ "CSV 두 파일 입력", "CSV 행 결정적 비교", "변경 행 표 렌더링", "완료" ],
+        "externalCallsAllowed" : false
+      } ],
+      "executionReadiness" : "READY_TO_SIMULATE"
+    },
+    "inputSchema" : [ {
+      "name" : "csvA",
+      "type" : "string",
+      "required" : true,
+      "description" : "비교 기준 CSV 문자열",
+      "minItems" : null,
+      "maxItems" : null,
+      "itemType" : null,
+      "itemSchema" : null,
+      "itemFormat" : null,
+      "itemMinLength" : null,
+      "objectSchema" : null,
+      "format" : null,
+      "enumValues" : null,
+      "minimum" : null,
+      "maximum" : null,
+      "minLength" : null,
+      "uniqueItems" : null,
+      "uniqueBy" : null
+    }, {
+      "name" : "csvB",
+      "type" : "string",
+      "required" : true,
+      "description" : "비교 대상 CSV 문자열",
+      "minItems" : null,
+      "maxItems" : null,
+      "itemType" : null,
+      "itemSchema" : null,
+      "itemFormat" : null,
+      "itemMinLength" : null,
+      "objectSchema" : null,
+      "format" : null,
+      "enumValues" : null,
+      "minimum" : null,
+      "maximum" : null,
+      "minLength" : null,
+      "uniqueItems" : null,
+      "uniqueBy" : null
+    }, {
+      "name" : "keyColumns",
+      "type" : "array",
+      "required" : false,
+      "description" : "행을 식별할 선택적 키 열 목록",
+      "minItems" : null,
+      "maxItems" : null,
+      "itemType" : null,
+      "itemSchema" : null,
+      "itemFormat" : null,
+      "itemMinLength" : null,
+      "objectSchema" : null,
+      "format" : null,
+      "enumValues" : null,
+      "minimum" : null,
+      "maximum" : null,
+      "minLength" : null,
+      "uniqueItems" : null,
+      "uniqueBy" : null
+    } ]
+  },
+  "agentDefinitions" : [ ],
+  "guideDefinitions" : [ {
+    "key" : "csv-input",
+    "title" : "CSV 비교 설정",
+    "description" : "두 파일의 키 열과 인코딩을 설정합니다.",
+    "fields" : [ {
+      "key" : "keyColumns",
+      "label" : "키 열",
+      "type" : "text",
+      "required" : true,
+      "secret" : false,
+      "help" : "행을 식별할 하나 이상의 열"
+    } ]
+  } ]
+}

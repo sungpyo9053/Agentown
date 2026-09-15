@@ -1,0 +1,5 @@
+{
+  "arbitraryCodeAllowed" : false,
+  "secretsInWorkflowAllowed" : false,
+  "externalWritesRequireApproval" : true
+}

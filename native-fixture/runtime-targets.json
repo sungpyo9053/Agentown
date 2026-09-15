@@ -1,0 +1,11 @@
+{
+  "targets" : [ {
+    "key" : "python-local",
+    "mode" : "TFRAMEX_PINNED",
+    "entrypoint" : "runners/python/runner.py"
+  }, {
+    "key" : "generic-package",
+    "mode" : "CONTRACT_EXPORT",
+    "entrypoint" : "agent.yaml"
+  } ]
+}

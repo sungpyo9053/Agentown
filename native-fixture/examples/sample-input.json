@@ -1,0 +1,5 @@
+{
+  "csvA" : "id,name\n1,old\n2,remove\n",
+  "csvB" : "id,name\n1,new\n3,add\n",
+  "keyColumns" : [ "id" ]
+}

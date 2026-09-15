@@ -1,0 +1,5 @@
+{
+  "agentCount" : 0,
+  "estimatedAiCallsPerRun" : 0,
+  "separationRationale" : [ "AI를 호출하지 않습니다. ‘CSV 두 파일 입력’, ‘CSV 행 결정적 비교’ 단계는 일반 코드와 규칙으로 처리합니다. ‘변경 행 표 렌더링’, ‘완료’ 단계는 연결 도구로 처리합니다." ]
+}

@@ -1,0 +1,20 @@
+{
+  "format" : "agentown-agent-package/v1",
+  "name" : "CSV 변경 행 비교",
+  "agentCount" : 0,
+  "guideCount" : 1,
+  "templateSelection" : {
+    "templateKey" : "generated-aa7b399d8f6505cbc728dac8cff993e0eba75b50df86be3fe0d36b4c61a18457",
+    "version" : 1,
+    "source" : "GENERATED",
+    "matchReason" : "승인된 기본 템플릿과 정확히 일치하지 않아 구조화 계약 안에서 초안을 생성"
+  },
+  "economics" : {
+    "agentCount" : 0,
+    "estimatedAiCallsPerRun" : 0,
+    "separationRationale" : [ "AI를 호출하지 않습니다. ‘CSV 두 파일 입력’, ‘CSV 행 결정적 비교’ 단계는 일반 코드와 규칙으로 처리합니다. ‘변경 행 표 렌더링’, ‘완료’ 단계는 연결 도구로 처리합니다." ]
+  },
+  "executionReadiness" : "READY_TO_SIMULATE",
+  "supportedRuntimeTargets" : [ "python-local", "generic-package" ],
+  "validationRequiredBeforeImport" : true
+}

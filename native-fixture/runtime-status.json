@@ -1,0 +1,9 @@
+{
+  "configured" : false,
+  "runtimeConfigured" : true,
+  "packageStatus" : "PACKAGE_VALIDATED",
+  "interactiveStatus" : "INTERACTIVE_READY",
+  "automationStatus" : "EXECUTION_NOT_CONFIGURED",
+  "code" : "EXECUTION_NOT_CONFIGURED",
+  "message" : "유효한 샘플의 실제 Runner 성공 검증이 아직 없습니다."
+}

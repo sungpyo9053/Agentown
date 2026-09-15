@@ -1,0 +1,20 @@
+{
+  "$schema" : "https://json-schema.org/draft/2020-12/schema",
+  "type" : "object",
+  "additionalProperties" : false,
+  "properties" : {
+    "csvA" : {
+      "type" : "string",
+      "description" : "비교 기준 CSV 문자열"
+    },
+    "csvB" : {
+      "type" : "string",
+      "description" : "비교 대상 CSV 문자열"
+    },
+    "keyColumns" : {
+      "type" : "array",
+      "description" : "행을 식별할 선택적 키 열 목록"
+    }
+  },
+  "required" : [ "csvA", "csvB" ]
+}

@@ -1,0 +1,64 @@
+{
+  "schemaVersion" : "1.0",
+  "name" : "CSV 변경 행 비교",
+  "entryNodeId" : "manual-input",
+  "nodes" : [ {
+    "id" : "manual-input",
+    "nodeType" : "manual.trigger",
+    "label" : "CSV 두 파일 입력",
+    "config" : { }
+  }, {
+    "id" : "csv-compare",
+    "nodeType" : "data.csv.compare",
+    "label" : "CSV 행 결정적 비교",
+    "config" : {
+      "keyColumns" : [ "사용자 지정 키" ],
+      "comparisonMode" : "EXACT"
+    }
+  }, {
+    "id" : "table-render",
+    "nodeType" : "template.render",
+    "label" : "변경 행 표 렌더링",
+    "config" : {
+      "rendererKey" : "table.markdown.v1"
+    }
+  }, {
+    "id" : "end",
+    "nodeType" : "workflow.end",
+    "label" : "완료",
+    "config" : { }
+  } ],
+  "edges" : [ {
+    "id" : "edge-1",
+    "source" : "manual-input",
+    "target" : "csv-compare",
+    "condition" : "success",
+    "bindings" : [ {
+      "sourceField" : "context",
+      "targetField" : "context"
+    } ],
+    "conditionSpec" : null
+  }, {
+    "id" : "edge-2",
+    "source" : "csv-compare",
+    "target" : "table-render",
+    "condition" : "success",
+    "bindings" : [ {
+      "sourceField" : "context",
+      "targetField" : "context"
+    } ],
+    "conditionSpec" : null
+  }, {
+    "id" : "edge-3",
+    "source" : "table-render",
+    "target" : "end",
+    "condition" : "success",
+    "bindings" : [ {
+      "sourceField" : "context",
+      "targetField" : "context"
+    } ],
+    "conditionSpec" : null
+  } ],
+  "agentKeys" : [ ],
+  "guideKeys" : [ "csv-input" ]
+}

@@ -1,0 +1,16 @@
+{
+  "$schema" : "https://json-schema.org/draft/2020-12/schema",
+  "type" : "object",
+  "additionalProperties" : false,
+  "properties" : {
+    "changedRows" : {
+      "type" : "array",
+      "description" : "추가·수정·삭제된 행 목록"
+    },
+    "rendered" : {
+      "type" : "string",
+      "description" : "변경 행 Markdown 표"
+    }
+  },
+  "required" : [ "changedRows", "rendered" ]
+}
